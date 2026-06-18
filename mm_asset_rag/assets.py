@@ -28,7 +28,7 @@ def load_assets(limit: int = 0, manifest_path: Path | None = None) -> list[Asset
             asset_id=str(item["id"]),
             title=str(item["title"]),
             source_type=str(item["type"]),
-            relative_path=str(item["path"]),
+            relative_path=str(item["path"]).replace("\\", "/"),
             source_url=str(item.get("source_url", "")),
             tags=[str(tag) for tag in item.get("tags", [])],
         )
