@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mm-asset-rag"
+dynamic = ["version"]
+description = "Multimodal asset RAG: parse PDFs and images, index with Qdrant or LlamaIndex, retrieve by text/image/hybrid."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+    { name = "liguoyu", email = "guoyu.li@lcfuturecenter.com" },
+]
+keywords = ["rag", "multimodal", "qdrant", "llamaindex", "clip"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "python-dotenv>=1.0",
+    "pydantic>=2.5",
+    "pillow>=10.0",
+    "requests>=2.31",
+    "PyMuPDF>=1.23",
+    "qdrant-client>=1.7",
+    "llama-index-core>=0.10",
+    "llama-index-embeddings-openai>=0.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+clip = ["sentence-transformers>=2.2"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.1",
+    "pytest-mock>=3.12",
+    "responses>=0.25",
+    "ruff>=0.4",
+    "build>=1.0",
+    "twine>=4.0",
+]
+
+[project.scripts]
+mmrag     = "mm_asset_rag.cli:main"
+mmrag-api = "mm_asset_rag.api:run"
+
+[project.urls]
+Homepage   = "https://github.com/lgy1027/mm-asset-rag"
+Repository = "https://github.com/lgy1027/mm-asset-rag"
+Issues     = "https://github.com/lgy1027/mm-asset-rag/issues"
+
+[tool.hatch.version]
+path = "mm_asset_rag/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["mm_asset_rag"]
+exclude  = ["tests", "examples", "docs", "scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "integration: starts local Qdrant or external network",
+]

@@ -1,0 +1,22 @@
+* text=auto eol=lf
+
+# Source files
+*.py     text eol=lf
+*.toml   text eol=lf
+*.md     text eol=lf
+*.yaml   text eol=lf
+*.yml    text eol=lf
+*.json   text eol=lf
+*.ini    text eol=lf
+
+# Binary assets (keep these as binary in case they ever sneak in)
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.webp   binary
+*.pdf    binary
+
+# Exclude vendored / generated docs from language statistics
+docs/_build/   linguist-documentation=false
+examples/      linguist-documentation=false

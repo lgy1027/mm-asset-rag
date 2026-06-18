@@ -1,0 +1,30 @@
+line-length = 100
+target-version = "py310"
+
+[lint]
+# Reasonable defaults; extend as the codebase grows.
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "SIM", # flake8-simplify
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function call in default argument (used by FastAPI patterns)
+    "RUF001",  # ambiguous unicode chars in strings: prompts and docs use CJK punctuation on purpose
+    "RUF005",  # concatenation vs unpacking: keep existing structure for clarity
+    "B905",  # zip() strict= not needed in our short, controlled iterables
+]
+
+[lint.per-file-ignores]
+"tests/**/*.py" = ["B011"]  # assert False is fine in tests
+"examples/**/*.py" = ["E402"]  # imports may follow sys.path hacks in docs
+
+[format]
+quote-style = "double"
+indent-style = "space"
