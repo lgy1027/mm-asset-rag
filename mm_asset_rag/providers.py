@@ -69,10 +69,14 @@ class EmbeddingProvider:
             )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        max_chars = int(os.environ.get("EMBEDDING_MAX_INPUT_CHARS", "8192"))
+        truncated = [t if len(t) <= max_chars else t[:max_chars] for t in texts]
         batch_size = max(1, int(os.environ.get("EMBEDDING_BATCH_SIZE", "5")))
         vectors: list[list[float]] = []
-        for offset in range(0, len(texts), batch_size):
-            vectors.extend(self._embed_remote_batch(texts[offset : offset + batch_size]))
+        for offset in range(0, len(truncated), batch_size):
+            vectors.extend(
+                self._embed_remote_batch(truncated[offset : offset + batch_size])
+            )
             interval = float(os.environ.get("EMBEDDING_REQUEST_INTERVAL", "0.25"))
             if interval > 0:
                 time.sleep(interval)

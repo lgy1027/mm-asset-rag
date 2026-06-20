@@ -63,6 +63,7 @@ def call_vlm_caption(image_path: Path) -> str:
     payload = {
         "model": model,
         "temperature": float(os.environ.get("VLM_TEMPERATURE", "0.1")),
+        "max_tokens": int(os.environ.get("VLM_MAX_TOKENS", "2000")),
         "messages": [
             {
                 "role": "user",
