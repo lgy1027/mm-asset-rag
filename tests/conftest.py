@@ -1,7 +1,8 @@
 """Shared pytest fixtures.
 
-All tests in this suite are designed to run offline. External services
-(OpenAI, Qdrant server, sentence-transformers downloads) are mocked.
+All tests use the real ``examples/data/chapter11_assets/`` sample set
+that ships with the repository. There are no mock embeddings or fake
+fixtures — the test suite exercises the same paths as production.
 """
 
 from __future__ import annotations
@@ -12,14 +13,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-FIXTURES_DIR = Path(__file__).parent / "fixtures"
-SAMPLE_ASSETS_DIR = FIXTURES_DIR / "sample_assets"
-SAMPLE_MANIFEST = FIXTURES_DIR / "sample_manifest.json"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXAMPLES_DATA_DIR = REPO_ROOT / "examples" / "data" / "chapter11_assets"
+
+
+def _have_examples() -> bool:
+    return EXAMPLES_DATA_DIR.is_dir() and (EXAMPLES_DATA_DIR / "asset_manifest.json").is_file()
 
 
 @pytest.fixture
 def tmp_home(tmp_path, monkeypatch) -> Path:
-    """Point MM_ASSET_RAG_HOME at a fresh tmp directory."""
+    """Point MM_ASSET_RAG_HOME at a fresh tmp directory (no manifest/seed)."""
     home = tmp_path / "mm_asset_rag_home"
     home.mkdir()
     monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
@@ -27,14 +31,22 @@ def tmp_home(tmp_path, monkeypatch) -> Path:
 
 
 @pytest.fixture
-def populated_home(tmp_home) -> Path:
-    """Copy sample assets + manifest into the tmp data directory."""
-    assets_dir = tmp_home / "assets"
-    assets_dir.mkdir()
-    for src in SAMPLE_ASSETS_DIR.iterdir():
-        shutil.copy2(src, assets_dir / src.name)
-    shutil.copy2(SAMPLE_MANIFEST, assets_dir / "asset_manifest.json")
-    return tmp_home
+def examples_home(tmp_path, monkeypatch) -> Path:
+    """Copy ``examples/data/chapter11_assets`` into a tmp home and point at it.
+
+    Each test gets a fresh copy so file mutations (cached parsed output,
+    Qdrant local files, captions) don't leak across tests. The fixture
+    is skipped automatically if the bundled sample data is missing.
+    """
+    if not _have_examples():
+        pytest.skip(f"sample data not found at {EXAMPLES_DATA_DIR}")
+
+    home = tmp_path / "mm_asset_rag_home"
+    assets = home / "assets"
+    assets.mkdir(parents=True)
+    shutil.copytree(EXAMPLES_DATA_DIR, assets, dirs_exist_ok=True)
+    monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
+    return home
 
 
 @pytest.fixture
@@ -53,10 +65,10 @@ def fake_qdrant_client(monkeypatch) -> MagicMock:
 
 @pytest.fixture
 def fixed_vector(monkeypatch) -> None:
-    """Pin the embedding providers to a fixed 4-dim mock vector.
+    """Pin both embedding providers to a fixed deterministic vector.
 
-    Replaces both EmbeddingProvider.embed_text and ImageEmbeddingProvider
-    methods with deterministic outputs so test assertions can match exactly.
+    Lets the merge / normalize logic in ``retrieval`` be exercised without
+    hitting a real embedding backend.
     """
     import mm_asset_rag.providers as providers
 
@@ -64,7 +76,7 @@ def fixed_vector(monkeypatch) -> None:
         digest = sum(ord(c) for c in text) % 100
         return [float(digest), 0.1, 0.2, 0.3]
 
-    def _image(self, path: Path) -> list[float]:
+    def _image(self, _path: Path) -> list[float]:
         return [0.4, 0.5, 0.6, 0.7]
 
     monkeypatch.setattr(providers.EmbeddingProvider, "embed_text", _text)

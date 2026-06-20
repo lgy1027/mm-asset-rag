@@ -1,4 +1,12 @@
-import hashlib
+"""HTTP-based providers for embedding, image embedding, LLM, and OCR/VLM.
+
+Every provider talks to a real, configured backend. There is no offline
+fallback: missing configuration raises so misconfiguration is caught
+early instead of producing silently-wrong embeddings.
+"""
+
+from __future__ import annotations
+
 import os
 import time
 from pathlib import Path
@@ -6,50 +14,61 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from llama_index.core import Settings
-from llama_index.core.embeddings import MockEmbedding
 from llama_index.embeddings.openai import OpenAIEmbedding
 from PIL import Image
 
+# Load .env exactly once at import time so the rest of the module sees
+# whatever the user configured. Tests can ``monkeypatch.delenv`` without
+# us re-reading the file on every call.
+load_dotenv()
+
+
+class EmbeddingConfigError(RuntimeError):
+    """Raised when an embedding request is made without valid configuration."""
+
 
 def configure_embedding() -> str:
-    """Configure LlamaIndex Settings.embed_model based on environment.
+    """Configure LlamaIndex ``Settings.embed_model`` from environment.
+
+    Reads ``OPENAI_API_KEY``, ``OPENAI_BASE_URL``, ``OPENAI_MODEL`` (or
+    ``EMBEDDING_*`` overrides). Raises :class:`EmbeddingConfigError` when
+    any required variable is missing.
 
     Returns a human-readable description of what was set.
     """
-    load_dotenv()
-    provider = os.environ.get("EMBEDDING_PROVIDER", "openai").lower()
     api_key = os.environ.get("EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY")
     base_url = os.environ.get("EMBEDDING_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-    model = os.environ.get("EMBEDDING_MODEL")
+    model = os.environ.get("EMBEDDING_MODEL") or os.environ.get("OPENAI_MODEL")
 
-    if provider == "mock":
-        Settings.embed_model = MockEmbedding(embed_dim=384)
-        return "MockEmbedding(embed_dim=384)"
-
-    if api_key and base_url and model:
-        Settings.embed_model = OpenAIEmbedding(
-            model_name=model,
-            api_key=api_key,
-            api_base=base_url,
+    if not (api_key and base_url and model):
+        raise EmbeddingConfigError(
+            "Embedding requires OPENAI_API_KEY, OPENAI_BASE_URL, and OPENAI_MODEL "
+            "(or EMBEDDING_API_KEY / EMBEDDING_BASE_URL / EMBEDDING_MODEL overrides). "
+            "Configure them in your environment or .env file."
         )
-        return f"OpenAIEmbedding({model})"
 
-    Settings.embed_model = MockEmbedding(embed_dim=384)
-    return "MockEmbedding(embed_dim=384)"
+    Settings.embed_model = OpenAIEmbedding(
+        model_name=model,
+        api_key=api_key,
+        api_base=base_url,
+    )
+    return f"OpenAIEmbedding({model} via {base_url})"
 
 
 class EmbeddingProvider:
+    """OpenAI-compatible text embedding client with retry/backoff."""
+
     def __init__(self) -> None:
-        self.provider = os.environ.get("EMBEDDING_PROVIDER", "openai").lower()
         self.api_key = os.environ.get("EMBEDDING_API_KEY") or os.environ.get("OPENAI_API_KEY")
         self.base_url = os.environ.get("EMBEDDING_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-        self.model = os.environ.get("EMBEDDING_MODEL")
-        self.mock_dim = int(os.environ.get("MOCK_EMBEDDING_DIM", "384"))
+        self.model = os.environ.get("EMBEDDING_MODEL") or os.environ.get("OPENAI_MODEL")
+
+        if not (self.api_key and self.base_url and self.model):
+            raise EmbeddingConfigError(
+                "EmbeddingProvider requires OPENAI_API_KEY, OPENAI_BASE_URL, and OPENAI_MODEL."
+            )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        if self.provider == "mock" or not (self.api_key and self.base_url and self.model):
-            return [self._mock_embedding(text) for text in texts]
-
         batch_size = max(1, int(os.environ.get("EMBEDDING_BATCH_SIZE", "5")))
         vectors: list[list[float]] = []
         for offset in range(0, len(texts), batch_size):
@@ -92,16 +111,6 @@ class EmbeddingProvider:
 
     def embed_text(self, text: str) -> list[float]:
         return self.embed_texts([text])[0]
-
-    def _mock_embedding(self, text: str) -> list[float]:
-        vector = [0.0] * self.mock_dim
-        for token in text.lower().split():
-            digest = hashlib.sha256(token.encode("utf-8")).digest()
-            index = int.from_bytes(digest[:4], "little") % self.mock_dim
-            sign = 1.0 if digest[4] % 2 else -1.0
-            vector[index] += sign
-        norm = sum(value * value for value in vector) ** 0.5 or 1.0
-        return [value / norm for value in vector]
 
 
 class ImageEmbeddingUnavailable(RuntimeError):

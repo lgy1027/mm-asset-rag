@@ -30,21 +30,19 @@ eval_report.json         # latest /eval output
 | `OPENAI_MODEL` | — | Model name. |
 | `LLM_TIMEOUT` | `120` | Seconds. |
 
-If any of `BASE_URL` / `API_KEY` / `MODEL` is missing, `/answer` returns an evidence-summary fallback instead of an LLM-generated answer.
+If any of `BASE_URL` / `API_KEY` / `MODEL` is missing, the package raises `EmbeddingConfigError` immediately — there is no offline fallback by design.
 
 ## Embedding (text)
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `EMBEDDING_PROVIDER` | `openai` | `openai` for real API, `mock` for SHA-256-based fake vectors. |
 | `EMBEDDING_API_KEY` | falls back to `OPENAI_API_KEY` | Bearer token. |
 | `EMBEDDING_BASE_URL` | falls back to `OPENAI_BASE_URL` | Endpoint root. |
-| `EMBEDDING_MODEL` | — | Embedding model name. |
+| `EMBEDDING_MODEL` | falls back to `OPENAI_MODEL` | Embedding model name. |
 | `EMBEDDING_BATCH_SIZE` | `5` | Texts per request. |
 | `EMBEDDING_REQUEST_INTERVAL` | `0.25` | Seconds between batches. |
 | `EMBEDDING_RETRY_COUNT` | `5` | On 429 / 5xx. |
 | `EMBEDDING_TIMEOUT` | `120` | Seconds. |
-| `MOCK_EMBEDDING_DIM` | `384` | Dimension of mock vectors. |
 
 ## Image embedding (CLIP)
 
