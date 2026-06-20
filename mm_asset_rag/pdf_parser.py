@@ -138,9 +138,25 @@ def poll_paddleocr_vl_job(job_id: str) -> str:
     poll_interval = float(os.environ.get("PADDLEOCR_VL_POLL_INTERVAL", "5"))
     headers = {"Authorization": f"bearer {token}"}
     deadline = time.time() + timeout
+    retry_attempts = int(os.environ.get("PADDLEOCR_VL_POLL_RETRY", "5"))
 
+    attempt = 0
     while time.time() < deadline:
-        response = requests.get(f"{job_url}/{job_id}", headers=headers, timeout=timeout)
+        try:
+            response = requests.get(
+                f"{job_url}/{job_id}", headers=headers, timeout=timeout
+            )
+        except requests.exceptions.RequestException as exc:
+            attempt += 1
+            if attempt >= retry_attempts:
+                raise RuntimeError(
+                    f"PaddleOCR-VL poll network failure after {attempt} retries: {exc}"
+                ) from exc
+            print(f"PaddleOCR-VL poll network error (retry {attempt}/{retry_attempts}): {exc}")
+            time.sleep(poll_interval * attempt)
+            continue
+
+        attempt = 0  # reset on success
         if response.status_code != 200:
             raise RuntimeError(
                 f"PaddleOCR-VL poll failed: {response.status_code} {response.text}"

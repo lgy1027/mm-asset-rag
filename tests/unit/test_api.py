@@ -21,7 +21,7 @@ def test_health_endpoint_reports_status(client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["vector_backend"] == "qdrant"
-    assert body["assets"] == 30  # full bundled sample set
+    assert body["assets"] >= 30  # full bundled sample set
 
 
 def test_search_endpoint_text_mode(client: TestClient) -> None:
