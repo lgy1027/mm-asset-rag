@@ -206,7 +206,14 @@ def build_qdrant_image_index() -> tuple[int, str]:
     points = []
     for index, document in enumerate(image_documents):
         image_path = assets_dir / str(document.metadata["source_path"])
-        vector = first_vector if index == 0 else provider.embed_image(image_path)
+        try:
+            vector = first_vector if index == 0 else provider.embed_image(image_path)
+        except Exception as exc:
+            print(
+                f"image index skipped ({document.metadata.get('asset_id')}): "
+                f"{type(exc).__name__}: {exc}"
+            )
+            continue
         payload = {**document.metadata, "text": document.text}
         point_id = stable_point_id(f"image:{document.metadata.get('asset_id')}")
         points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))
