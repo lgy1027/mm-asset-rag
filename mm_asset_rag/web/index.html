@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>mm-asset-rag · multimodal RAG</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #1a1d24;
+      --panel-2: #232732;
+      --border: #2e323e;
+      --fg: #e6e8ec;
+      --muted: #8a8f9c;
+      --accent: #5eb1ff;
+      --accent-2: #3b82f6;
+      --ok: #34d399;
+      --warn: #fbbf24;
+      --err: #f87171;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "Helvetica Neue", Arial, sans-serif; }
+    header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+    header h1 { margin: 0; font-size: 16px; font-weight: 600; }
+    header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+    header .sub { color: var(--muted); font-size: 12px; }
+    main { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 53px); }
+    aside { border-right: 1px solid var(--border); overflow-y: auto; padding: 16px; }
+    section { padding: 16px 24px; overflow-y: auto; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+    .panel-tight { padding: 8px 10px; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .row > * { flex: 1; }
+    .row > .shrink { flex: 0 0 auto; }
+    label { display: block; font-size: 11px; color: var(--muted); margin: 6px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+    input[type=text], input[type=file], select, textarea {
+      width: 100%;
+      background: var(--panel-2);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font: inherit;
+    }
+    textarea { min-height: 60px; resize: vertical; }
+    input[type=file] { padding: 6px; }
+    button {
+      background: var(--accent-2);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 14px;
+      cursor: pointer;
+      font: inherit;
+      font-weight: 500;
+    }
+    button:hover:not(:disabled) { background: var(--accent); }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+    button.ghost:hover:not(:disabled) { background: var(--panel-2); }
+    .status-bar { height: 4px; background: var(--panel-2); border-radius: 2px; overflow: hidden; margin: 6px 0; }
+    .status-bar > div { height: 100%; background: var(--accent); transition: width 0.3s; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    .pill.pending { background: var(--panel-2); color: var(--muted); }
+    .pill.running { background: #1e3a5f; color: var(--accent); }
+    .pill.done    { background: #14533a; color: var(--ok); }
+    .pill.failed  { background: #5a1f1f; color: var(--err); }
+    .file-list { font-size: 12px; color: var(--muted); margin: 6px 0 0; max-height: 100px; overflow-y: auto; }
+    .file-list div { padding: 2px 0; }
+    .chat { display: flex; flex-direction: column; height: 100%; }
+    .messages { flex: 1; overflow-y: auto; padding-right: 8px; }
+    .msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; line-height: 1.55; }
+    .msg.user { background: var(--panel-2); border: 1px solid var(--border); }
+    .msg.assistant { background: #14283f; border: 1px solid #1e3a5f; }
+    .msg .meta { font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .msg pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
+    .sources { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px; }
+    .source { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; }
+    .source .head { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
+    .source .score { background: var(--accent-2); color: white; padding: 1px 6px; border-radius: 999px; font-size: 10px; }
+    .source .route { color: var(--muted); }
+    .source .ev { color: var(--muted); font-size: 12px; line-height: 1.45; max-height: 60px; overflow: hidden; }
+    .input-row { display: flex; gap: 8px; align-items: flex-end; padding-top: 8px; }
+    .input-row textarea { flex: 1; }
+    .input-row .modes { display: flex; gap: 4px; flex-direction: column; }
+    .input-row .modes label { display: flex; gap: 4px; align-items: center; margin: 0; text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--fg); }
+    .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 32px 8px; }
+    .kpi { display: flex; gap: 12px; }
+    .kpi .v { font-size: 18px; font-weight: 600; color: var(--accent); }
+    .kpi .l { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="dot" id="statusDot"></span>
+    <h1>mm-asset-rag</h1>
+    <span class="sub" id="statusText">connecting…</span>
+  </header>
+
+  <main>
+    <aside>
+      <h2>Health</h2>
+      <div class="panel" id="healthPanel">
+        <div class="kpi"><div><div class="v" id="kpiAssets">–</div><div class="l">assets</div></div></div>
+        <div class="kpi" style="margin-top:8px">
+          <div><div class="v" id="kpiDocs">–</div><div class="l">docs</div></div>
+          <div><div class="v" id="kpiIndex">–</div><div class="l">index</div></div>
+        </div>
+      </div>
+
+      <h2>Upload &amp; Parse</h2>
+      <div class="panel">
+        <label>PDFs &amp; images (drag or click)</label>
+        <input type="file" id="fileInput" multiple
+               accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp" />
+        <div class="file-list" id="fileList"></div>
+        <div class="row" style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:6px;margin:0;text-transform:none;letter-spacing:0;font-size:12px;color:var(--fg)">
+            <input type="checkbox" id="autoIndex" checked style="width:auto;flex:0"> auto-index after parse
+          </label>
+          <button class="shrink" id="uploadBtn" disabled>Upload &amp; Parse</button>
+        </div>
+      </div>
+
+      <div class="panel" id="taskPanel" style="display:none">
+        <div class="row">
+          <span class="pill" id="taskStatusPill">pending</span>
+          <button class="shrink ghost" id="refreshTaskBtn">refresh</button>
+        </div>
+        <div class="status-bar"><div id="taskBar" style="width:0%"></div></div>
+        <div style="font-size:12px;color:var(--muted)" id="taskDetail">–</div>
+      </div>
+
+      <h2>Tasks</h2>
+      <div class="panel panel-tight" id="tasksList">
+        <div class="empty">no tasks yet</div>
+      </div>
+    </aside>
+
+    <section>
+      <div class="chat">
+        <div class="messages" id="messages">
+          <div class="empty">ask a question about your PDFs / images.<br>
+            <br>
+            <span style="font-size:11px">examples:</span><br>
+            <span style="font-size:12px;color:var(--muted)">
+              "讲 transformer 的论文" · "find an image of a butterfly" · "what is RAG?"
+            </span>
+          </div>
+        </div>
+
+        <div class="input-row">
+          <textarea id="queryInput" placeholder="ask anything…   (shift+enter for newline)"></textarea>
+          <div class="modes">
+            <label><input type="radio" name="mode" value="hybrid" checked> hybrid</label>
+            <label><input type="radio" name="mode" value="text"> text</label>
+            <label><input type="radio" name="mode" value="text-to-image"> text→image</label>
+            <label><input type="radio" name="mode" value="image-to-image"> image→image</label>
+            <button id="askBtn">Ask</button>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const fileInput = $("fileInput");
+    const fileList = $("fileList");
+    const uploadBtn = $("uploadBtn");
+    const autoIndex = $("autoIndex");
+    const taskPanel = $("taskPanel");
+    const taskStatusPill = $("taskStatusPill");
+    const taskBar = $("taskBar");
+    const taskDetail = $("taskDetail");
+    const refreshTaskBtn = $("refreshTaskBtn");
+    const tasksList = $("tasksList");
+    const messages = $("messages");
+    const queryInput = $("queryInput");
+    const askBtn = $("askBtn");
+
+    let pickedFiles = [];
+    let activeTaskId = null;
+    let llmModel = "";
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+
+    function setStatus(text, dotClass = "ok") {
+      $("statusText").textContent = text;
+      $("statusDot").style.background = `var(--${dotClass})`;
+    }
+
+    async function refreshHealth() {
+      try {
+        const r = await fetch("/health");
+        const d = await r.json();
+        $("kpiAssets").textContent = d.assets ?? "–";
+        $("kpiDocs").textContent = d.documents_jsonl_exists ? "✓" : "✗";
+        $("kpiIndex").textContent = d.text_index_exists ? "✓" : "✗";
+        if (d.model) llmModel = d.model;
+        setStatus(`${d.assets ?? 0} assets · index ${d.text_index_exists ? "ready" : "missing"} · ${llmModel || "no LLM"}`);
+      } catch (e) {
+        setStatus("backend unreachable", "err");
+      }
+    }
+
+    fileInput.addEventListener("change", () => {
+      pickedFiles = Array.from(fileInput.files);
+      fileList.innerHTML = pickedFiles.map((f) => `<div>📄 ${escapeHtml(f.name)} <span style="color:var(--muted)">(${Math.round(f.size/1024)} KB)</span></div>`).join("");
+      uploadBtn.disabled = pickedFiles.length === 0;
+    });
+
+    uploadBtn.addEventListener("click", async () => {
+      if (!pickedFiles.length) return;
+      uploadBtn.disabled = true;
+      const fd = new FormData();
+      for (const f of pickedFiles) fd.append("files", f, f.name);
+      fd.append("auto_index", autoIndex.checked ? "true" : "false");
+      try {
+        const r = await fetch("/upload", { method: "POST", body: fd });
+        const d = await r.json();
+        if (!r.ok) throw new Error(JSON.stringify(d));
+        activeTaskId = d.task_id;
+        taskPanel.style.display = "block";
+        taskStatusPill.textContent = "pending";
+        taskStatusPill.className = "pill pending";
+        taskBar.style.width = "0%";
+        taskDetail.textContent = `task ${d.task_id} · ${d.uploaded.length} file(s) · kind=${d.kind}`;
+        pickedFiles = [];
+        fileInput.value = "";
+        fileList.innerHTML = "";
+        await pollTask();
+      } catch (e) {
+        setStatus(`upload failed: ${e.message}`, "err");
+        uploadBtn.disabled = false;
+      }
+    });
+
+    refreshTaskBtn.addEventListener("click", pollTask);
+
+    async function pollTask() {
+      if (!activeTaskId) return;
+      try {
+        const r = await fetch(`/tasks/${activeTaskId}`);
+        const d = await r.json();
+        taskStatusPill.textContent = d.status;
+        taskStatusPill.className = `pill ${d.status}`;
+        taskBar.style.width = d.progress ? `${(d.progress * 100).toFixed(1)}%` : "0%";
+        const cur = d.current || "";
+        const skip = d.skipped ? `· skipped ${d.skipped}` : "";
+        const fail = d.failed ? `· failed ${d.failed}` : "";
+        taskDetail.textContent = `${cur} ${skip} ${fail}`.trim();
+        if (d.status === "running" || d.status === "pending") {
+          setTimeout(pollTask, 2000);
+        } else if (d.status === "done") {
+          setStatus(`task done · ${d.processed}/${d.total}`, "ok");
+          refreshHealth();
+        } else if (d.status === "failed") {
+          setStatus(`task failed: ${d.error || "unknown"}`, "err");
+        }
+        refreshTasksList();
+      } catch (e) {
+        setStatus(`poll failed: ${e.message}`, "err");
+      }
+    }
+
+    async function refreshTasksList() {
+      try {
+        const r = await fetch("/tasks");
+        const d = await r.json();
+        if (!d.tasks.length) {
+          tasksList.innerHTML = '<div class="empty">no tasks yet</div>';
+          return;
+        }
+        tasksList.innerHTML = d.tasks
+          .slice()
+          .reverse()
+          .map(
+            (t) => `
+            <div style="padding:4px 0;border-bottom:1px solid var(--border)">
+              <span class="pill ${t.status}">${t.status}</span>
+              <span style="margin-left:6px;font-size:11px">${t.task_id}</span>
+              <span style="float:right;color:var(--muted);font-size:11px">${t.kind}</span>
+              <div style="font-size:11px;color:var(--muted)">${escapeHtml((t.current || '').slice(0, 60))}</div>
+            </div>`,
+          )
+          .join("");
+      } catch (e) {
+        /* ignore */
+      }
+    }
+
+    function appendMessage(role, html) {
+      if (messages.querySelector(".empty")) messages.innerHTML = "";
+      const div = document.createElement("div");
+      div.className = `msg ${role}`;
+      div.innerHTML = html;
+      messages.appendChild(div);
+      messages.scrollTop = messages.scrollHeight;
+    }
+
+    async function askQuestion() {
+      const q = queryInput.value.trim();
+      if (!q) return;
+      queryInput.value = "";
+      askBtn.disabled = true;
+      const mode = document.querySelector('input[name="mode"]:checked').value;
+      appendMessage("user", `<div class="meta">you · ${mode}</div><pre>${escapeHtml(q)}</pre>`);
+
+      // Streamed assistant message: we mutate the <pre> as tokens arrive.
+      if (messages.querySelector(".empty")) messages.innerHTML = "";
+      const assistantDiv = document.createElement("div");
+      assistantDiv.className = "msg assistant";
+      assistantDiv.innerHTML =
+        `<div class="meta">assistant · ${mode}${llmModel ? " · " + escapeHtml(llmModel) : ""}</div>` +
+        `<pre class="ansText"></pre>` +
+        `<div class="sources ansSources"></div>`;
+      messages.appendChild(assistantDiv);
+      const ansText = assistantDiv.querySelector(".ansText");
+      const ansSources = assistantDiv.querySelector(".ansSources");
+      let answerBuf = "";
+
+      try {
+        const r = await fetch("/chat/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: q, mode, top_k: 5 }),
+        });
+        if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
+        const reader = r.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop();
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let event;
+            try { event = JSON.parse(trimmed); } catch { continue; }
+            if (event.event === "sources") {
+              ansSources.innerHTML = renderSources(event.sources || []);
+            } else if (event.event === "token") {
+              answerBuf += event.text || "";
+              ansText.textContent = answerBuf;
+              messages.scrollTop = messages.scrollHeight;
+            } else if (event.event === "error") {
+              ansText.textContent = `error: ${event.message || "unknown"}`;
+            }
+          }
+        }
+        if (!answerBuf) ansText.textContent = "(no answer)";
+      } catch (e) {
+        ansText.textContent = `error: ${e.message}`;
+      } finally {
+        askBtn.disabled = false;
+        queryInput.focus();
+      }
+    }
+
+    function renderSources(sources) {
+      if (!sources.length) return "";
+      const head = `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">SOURCES (${sources.length})</div>`;
+      const body = sources
+        .map(
+          (s, i) => `
+          <div class="source">
+            <div class="head">
+              <span class="score">#${i + 1}</span>
+              <span class="route">${escapeHtml(s.route || "")}</span>
+              <span style="color:var(--accent)">${escapeHtml(s.asset_id || "")}</span>
+              <span style="color:var(--muted)">·</span>
+              <span style="color:var(--muted)">score ${(s.score || 0).toFixed(3)}</span>
+            </div>
+            <div class="ev">${escapeHtml((s.evidence || "").slice(0, 240))}…</div>
+          </div>`,
+        )
+        .join("");
+      return `<div class="sources">${head}${body}</div>`;
+    }
+
+    askBtn.addEventListener("click", askQuestion);
+    queryInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        askQuestion();
+      }
+    });
+
+    // Bootstrap
+    refreshHealth();
+    refreshTasksList();
+    setInterval(refreshHealth, 15000);
+  </script>
+</body>
+</html>
