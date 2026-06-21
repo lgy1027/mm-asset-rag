@@ -80,7 +80,7 @@ def submit_paddleocr_vl_job(file_path: Path | str) -> str:
         "PADDLEOCR_VL_JOB_URL", "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
     )
     model = os.environ.get("PADDLEOCR_VL_MODEL", "PaddleOCR-VL-1.6")
-    timeout = float(os.environ.get("PADDLEOCR_VL_TIMEOUT", "300"))
+    timeout = float(os.environ.get("PADDLEOCR_VL_TIMEOUT", "900"))
 
     optional_payload = {
         "useDocOrientationClassify": env_bool(
@@ -134,7 +134,7 @@ def poll_paddleocr_vl_job(job_id: str) -> str:
     job_url = os.environ.get(
         "PADDLEOCR_VL_JOB_URL", "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
     )
-    timeout = float(os.environ.get("PADDLEOCR_VL_TIMEOUT", "300"))
+    timeout = float(os.environ.get("PADDLEOCR_VL_TIMEOUT", "900"))
     poll_interval = float(os.environ.get("PADDLEOCR_VL_POLL_INTERVAL", "5"))
     headers = {"Authorization": f"bearer {token}"}
     deadline = time.time() + timeout
