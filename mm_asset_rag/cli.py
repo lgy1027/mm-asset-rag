@@ -67,6 +67,23 @@ def command_index(args: argparse.Namespace) -> None:
     print(f"image_provider={image_provider}")
 
 
+def command_reindex(args: argparse.Namespace) -> None:
+    """Drop and rebuild the qdrant collections from documents.jsonl.
+
+    The default ``index`` command is incremental (skips already-indexed docs);
+    use ``reindex`` when you want a clean slate — e.g. after changing the
+    embedding model or fixing a corrupted collection.
+    """
+    load_env()
+    only = "text" if args.text_only else "image" if args.image_only else "both"
+    if only in ("text", "both"):
+        n, name = build_qdrant_text_index(force_recreate=True)
+        print(f"[reindex] text: {name}")
+    if only in ("image", "both"):
+        ni, ni_name = build_qdrant_image_index(force_recreate=True)
+        print(f"[reindex] image: {ni_name}")
+
+
 def print_hits(hits) -> None:
     rows = [asdict(hit) for hit in hits]
     safe_print(json.dumps(rows, ensure_ascii=False, indent=2))
@@ -132,8 +149,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parse_cmd.set_defaults(func=command_parse)
 
-    index_cmd = subparsers.add_parser("index", help="Build text and image indexes in Qdrant")
+    index_cmd = subparsers.add_parser(
+        "index",
+        help="Incrementally upsert text and image indexes in Qdrant (skips already-indexed docs)",
+    )
     index_cmd.set_defaults(func=command_index)
+
+    reindex_cmd = subparsers.add_parser(
+        "reindex",
+        help="Drop and rebuild qdrant collections from documents.jsonl (use after changing models)",
+    )
+    reindex_cmd.add_argument("--text-only", action="store_true")
+    reindex_cmd.add_argument("--image-only", action="store_true")
+    reindex_cmd.set_defaults(func=command_reindex)
 
     search_cmd = subparsers.add_parser("search", help="Search indexed assets")
     search_cmd.add_argument("query")

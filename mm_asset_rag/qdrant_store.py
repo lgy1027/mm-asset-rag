@@ -118,7 +118,7 @@ def _clean_stale_lock(qdrant_path: Path) -> None:
 
 
 def _recreate_text_collection(client: QdrantClient, name: str, vector_size: int) -> None:
-    """Create or replace the text collection with dense + BM25 sparse vectors."""
+    """Drop and recreate the text collection. Used by the explicit reindex path."""
     if client.collection_exists(name):
         client.delete_collection(name)
     client.create_collection(
@@ -134,7 +134,24 @@ def _recreate_text_collection(client: QdrantClient, name: str, vector_size: int)
     )
 
 
+def _ensure_text_collection(client: QdrantClient, name: str, vector_size: int) -> None:
+    """Create the text collection only if it doesn't exist (idempotent)."""
+    if not client.collection_exists(name):
+        client.create_collection(
+            collection_name=name,
+            vectors_config={
+                DENSE_VECTOR_NAME: models.VectorParams(
+                    size=vector_size, distance=models.Distance.COSINE
+                ),
+            },
+            sparse_vectors_config={
+                SPARSE_VECTOR_NAME: models.SparseVectorParams(),
+            },
+        )
+
+
 def _recreate_image_collection(client: QdrantClient, name: str, vector_size: int) -> None:
+    """Drop and recreate the image collection. Used by the explicit reindex path."""
     if client.collection_exists(name):
         client.delete_collection(name)
     client.create_collection(
@@ -145,72 +162,139 @@ def _recreate_image_collection(client: QdrantClient, name: str, vector_size: int
     )
 
 
+def _ensure_image_collection(client: QdrantClient, name: str, vector_size: int) -> None:
+    """Create the image collection only if it doesn't exist (idempotent)."""
+    if not client.collection_exists(name):
+        client.create_collection(
+            collection_name=name,
+            vectors_config=models.VectorParams(
+                size=vector_size, distance=models.Distance.COSINE
+            ),
+        )
+
+
 def stable_point_id(value: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
 
 
-def build_qdrant_text_index(batch_size: int | None = None) -> tuple[int, str]:
-    """Index text + BM25 sparse vectors for every document.
+def build_qdrant_text_index(
+    batch_size: int | None = None,
+    force_recreate: bool = False,
+    progress_cb=None,
+) -> tuple[int, str]:
+    """Incrementally upsert text + BM25 sparse vectors.
 
-    Each point carries a dense vector (qwen3 embedding) AND a BM25
-    sparse vector so a single query_points() can RRF-fuse both ranks.
+    Each point id is ``uuid5("text:{asset_id}:{page}:{idx}")`` so re-running
+    the index over the same ``documents.jsonl`` is a no-op for documents that
+    are already indexed — only newly added documents are embedded and written.
+
+    Args:
+        batch_size: override ``QDRANT_UPSERT_BATCH_SIZE`` (default 16).
+        force_recreate: drop the collection first (full rebuild). Use only
+            from the explicit ``reindex`` command.
+        progress_cb: optional ``callable(done: int, total: int, phase: str)``
+            invoked from the worker thread for finer-grained status reporting.
     """
     documents = read_documents()
-    embedder = EmbeddingProvider()
+    if not documents:
+        return 0, "qdrant:text:empty"
+
     batch_size = batch_size or max(1, int(os.environ.get("QDRANT_UPSERT_BATCH_SIZE", "16")))
+    embedder = EmbeddingProvider()
+
+    # One embedding call up front to learn the vector size (= collection name).
+    # On a warm cache this doc may already be in qdrant; we still need it.
     first_vector = embedder.embed_text(documents[0].text)
     client = get_qdrant_client()
     collection_name = text_collection(len(first_vector))
-    _recreate_text_collection(client, collection_name, len(first_vector))
 
-    points: list[models.PointStruct] = []
-    texts_buffer: list[str] = []
-    metas_buffer: list[dict] = []
-    ids_buffer: list[str] = []
+    if force_recreate:
+        _recreate_text_collection(client, collection_name, len(first_vector))
+    _ensure_text_collection(client, collection_name, len(first_vector))
+
+    inserted = 0
+    skipped = 0
+    pending: list[models.PointStruct] = []
 
     def _flush() -> None:
-        if not points:
+        nonlocal inserted
+        if not pending:
             return
-        client.upsert(collection_name=collection_name, points=points, wait=True)
-        points.clear()
-        texts_buffer.clear()
-        metas_buffer.clear()
-        ids_buffer.clear()
+        client.upsert(collection_name=collection_name, points=pending, wait=True)
+        inserted += len(pending)
+        pending.clear()
+
+    if progress_cb:
+        progress_cb(0, len(documents), "indexing")
 
     for offset in range(0, len(documents), batch_size):
         batch = documents[offset : offset + batch_size]
-        texts = [d.text for d in batch]
-        # dense vectors
-        if offset == 0:
-            dense_vectors = [first_vector] + embedder.embed_texts(texts[1:])
+        doc_keys = [
+            f"text:{doc.metadata.get('asset_id', '')}:{doc.metadata.get('page')}:{offset + i}"
+            for i, doc in enumerate(batch)
+        ]
+        point_ids = [stable_point_id(key) for key in doc_keys]
+
+        if force_recreate:
+            existing_set: set[str] = set()
         else:
-            dense_vectors = embedder.embed_texts(texts)
-        # BM25 sparse vectors (same batch)
+            existing = client.retrieve(
+                collection_name=collection_name,
+                ids=point_ids,
+                with_payload=False,
+                with_vectors=False,
+            )
+            existing_set = {str(p.id) for p in existing}
+
+        to_do = [i for i, pid in enumerate(point_ids) if pid not in existing_set]
+        skipped += len(batch) - len(to_do)
+        if not to_do:
+            if progress_cb:
+                progress_cb(offset + len(batch), len(documents), "skipping cached")
+            continue
+
+        texts = [batch[i].text for i in to_do]
+
+        # Reuse the probe embedding when offset==0 and doc 0 is in to_do.
+        dense_vectors: list[list[float]] = []
+        start = 0
+        if offset == 0 and 0 in to_do:
+            dense_vectors.append(first_vector)
+            start = 1
+        if start < len(texts):
+            dense_vectors.extend(embedder.embed_texts(texts[start:]))
+
         sparse_vectors = _embed_bm25(texts)
 
-        for (doc, dense_vec, sparse_vec), idx in zip(
-            zip(batch, dense_vectors, sparse_vectors),
-            range(offset, offset + len(batch)),
-        ):
-            payload = {**doc.metadata, "text": doc.text}
-            point_id = stable_point_id(
-                f"text:{doc.metadata.get('asset_id')}:{doc.metadata.get('page')}:{idx}"
-            )
-            points.append(
+        for j, i in enumerate(to_do):
+            payload = {**batch[i].metadata, "text": batch[i].text, "doc_key": doc_keys[i]}
+            pending.append(
                 models.PointStruct(
-                    id=point_id,
+                    id=point_ids[i],
                     vector={
-                        DENSE_VECTOR_NAME: dense_vec,
-                        SPARSE_VECTOR_NAME: sparse_vec,
+                        DENSE_VECTOR_NAME: dense_vectors[j],
+                        SPARSE_VECTOR_NAME: sparse_vectors[j],
                     },
                     payload=payload,
                 )
             )
         _flush()
-    return len(documents), f"qdrant:{collection_name}"
+        if progress_cb:
+            progress_cb(offset + len(batch), len(documents), f"indexed {inserted}")
+
+    return inserted, f"qdrant:{collection_name}:inserted={inserted}:skipped={skipped}"
 
 
-def build_qdrant_image_index() -> tuple[int, str]:
+def build_qdrant_image_index(
+    force_recreate: bool = False,
+    progress_cb=None,
+) -> tuple[int, str]:
+    """Incrementally upsert image embeddings.
+
+    Same shape as ``build_qdrant_text_index``: existing points are skipped, only
+    new images are embedded and written. ``progress_cb(done, total, phase)``
+    fires from the worker thread for status reporting.
+    """
     try:
         provider = ImageEmbeddingProvider()
     except ImageEmbeddingUnavailable as exc:
@@ -228,10 +312,38 @@ def build_qdrant_image_index() -> tuple[int, str]:
     first_vector = provider.embed_image(first_path)
     client = get_qdrant_client()
     collection_name = image_collection(len(first_vector))
-    _recreate_image_collection(client, collection_name, len(first_vector))
 
-    points = []
+    if force_recreate:
+        _recreate_image_collection(client, collection_name, len(first_vector))
+    _ensure_image_collection(client, collection_name, len(first_vector))
+
+    # Bulk-load existing point ids (one scroll pass).
+    existing_ids: set[str] = set()
+    if not force_recreate:
+        offset = None
+        while True:
+            pts, offset = client.scroll(
+                collection_name=collection_name,
+                limit=500,
+                offset=offset,
+                with_payload=False,
+                with_vectors=False,
+            )
+            existing_ids.update(str(p.id) for p in pts)
+            if offset is None:
+                break
+
+    points: list[models.PointStruct] = []
+    inserted = 0
+    skipped = 0
+    if progress_cb:
+        progress_cb(0, len(image_documents), "indexing images")
+
     for index, document in enumerate(image_documents):
+        point_id = stable_point_id(f"image:{document.metadata.get('asset_id')}")
+        if point_id in existing_ids:
+            skipped += 1
+            continue
         image_path = assets_dir / str(document.metadata["source_path"])
         try:
             vector = first_vector if index == 0 else provider.embed_image(image_path)
@@ -242,11 +354,16 @@ def build_qdrant_image_index() -> tuple[int, str]:
             )
             continue
         payload = {**document.metadata, "text": document.text}
-        point_id = stable_point_id(f"image:{document.metadata.get('asset_id')}")
         points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))
+
     if points:
         client.upsert(collection_name=collection_name, points=points, wait=True)
-    return len(points), f"qdrant:{collection_name}"
+        inserted = len(points)
+
+    if progress_cb:
+        progress_cb(len(image_documents), len(image_documents), f"images indexed {inserted}")
+
+    return inserted, f"qdrant:{collection_name}:inserted={inserted}:skipped={skipped}"
 
 
 def _hybrid_text_query(
