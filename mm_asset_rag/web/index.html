@@ -34,6 +34,8 @@
     .row > * { flex: 1; }
     .row > .shrink { flex: 0 0 auto; }
     label { display: block; font-size: 11px; color: var(--muted); margin: 6px 0 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+label.check { display: inline-flex; align-items: center; gap: 4px; margin: 0; text-transform: none; letter-spacing: 0; font-size: 12px; color: var(--fg); padding: 6px 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; }
+label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     input[type=text], input[type=file], select, textarea {
       width: 100%;
       background: var(--panel-2);
@@ -115,10 +117,25 @@
         <input type="file" id="fileInput" multiple
                accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp" />
         <div class="file-list" id="fileList"></div>
-        <div class="row" style="margin-top:10px">
-          <label style="display:flex;align-items:center;gap:6px;margin:0;text-transform:none;letter-spacing:0;font-size:12px;color:var(--fg)">
-            <input type="checkbox" id="autoIndex" checked style="width:auto;flex:0"> auto-index after parse
-          </label>
+        <div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">
+          <select id="pdfParser" title="PDF parser (also PDF_PARSER in .env)">
+            <option value="auto">parser: auto</option>
+            <option value="pymupdf">parser: pymupdf</option>
+            <option value="paddleocr_vl">parser: paddleocr_vl</option>
+          </select>
+          <select id="imageProvider" title="Image embedding provider (also IMAGE_PROVIDER in .env)">
+            <option value="lite">embed: lite</option>
+            <option value="sentence_transformers">embed: CLIP</option>
+          </select>
+          <label class="check"><input type="checkbox" id="enableOcr"> OCR</label>
+          <label class="check"><input type="checkbox" id="enableVlm"> VLM</label>
+          <label class="check"><input type="checkbox" id="autoIndex" checked> auto-index</label>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <span style="font-size:11px;color:var(--muted)">
+            defaults come from .env (PDF_PARSER / ENABLE_OCR / ENABLE_VLM / IMAGE_PROVIDER / AUTO_INDEX);
+            change here to override for this upload only.
+          </span>
           <button class="shrink" id="uploadBtn" disabled>Upload &amp; Parse</button>
         </div>
       </div>
@@ -218,7 +235,12 @@
       uploadBtn.disabled = true;
       const fd = new FormData();
       for (const f of pickedFiles) fd.append("files", f, f.name);
+      // Per-upload overrides; .env provides the default if a value is omitted.
       fd.append("auto_index", autoIndex.checked ? "true" : "false");
+      fd.append("pdf_parser", $("pdfParser").value);
+      fd.append("enable_ocr", $("enableOcr").checked ? "true" : "false");
+      fd.append("enable_vlm", $("enableVlm").checked ? "true" : "false");
+      fd.append("image_provider", $("imageProvider").value);
       try {
         const r = await fetch("/upload", { method: "POST", body: fd });
         const d = await r.json();
@@ -228,7 +250,9 @@
         taskStatusPill.textContent = "pending";
         taskStatusPill.className = "pill pending";
         taskBar.style.width = "0%";
-        taskDetail.textContent = `task ${d.task_id} · ${d.uploaded.length} file(s) · kind=${d.kind}`;
+        const opts = d.options || {};
+        const optSummary = `parser=${opts.pdf_parser} ocr=${opts.enable_ocr} vlm=${opts.enable_vlm} embed=${opts.image_provider} idx=${opts.auto_index}`;
+        taskDetail.textContent = `task ${d.task_id} · ${d.uploaded.length} file(s) · kind=${d.kind} · ${optSummary}`;
         pickedFiles = [];
         fileInput.value = "";
         fileList.innerHTML = "";
