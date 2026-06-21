@@ -29,16 +29,29 @@ def command_parse(args: argparse.Namespace) -> None:
     load_env()
     assets = load_assets(limit=args.limit)
     documents = []
+    failures: list[tuple[str, str]] = []  # (asset_id, error message)
     for asset in assets:
-        if asset.source_type == "pdf":
-            parsed = parse_pdf(asset, parser=args.pdf_parser)
-        elif asset.source_type == "image":
-            parsed = parse_image(asset, enable_ocr=args.ocr, enable_vlm=args.vlm)
-        else:
-            parsed = []
+        try:
+            if asset.source_type == "pdf":
+                parsed = parse_pdf(asset, parser=args.pdf_parser)
+            elif asset.source_type == "image":
+                parsed = parse_image(asset, enable_ocr=args.ocr, enable_vlm=args.vlm)
+            else:
+                parsed = []
+        except Exception as exc:
+            print(
+                f"FAILED asset={asset.asset_id} type={asset.source_type} "
+                f"error={type(exc).__name__}: {exc}"
+            )
+            failures.append((asset.asset_id, str(exc)))
+            continue
         documents.extend(parsed)
         print(f"parsed asset={asset.asset_id} type={asset.source_type} documents={len(parsed)}")
     write_documents(documents)
+    if failures:
+        print(f"WARNING: {len(failures)} asset(s) failed to parse:")
+        for asset_id, msg in failures:
+            print(f"  - {asset_id}: {msg}")
     print(f"documents={len(documents)}")
     print(f"documents_jsonl={get_documents_jsonl()}")
 
