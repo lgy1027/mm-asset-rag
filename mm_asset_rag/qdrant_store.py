@@ -87,7 +87,34 @@ def get_qdrant_client() -> QdrantClient:
     api_key = os.environ.get("QDRANT_API_KEY")
     if url:
         return QdrantClient(url=url, api_key=api_key)
-    return QdrantClient(path=str(get_indexes_dir() / "qdrant"))
+    qdrant_path = get_indexes_dir() / "qdrant"
+    qdrant_path.mkdir(parents=True, exist_ok=True)
+    _clean_stale_lock(qdrant_path)
+    return QdrantClient(path=str(qdrant_path))
+
+
+def _clean_stale_lock(qdrant_path: Path) -> None:
+    """Remove a stale ``.lock`` from a previous crashed session.
+
+    qdrant-client's local mode writes ``.lock`` on open and removes it on
+    ``close()``. If the process is killed before close() runs (SIGKILL, OOM,
+    abrupt interpreter exit), the .lock is left behind and the next startup
+    fails with ``Storage folder X is already accessed by another instance of
+    Qdrant client``.
+
+    The local client does not check whether the .lock corresponds to a live
+    process — it only checks file existence — so a stale lock from any source
+    will block startup. We simply unlink it before opening the new client.
+    Safe for single-process use; switch to ``QDRANT_URL`` (server mode) for
+    concurrent access.
+    """
+    lock = qdrant_path / ".lock"
+    if lock.exists():
+        try:
+            lock.unlink()
+            print(f"[qdrant] removed stale .lock from previous session: {lock.name}")
+        except OSError as exc:
+            print(f"[qdrant] warning: could not unlink {lock}: {exc}")
 
 
 def _recreate_text_collection(client: QdrantClient, name: str, vector_size: int) -> None:
