@@ -35,11 +35,13 @@ from pydantic import BaseModel, Field
 
 from .answer import answer_question, stream_answer_chunks
 from .assets import load_assets
-from .cli import command_index, command_parse
+from .cli import command_parse
 from .config import load_env
 from .evaluation import run_eval
 from .paths import get_assets_dir, get_documents_jsonl, get_indexes_dir, get_text_index_dir
 from .qdrant_store import (
+    build_qdrant_image_index,
+    build_qdrant_text_index,
     get_qdrant_client,
     qdrant_image_to_image_search,
     qdrant_text_search,
@@ -50,6 +52,9 @@ from .retrieval import hybrid_search
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup: restore task history from disk. Tasks still marked 'running'
+    # when the previous process exited get reclassified as 'interrupted'.
+    _load_tasks_from_disk()
     yield
     # Graceful shutdown: close the qdrant client so it removes its .lock
     # file. If the process is killed before this runs, the next startup will
@@ -91,11 +96,78 @@ _TASKS: dict[str, TaskRecord] = {}
 _TASKS_LOCK = threading.Lock()
 
 
+def _tasks_log_path() -> Path:
+    """Per-task history lives at ``$MM_ASSET_RAG_HOME/tasks.jsonl``.
+
+    Each line is a full snapshot of the task at the time of the patch; the
+    loader takes the last line per ``task_id`` and treats unfinished tasks as
+    interrupted (see ``_load_tasks_from_disk``).
+    """
+    from .paths import get_data_dir
+    return get_data_dir() / "tasks.jsonl"
+
+
+def _persist(rec: TaskRecord) -> None:
+    """Append the current snapshot of ``rec`` to the on-disk log."""
+    path = _tasks_log_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(asdict(rec), ensure_ascii=False) + "\n")
+    except OSError as exc:
+        # Persistence is best-effort: if the log can't be written, the in-memory
+        # state still drives /tasks/{id}. Don't crash the worker thread.
+        print(f"[tasks] warning: could not persist {rec.task_id}: {exc}")
+
+
+def _load_tasks_from_disk() -> None:
+    """Rebuild ``_TASKS`` from ``tasks.jsonl`` on startup.
+
+    Any task still in ``running`` state when the previous process exited is
+    reclassified as ``interrupted`` so users can tell it didn't actually
+    finish. The interrupted marker is appended back to the log so the change
+    is durable.
+    """
+    path = _tasks_log_path()
+    if not path.exists():
+        return
+    latest: dict[str, dict[str, object]] = {}
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            task_id = obj.get("task_id")
+            if isinstance(task_id, str) and task_id:
+                latest[task_id] = obj
+
+    interrupted = 0
+    with _TASKS_LOCK:
+        for task_id, obj in latest.items():
+            if obj.get("finished_at") is None and obj.get("status") == "running":
+                obj["status"] = "interrupted"
+                obj["current"] = (
+                    f"interrupted (previous process exited): {obj.get('current', '')}"
+                ).strip(": ")
+                obj["finished_at"] = time.time()
+                obj["error"] = obj.get("error") or "process exited before task completed"
+                interrupted += 1
+                _persist(TaskRecord(**obj))  # type: ignore[arg-type]
+            _TASKS[task_id] = TaskRecord(**obj)  # type: ignore[arg-type]
+    if latest:
+        print(f"[tasks] loaded {len(latest)} task(s) from disk; {interrupted} marked interrupted")
+
+
 def _new_task(kind: str, total: int, uploaded: list[str] | None = None) -> TaskRecord:
     rec = TaskRecord(task_id=uuid.uuid4().hex[:12], kind=kind, total=total,
                      uploaded_files=uploaded or [])
     with _TASKS_LOCK:
         _TASKS[rec.task_id] = rec
+    _persist(rec)
     return rec
 
 
@@ -103,6 +175,7 @@ def _patch(rec: TaskRecord, **fields: Any) -> None:
     with _TASKS_LOCK:
         for k, v in fields.items():
             setattr(rec, k, v)
+    _persist(rec)
 
 
 @dataclass
@@ -220,29 +293,61 @@ def _run_parse_task(rec: TaskRecord, options: ParseOptions) -> None:
 
 
 def _run_ingest_task(rec: TaskRecord, options: ParseOptions) -> None:
-    """Parse + index in sequence on a background thread."""
-    _run_parse_task(rec, options)
+    """Parse + index in sequence on a background thread.
+
+    Catches ``BaseException`` (not just ``Exception``) so SystemExit, KeyboardInterrupt,
+    and any other termination signal all flow into the task record. ``/tasks/{id}``
+    then reflects the real failure mode instead of silently leaving the task at
+    ``done`` with a stale ``current`` string.
+    """
+    _patch(rec, status="running", current="starting")
+    try:
+        _run_parse_task(rec, options)
+    except BaseException as exc:
+        _patch(
+            rec,
+            status="failed",
+            current=f"parse crashed: {type(exc).__name__}: {exc}",
+            error=f"{type(exc).__name__}: {exc}",
+            finished_at=time.time(),
+        )
+        print(f"[task {rec.task_id}] parse crashed: {exc!r}")
+        return
+
     if rec.status == "failed":
         _patch(rec, finished_at=time.time())
         return
-    parse_status = rec.status
-    _patch(rec, current="building vector index")
-    try:
-        command_index(
-            argparse.Namespace(backend="qdrant", image_provider=options.image_provider)
-        )
-        _patch(rec, current="index built", status=parse_status, finished_at=time.time())
-    except SystemExit:
-        # command_index calls parser.exit on missing args; treat as success.
-        _patch(rec, current="index built", status=parse_status, finished_at=time.time())
-    except Exception as exc:  # noqa: BLE001
+    parse_status = rec.status  # "done" or "partial"
+
+    def _progress(done: int, total: int, phase: str) -> None:
+        # Mirror the parse-time progress fields so the UI progress bar works
+        # consistently across parse and index phases.
         _patch(
             rec,
-            current=f"index failed: {exc}",
-            error=str(exc),
+            processed=done,
+            total=total,
+            current=f"indexing: {phase}",
+        )
+
+    try:
+        text_n, text_name = build_qdrant_text_index(progress_cb=_progress)
+        _patch(rec, current=f"text indexed · {text_name}")
+        image_n, image_name = build_qdrant_image_index(progress_cb=_progress)
+        _patch(
+            rec,
+            current=f"index built · text={text_n} image={image_n}",
+            status=parse_status,
+            finished_at=time.time(),
+        )
+    except BaseException as exc:
+        _patch(
+            rec,
+            current=f"index crashed: {type(exc).__name__}: {exc}",
+            error=f"{type(exc).__name__}: {exc}",
             status="failed",
             finished_at=time.time(),
         )
+        print(f"[task {rec.task_id}] index crashed: {exc!r}")
 
 
 # ─── Static web UI ────────────────────────────────────────────────────────
