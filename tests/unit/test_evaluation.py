@@ -13,11 +13,11 @@ from mm_asset_rag.schema import SearchHit
 def _fake_hybrid(query: str, **kwargs):
     """Return a single hit whose asset_id derives from the query string."""
     if "retrieval augmented generation" in query:
-        asset_id = "pdf_rag"
+        asset_id = "retrieval_augmented_generation"
     elif "CLIP" in query:
-        asset_id = "pdf_clip"
+        asset_id = "clip"
     elif "OCR" in query or "版面" in query:
-        asset_id = "pdf_layoutlm"
+        asset_id = "layoutlm"
     else:
         asset_id = "other"
     return [
