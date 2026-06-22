@@ -42,6 +42,13 @@ SPARSE_VECTOR_NAME = "bm25"
 HYBRID_PREFETCH_LIMIT = int(os.environ.get("QDRANT_HYBRID_PREFETCH_LIMIT", "20"))
 
 
+# Module-level cache for the active collection names. Replaces
+# ``os.environ["QDRANT_ACTIVE_TEXT_COLLECTION"]`` side effects which
+# raced across threads and leaked into child processes.
+_ACTIVE_TEXT_COLLECTION: str | None = None
+_ACTIVE_IMAGE_COLLECTION: str | None = None
+
+
 @lru_cache(maxsize=1)
 def _bm25_embedder() -> SparseTextEmbedding:
     """Lazily load the BM25 sparse encoder (cached for the process lifetime).
@@ -68,18 +75,40 @@ def _embed_bm25(texts: list[str]) -> list[models.SparseVector]:
 
 
 def text_collection(vector_size: int | None = None) -> str:
+    """Resolve the active text collection name.
+
+    Without ``vector_size`` returns whatever was last set via
+    ``text_collection(2560)`` (the ``QDRANT_ACTIVE_TEXT_COLLECTION``
+    env-var, if set, otherwise the base name). With ``vector_size``,
+    sets the active collection to ``f"{base}_{vector_size}d"`` and
+    returns it.
+
+    The "active collection" is cached in module state instead of
+    ``os.environ`` so concurrent threads don't race on a process-wide
+    variable, and tests can reset it without touching the real
+    environment.
+    """
+    global _ACTIVE_TEXT_COLLECTION
     if vector_size is None:
-        return os.environ.get("QDRANT_ACTIVE_TEXT_COLLECTION", TEXT_COLLECTION_BASE)
+        if _ACTIVE_TEXT_COLLECTION is not None:
+            return _ACTIVE_TEXT_COLLECTION
+        env = os.environ.get("QDRANT_ACTIVE_TEXT_COLLECTION")
+        return env or TEXT_COLLECTION_BASE
     name = f"{TEXT_COLLECTION_BASE}_{vector_size}d"
-    os.environ["QDRANT_ACTIVE_TEXT_COLLECTION"] = name
+    _ACTIVE_TEXT_COLLECTION = name
     return name
 
 
 def image_collection(vector_size: int | None = None) -> str:
+    """Same contract as :func:`text_collection`, for the image collection."""
+    global _ACTIVE_IMAGE_COLLECTION
     if vector_size is None:
-        return os.environ.get("QDRANT_ACTIVE_IMAGE_COLLECTION", IMAGE_COLLECTION_BASE)
+        if _ACTIVE_IMAGE_COLLECTION is not None:
+            return _ACTIVE_IMAGE_COLLECTION
+        env = os.environ.get("QDRANT_ACTIVE_IMAGE_COLLECTION")
+        return env or IMAGE_COLLECTION_BASE
     name = f"{IMAGE_COLLECTION_BASE}_{vector_size}d"
-    os.environ["QDRANT_ACTIVE_IMAGE_COLLECTION"] = name
+    _ACTIVE_IMAGE_COLLECTION = name
     return name
 
 
