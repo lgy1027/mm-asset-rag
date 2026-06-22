@@ -221,7 +221,7 @@ def build_qdrant_text_index(
 
     # One embedding call up front to learn the vector size (= collection name).
     # On a warm cache this doc may already be in qdrant; we still need it.
-    first_vector = embedder.embed_text(documents[0].text)
+    first_vector = embedder.embed(documents[0].text)
     client = get_qdrant_client()
     collection_name = text_collection(len(first_vector))
 
@@ -279,7 +279,7 @@ def build_qdrant_text_index(
             dense_vectors.append(first_vector)
             start = 1
         if start < len(texts):
-            dense_vectors.extend(embedder.embed_texts(texts[start:]))
+            dense_vectors.extend(embedder.embed_batch(texts[start:]))
 
         sparse_vectors = _embed_bm25(texts)
 
@@ -419,7 +419,7 @@ def _hybrid_text_query(
 def qdrant_text_search(query: str, top_k: int = 5) -> list[SearchHit]:
     embedder = EmbeddingProvider()
     client = get_qdrant_client()
-    dense_query = embedder.embed_text(query)
+    dense_query = embedder.embed(query)
     sparse_queries = _embed_bm25([query])
     sparse_query = sparse_queries[0]
 
