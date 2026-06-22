@@ -24,7 +24,6 @@ import fitz
 import requests
 
 from ..assets import Asset
-from ..config import env_bool
 from ..paths import get_parsed_dir
 from ..schema import ParsedDocument
 
@@ -82,12 +81,13 @@ def submit_paddleocr_vl_job(file_path: Path | str) -> str:
     model = os.environ.get("PADDLEOCR_VL_MODEL", "PaddleOCR-VL-1.6")
     timeout = float(os.environ.get("PADDLEOCR_VL_TIMEOUT", "900"))
 
+    from ..settings import get_settings
+
+    settings = get_settings()
     optional_payload = {
-        "useDocOrientationClassify": env_bool(
-            "PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY", False
-        ),
-        "useDocUnwarping": env_bool("PADDLEOCR_VL_USE_DOC_UNWARPING", False),
-        "useChartRecognition": env_bool("PADDLEOCR_VL_USE_CHART_RECOGNITION", False),
+        "useDocOrientationClassify": settings.paddleocr_vl_use_doc_orientation_classify,
+        "useDocUnwarping": settings.paddleocr_vl_use_doc_unwarping,
+        "useChartRecognition": settings.paddleocr_vl_use_chart_recognition,
     }
 
     headers = {"Authorization": f"bearer {token}"}
