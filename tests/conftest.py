@@ -70,7 +70,8 @@ def fixed_vector(monkeypatch) -> None:
     Lets the merge / normalize logic in ``retrieval`` be exercised without
     hitting a real embedding backend.
     """
-    import mm_asset_rag.providers as providers
+    import mm_asset_rag.embedders.text_embedder as text_emb
+    import mm_asset_rag.embedders.image_embedder as image_emb
 
     def _text(self, text: str) -> list[float]:
         digest = sum(ord(c) for c in text) % 100
@@ -79,11 +80,17 @@ def fixed_vector(monkeypatch) -> None:
     def _image(self, _path: Path) -> list[float]:
         return [0.4, 0.5, 0.6, 0.7]
 
-    monkeypatch.setattr(providers.EmbeddingProvider, "embed_text", _text)
     monkeypatch.setattr(
-        providers.EmbeddingProvider,
-        "embed_texts",
-        lambda self, texts: [_text(self, t) for t in texts],
+        text_emb.TextEmbedder,
+        "embed",
+        lambda self, content: _text(self, str(content)),
     )
-    monkeypatch.setattr(providers.ImageEmbeddingProvider, "embed_text", _text)
-    monkeypatch.setattr(providers.ImageEmbeddingProvider, "embed_image", _image)
+    monkeypatch.setattr(
+        text_emb.TextEmbedder,
+        "embed_batch",
+        lambda self, contents: [_text(self, str(c)) for c in contents],
+    )
+    monkeypatch.setattr(
+        image_emb.ImageEmbedder, "embed_text", _text
+    )  # ImageEmbedder keeps embed_text / embed_image methods
+    monkeypatch.setattr(image_emb.ImageEmbedder, "embed_image", _image)
