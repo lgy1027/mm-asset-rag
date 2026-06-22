@@ -30,15 +30,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .backends.qdrant_backend import (
-    build_qdrant_image_index,
-    build_qdrant_text_index,
-)
 from .config import load_env
 from .document_store import write_documents
 from .paths import get_data_dir, get_documents_jsonl
 from .parsers.image_parser import parse_image
 from .parsers.pdf_parser import parse_pdf
+from .registry import get_backend
 from .settings import Settings, get_settings
 
 
@@ -119,12 +116,13 @@ class IngestService:
 
     def reindex(self, text_only: bool = False, image_only: bool = False) -> tuple[str, ...]:
         """Force-recreate Qdrant collections and re-upsert from documents.jsonl."""
+        backend = get_backend("qdrant")
         results = []
         if not image_only:
-            n, name = build_qdrant_text_index(force_recreate=True)
+            n, name = backend.upsert_text(force_recreate=True)
             results.append(f"text: {name}")
         if not text_only:
-            ni, ni_name = build_qdrant_image_index(force_recreate=True)
+            ni, ni_name = backend.upsert_image(force_recreate=True)
             results.append(f"image: {ni_name}")
         return tuple(results)
 
@@ -357,9 +355,10 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
         )
 
     try:
-        text_n, text_name = build_qdrant_text_index(progress_cb=_progress)
+        backend = get_backend("qdrant")
+        text_n, text_name = backend.upsert_text(progress_cb=_progress)
         service._patch(rec, current=f"text indexed · {text_name}")
-        image_n, image_name = build_qdrant_image_index(progress_cb=_progress)
+        image_n, image_name = backend.upsert_image(progress_cb=_progress)
         service._patch(
             rec,
             current=f"index built · text={text_n} image={image_n}",
