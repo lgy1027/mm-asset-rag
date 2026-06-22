@@ -15,16 +15,11 @@ GET  /static/{path}                other static assets (none today, but reserved
 
 from __future__ import annotations
 
-import argparse
-import asyncio
 import json
 import os
 import shutil
-import threading
 import time
-import uuid
 from contextlib import asynccontextmanager
-from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -35,26 +30,24 @@ from pydantic import BaseModel, Field
 
 from .answer import answer_question, stream_answer_chunks
 from .assets import load_assets
-from .cli import command_parse
 from .config import load_env
 from .evaluation import run_eval
 from .paths import get_assets_dir, get_documents_jsonl, get_indexes_dir, get_text_index_dir
 from .qdrant_store import (
-    build_qdrant_image_index,
-    build_qdrant_text_index,
     get_qdrant_client,
     qdrant_image_to_image_search,
     qdrant_text_search,
     qdrant_text_to_image_search,
 )
 from .retrieval import hybrid_search
+from .service import IngestService, ParseOptions, get_service
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: restore task history from disk. Tasks still marked 'running'
     # when the previous process exited get reclassified as 'interrupted'.
-    _load_tasks_from_disk()
+    get_service().load_history()
     yield
     # Graceful shutdown: close the qdrant client so it removes its .lock
     # file. If the process is killed before this runs, the next startup will
@@ -73,281 +66,12 @@ app = FastAPI(
 )
 
 
-# ─── Background task bookkeeping ──────────────────────────────────────────
+# ─── Service layer (task scheduling + history) ─────────────────────────
+#
+# All background work, persistence, and task queries live in
+# ``mm_asset_rag.service``. The FastAPI app stays a thin route layer.
 
-
-@dataclass
-class TaskRecord:
-    task_id: str
-    kind: str  # "parse" or "ingest" (parse + index)
-    status: str = "pending"  # pending | running | done | failed
-    started_at: float = field(default_factory=time.time)
-    finished_at: float | None = None
-    total: int = 0
-    processed: int = 0
-    skipped: int = 0
-    failed: int = 0
-    current: str = ""
-    error: str | None = None
-    uploaded_files: list[str] = field(default_factory=list)
-
-
-_TASKS: dict[str, TaskRecord] = {}
-_TASKS_LOCK = threading.Lock()
-
-
-def _tasks_log_path() -> Path:
-    """Per-task history lives at ``$MM_ASSET_RAG_HOME/tasks.jsonl``.
-
-    Each line is a full snapshot of the task at the time of the patch; the
-    loader takes the last line per ``task_id`` and treats unfinished tasks as
-    interrupted (see ``_load_tasks_from_disk``).
-    """
-    from .paths import get_data_dir
-    return get_data_dir() / "tasks.jsonl"
-
-
-def _persist(rec: TaskRecord) -> None:
-    """Append the current snapshot of ``rec`` to the on-disk log."""
-    path = _tasks_log_path()
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(asdict(rec), ensure_ascii=False) + "\n")
-    except OSError as exc:
-        # Persistence is best-effort: if the log can't be written, the in-memory
-        # state still drives /tasks/{id}. Don't crash the worker thread.
-        print(f"[tasks] warning: could not persist {rec.task_id}: {exc}")
-
-
-def _load_tasks_from_disk() -> None:
-    """Rebuild ``_TASKS`` from ``tasks.jsonl`` on startup.
-
-    Any task still in ``running`` state when the previous process exited is
-    reclassified as ``interrupted`` so users can tell it didn't actually
-    finish. The interrupted marker is appended back to the log so the change
-    is durable.
-    """
-    path = _tasks_log_path()
-    if not path.exists():
-        return
-    latest: dict[str, dict[str, object]] = {}
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            task_id = obj.get("task_id")
-            if isinstance(task_id, str) and task_id:
-                latest[task_id] = obj
-
-    interrupted = 0
-    with _TASKS_LOCK:
-        for task_id, obj in latest.items():
-            if obj.get("finished_at") is None and obj.get("status") == "running":
-                obj["status"] = "interrupted"
-                obj["current"] = (
-                    f"interrupted (previous process exited): {obj.get('current', '')}"
-                ).strip(": ")
-                obj["finished_at"] = time.time()
-                obj["error"] = obj.get("error") or "process exited before task completed"
-                interrupted += 1
-                _persist(TaskRecord(**obj))  # type: ignore[arg-type]
-            _TASKS[task_id] = TaskRecord(**obj)  # type: ignore[arg-type]
-    if latest:
-        print(f"[tasks] loaded {len(latest)} task(s) from disk; {interrupted} marked interrupted")
-
-
-def _new_task(kind: str, total: int, uploaded: list[str] | None = None) -> TaskRecord:
-    rec = TaskRecord(task_id=uuid.uuid4().hex[:12], kind=kind, total=total,
-                     uploaded_files=uploaded or [])
-    with _TASKS_LOCK:
-        _TASKS[rec.task_id] = rec
-    _persist(rec)
-    return rec
-
-
-def _patch(rec: TaskRecord, **fields: Any) -> None:
-    with _TASKS_LOCK:
-        for k, v in fields.items():
-            setattr(rec, k, v)
-    _persist(rec)
-
-
-@dataclass
-class ParseOptions:
-    """Per-task parse configuration. Comes from the ``/upload`` form."""
-
-    pdf_parser: str = "auto"
-    enable_ocr: bool = False
-    enable_vlm: bool = False
-    image_provider: str = "lite"
-    only_uploaded: bool = False
-    uploaded_files: list[str] = field(default_factory=list)  # relative to assets_dir
-
-
-def _run_parse_task(rec: TaskRecord, options: ParseOptions) -> None:
-    """Run mmrag parse in a worker thread, updating rec as it progresses.
-
-    When ``options.only_uploaded`` is True, only the files in
-    ``options.uploaded_files`` are parsed (manifest is bypassed). Otherwise the
-    full ``asset_manifest.json`` is loaded.
-    """
-    load_env()
-    from .image_parser import parse_image
-    from .pdf_parser import parse_pdf
-    from .paths import get_parsed_dir
-
-    if options.only_uploaded:
-        # Construct ephemeral Asset objects for the just-uploaded files; no
-        # manifest lookup needed and the rest of the catalog stays untouched.
-        from .assets import Asset
-
-        assets_dir = get_assets_dir()
-        assets: list[Asset] = []
-        for rel in options.uploaded_files:
-            full = assets_dir / rel
-            if not full.exists():
-                continue
-            source_type = "pdf" if full.suffix.lower() == ".pdf" else "image"
-            assets.append(
-                Asset(
-                    asset_id=full.stem,
-                    title=full.name,
-                    source_type=source_type,
-                    relative_path=rel,
-                    source_url="",
-                    tags=[],
-                    asset_dir=assets_dir,
-                )
-            )
-    else:
-        _patch(rec, current="loading assets")
-        assets = load_assets()
-
-    if not assets:
-        _patch(
-            rec,
-            status="done",
-            current="no assets to parse",
-            finished_at=time.time(),
-        )
-        return
-
-    _patch(rec, total=len(assets), current=f"parsing {len(assets)} asset(s)")
-
-    failed = 0
-    skipped = 0
-    parsed = 0
-    target = get_documents_jsonl()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    for i, asset in enumerate(assets, start=1):
-        try:
-            # Cache hit: skip if raw.jsonl already exists.
-            raw_path = get_parsed_dir() / asset.asset_id / "raw.jsonl"
-            if raw_path.exists() and raw_path.stat().st_size > 0:
-                skipped += 1
-                _patch(rec, processed=i, current=f"skip cached: {asset.asset_id}")
-                continue
-            try:
-                if asset.source_type == "pdf":
-                    docs = parse_pdf(asset, parser=options.pdf_parser)
-                elif asset.source_type == "image":
-                    docs = parse_image(
-                        asset,
-                        enable_ocr=options.enable_ocr,
-                        enable_vlm=options.enable_vlm,
-                    )
-                else:
-                    docs = []
-            except Exception as exc:
-                failed += 1
-                print(f"parse task failed for {asset.asset_id}: {exc}")
-                _patch(rec, processed=i, current=f"error {asset.asset_id}: {exc}")
-                continue
-            # Append so progress is visible and survives restarts.
-            with target.open("a", encoding="utf-8") as f:
-                for d in docs:
-                    f.write(json.dumps(d.to_json(), ensure_ascii=False) + "\n")
-            parsed += 1
-            _patch(
-                rec,
-                processed=i,
-                current=f"parsed {asset.asset_id} ({len(docs)} doc)",
-            )
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            _patch(rec, processed=i, current=f"error {asset.asset_id}: {exc}")
-
-    status = "done" if failed == 0 and skipped + parsed == len(assets) else "partial"
-    _patch(
-        rec,
-        status=status,
-        finished_at=time.time(),
-        current=f"parse {status}: parsed={parsed} skipped={skipped} failed={failed}",
-    )
-
-
-def _run_ingest_task(rec: TaskRecord, options: ParseOptions) -> None:
-    """Parse + index in sequence on a background thread.
-
-    Catches ``BaseException`` (not just ``Exception``) so SystemExit, KeyboardInterrupt,
-    and any other termination signal all flow into the task record. ``/tasks/{id}``
-    then reflects the real failure mode instead of silently leaving the task at
-    ``done`` with a stale ``current`` string.
-    """
-    _patch(rec, status="running", current="starting")
-    try:
-        _run_parse_task(rec, options)
-    except BaseException as exc:
-        _patch(
-            rec,
-            status="failed",
-            current=f"parse crashed: {type(exc).__name__}: {exc}",
-            error=f"{type(exc).__name__}: {exc}",
-            finished_at=time.time(),
-        )
-        print(f"[task {rec.task_id}] parse crashed: {exc!r}")
-        return
-
-    if rec.status == "failed":
-        _patch(rec, finished_at=time.time())
-        return
-    parse_status = rec.status  # "done" or "partial"
-
-    def _progress(done: int, total: int, phase: str) -> None:
-        # Mirror the parse-time progress fields so the UI progress bar works
-        # consistently across parse and index phases.
-        _patch(
-            rec,
-            processed=done,
-            total=total,
-            current=f"indexing: {phase}",
-        )
-
-    try:
-        text_n, text_name = build_qdrant_text_index(progress_cb=_progress)
-        _patch(rec, current=f"text indexed · {text_name}")
-        image_n, image_name = build_qdrant_image_index(progress_cb=_progress)
-        _patch(
-            rec,
-            current=f"index built · text={text_n} image={image_n}",
-            status=parse_status,
-            finished_at=time.time(),
-        )
-    except BaseException as exc:
-        _patch(
-            rec,
-            current=f"index crashed: {type(exc).__name__}: {exc}",
-            error=f"{type(exc).__name__}: {exc}",
-            status="failed",
-            finished_at=time.time(),
-        )
-        print(f"[task {rec.task_id}] index crashed: {exc!r}")
+from .service import IngestService, ParseOptions, TaskRecord, get_service  # noqa: E402, F401
 
 
 # ─── Static web UI ────────────────────────────────────────────────────────
@@ -568,19 +292,14 @@ async def upload(
         enable_ocr=enable_ocr,
         enable_vlm=enable_vlm,
         image_provider=image_provider,
-        only_uploaded=True,
-        uploaded_files=saved,
     )
 
-    kind = "ingest" if auto_index else "parse"
-    rec = _new_task(kind=kind, total=len(saved), uploaded=saved)
-    target_fn = _run_ingest_task if auto_index else _run_parse_task
-    threading.Thread(
-        target=target_fn,
-        args=(rec, options),
-        name=f"mmrag-{kind}-{rec.task_id}",
-        daemon=True,
-    ).start()
+    service = get_service()
+    if auto_index:
+        rec = service.ingest_uploaded(saved, options)
+    else:
+        rec = service.parse_uploaded(saved, options)
+    kind = rec.kind
     return {
         "task_id": rec.task_id,
         "kind": kind,
@@ -598,8 +317,9 @@ async def upload(
 
 @app.get("/tasks/{task_id}")
 def get_task(task_id: str) -> dict[str, object]:
-    with _TASKS_LOCK:
-        rec = _TASKS.get(task_id)
+    from dataclasses import asdict
+
+    rec = get_service().get_task(task_id)
     if not rec:
         raise HTTPException(status_code=404, detail=f"unknown task {task_id}")
     payload = asdict(rec)
@@ -615,8 +335,9 @@ def get_task(task_id: str) -> dict[str, object]:
 
 @app.get("/tasks")
 def list_tasks() -> dict[str, object]:
-    with _TASKS_LOCK:
-        return {"tasks": [asdict(t) for t in _TASKS.values()]}
+    from dataclasses import asdict
+
+    return {"tasks": [asdict(t) for t in get_service().list_tasks()]}
 
 
 # ─── Static UI ───────────────────────────────────────────────────────────

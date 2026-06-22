@@ -1,70 +1,77 @@
-"""Command-line interface for mm-asset-rag."""
+"""Command-line interface for mm-asset-rag.
+
+The CLI is intentionally a thin wrapper around the same
+:class:`~mm_asset_rag.service.IngestService` the FastAPI app uses, so the
+parse / index pipeline only lives in one place.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 
 from .answer import answer_json
-from .assets import load_assets
 from .config import load_env
-from .document_store import write_documents
 from .evaluation import run_eval, write_eval_report
-from .image_parser import parse_image
-from .paths import get_documents_jsonl, get_text_index_dir
-from .pdf_parser import parse_pdf
+from .paths import get_data_dir, get_documents_jsonl, get_text_index_dir
 from .qdrant_store import (
-    build_qdrant_image_index,
-    build_qdrant_text_index,
     qdrant_image_to_image_search,
     qdrant_text_search,
     qdrant_text_to_image_search,
 )
 from .retrieval import hybrid_search
+from .service import ParseOptions, get_service
+
+
+def _wait_for_task(task_id: str, poll_interval: float = 1.0) -> None:
+    """Block until ``task_id`` finishes; print progress to stdout."""
+    service = get_service()
+    last_line = ""
+    while True:
+        rec = service.get_task(task_id)
+        if rec is None:
+            print(f"task {task_id} not found")
+            return
+        cur = rec.current or "(starting)"
+        if cur != last_line:
+            print(f"[task {rec.task_id}] {rec.status} · {cur}", flush=True)
+            last_line = cur
+        if rec.status in ("done", "partial", "failed", "interrupted"):
+            return
+        time.sleep(poll_interval)
 
 
 def command_parse(args: argparse.Namespace) -> None:
+    """Parse every asset in the manifest, synchronously.
+
+    Delegates to :class:`IngestService.parse_manifest` (which uses the same
+    worker-thread scaffold the API uses) and waits for the background
+    thread to finish so the CLI exit code reflects parse failures.
+    """
     load_env()
-    assets = load_assets(limit=args.limit)
-    documents = []
-    failures: list[tuple[str, str]] = []  # (asset_id, error message)
-    for asset in assets:
-        try:
-            if asset.source_type == "pdf":
-                parsed = parse_pdf(asset, parser=args.pdf_parser)
-            elif asset.source_type == "image":
-                parsed = parse_image(asset, enable_ocr=args.ocr, enable_vlm=args.vlm)
-            else:
-                parsed = []
-        except Exception as exc:
-            print(
-                f"FAILED asset={asset.asset_id} type={asset.source_type} "
-                f"error={type(exc).__name__}: {exc}"
-            )
-            failures.append((asset.asset_id, str(exc)))
-            continue
-        documents.extend(parsed)
-        print(f"parsed asset={asset.asset_id} type={asset.source_type} documents={len(parsed)}")
-    write_documents(documents)
-    if failures:
-        print(f"WARNING: {len(failures)} asset(s) failed to parse:")
-        for asset_id, msg in failures:
-            print(f"  - {asset_id}: {msg}")
-    print(f"documents={len(documents)}")
+    options = ParseOptions(
+        pdf_parser=args.pdf_parser,
+        enable_ocr=args.ocr,
+        enable_vlm=args.vlm,
+    )
+    rec = get_service().parse_manifest(limit=args.limit, options=options)
+    print(f"started task {rec.task_id} (parse only)")
+    _wait_for_task(rec.task_id)
     print(f"documents_jsonl={get_documents_jsonl()}")
 
 
 def command_index(args: argparse.Namespace) -> None:
+    """Incrementally upsert the Qdrant text + image indexes."""
     load_env()
-    text_count, embedding_name = build_qdrant_text_index()
-    image_count, image_provider = build_qdrant_image_index()
-    print(f"text_documents={text_count}")
-    print(f"embedding={embedding_name}")
+    service = get_service()
+    # Trigger an empty-manifest ingest so the service does the index work
+    # through its normal pipeline (consistency with /upload).
+    rec = service.parse_manifest(limit=0, options=ParseOptions())
+    _wait_for_task(rec.task_id)
     print(f"text_index={get_text_index_dir()}")
-    print(f"image_records={image_count}")
-    print(f"image_provider={image_provider}")
 
 
 def command_reindex(args: argparse.Namespace) -> None:

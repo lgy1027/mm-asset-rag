@@ -110,16 +110,14 @@ def test_upload_endpoint_accepts_pdf_and_spawns_task(
     assert pdf_path.exists()
 
     with (
-        patch("mm_asset_rag.api._run_ingest_task"),
-        patch("mm_asset_rag.api._run_parse_task"),
-        patch("mm_asset_rag.api._new_task") as mock_new_task,
+        patch("mm_asset_rag.api.get_service") as mock_get_service,
     ):
-        # Mock _new_task so we can inspect the TaskRecord without racing the
-        # background thread (which may or may not have started by the time
-        # TestClient returns — patch + daemon thread has no deterministic
-        # ordering).
-        from mm_asset_rag.api import TaskRecord
-        mock_new_task.return_value = TaskRecord(task_id="abc123def456", kind="parse")
+        from mm_asset_rag.service import TaskRecord
+
+        fake_service = mock_get_service.return_value
+        fake_service.parse_uploaded.return_value = TaskRecord(
+            task_id="abc123def456", kind="parse"
+        )
 
         response = client.post(
             "/upload",
@@ -135,11 +133,15 @@ def test_upload_endpoint_accepts_pdf_and_spawns_task(
     assert body["options"]["auto_index"] is False
     assert any(p.endswith(".pdf") for p in body["uploaded"])
 
-    # _new_task received the uploaded paths and the chosen parser option.
-    _args, kwargs = mock_new_task.call_args
-    assert kwargs["kind"] == "parse"  # auto_index=false
-    assert kwargs["total"] == 1
-    assert any("attention-is-all-you-need" in p for p in kwargs["uploaded"])
+    # parse_uploaded was called with the right args.
+    call_args, call_kwargs = fake_service.parse_uploaded.call_args
+    paths = call_kwargs.get("paths") or (call_args[0] if call_args else [])
+    options = call_kwargs.get("options") or (
+        call_args[1] if len(call_args) > 1 else None
+    )
+    assert any("attention-is-all-you-need" in p for p in paths)
+    assert options is not None
+    assert options.pdf_parser == "pymupdf"
 
 
 def test_tasks_endpoint_returns_history(client: TestClient) -> None:
