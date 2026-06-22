@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "python-dotenv>=1.0",
     "pydantic>=2.5",
+    "pydantic-settings>=2.0",
     "pillow>=10.0",
     "requests>=2.31",
     "PyMuPDF>=1.23",
