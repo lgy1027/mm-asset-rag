@@ -37,10 +37,14 @@ Paste full traceback here
 - OS:
 - Python version: `python --version`
 - mm-asset-rag version: `pip show mm-asset-rag`
-- Backend(s) used: `qdrant` / `llamaindex`
-- Parser(s) used: `pymupdf` / `paddleocr_vl`
-- Image embedding: `sentence-transformers` / `mock`
+- Backend: `qdrant` (local file mode by default; Qdrant server if `QDRANT_URL` is set)
+- Parser(s) used: `pymupdf` / `paddleocr_vl` (per `PDF_PARSER`)
+- Image embedding: `lite` / `sentence-transformers` (per `IMAGE_PROVIDER`)
+- How you ran the server: `mmrag-api` / `uvicorn` / `python -m mm_asset_rag.api --host ... --port ...`
+- Which endpoint you hit (`/upload`, `/chat/stream`, `/search`, etc.) and the exact request body / curl command
 
 ## Additional context
 
-<!-- Anything else relevant: asset_manifest.json, sample documents, etc. -->
+<!-- Anything else relevant: asset_manifest.json, sample documents, .env (REDACTED of any API keys!), logs from `$MM_ASSET_RAG_HOME/tasks.jsonl`, etc. -->
+
+> Never paste real API keys, tokens, or other secrets. The maintainers will not need them to reproduce a bug — `paddleocr_vl` and most embedding providers accept a stub token in dev.
