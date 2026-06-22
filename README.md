@@ -101,30 +101,47 @@ See [`.env.example`](.env.example) and [`docs/configuration.md`](docs/configurat
 
 ```
 mm-asset-rag/
-├── mm_asset_rag/         # single Python package (flat layout)
-│   ├── api.py            # FastAPI app: uploads, tasks, chat/stream, static UI
-│   ├── cli.py            # `mmrag` / `mmrag-api` console scripts
+├── mm_asset_rag/         # single Python package (flat layout + sub-packages)
+│   ├── api.py            # FastAPI app: thin route layer, delegates to service.py
+│   ├── cli.py            # `mmrag` / `mmrag-api` console scripts, also delegates
+│   ├── service.py        # IngestService: parse / index / task-history (shared)
+│   ├── settings.py       # pydantic-settings: every env var in one place
+│   ├── protocols.py      # Parser / Embedder / VectorBackend Protocol definitions
+│   ├── registry.py       # Module-level parsers / embedders / backends registries
 │   ├── paths.py          # on-disk layout under $MM_ASSET_RAG_HOME
+│   ├── config.py         # load_env() + env_bool() (legacy helpers, kept for compat)
 │   ├── assets.py         # asset_manifest loader + Asset dataclass
-│   ├── pdf_parser.py     # PyMuPDF + PaddleOCR-VL backends
-│   ├── image_parser.py   # OCR + VLM captioning for image assets
-│   ├── qdrant_store.py   # Qdrant client, collection mgmt, hybrid upsert
-│   ├── embedding_config.py
-│   ├── providers.py      # OpenAI-compatible embedder + image embedder
-│   ├── retrieval.py      # hybrid merge + normalize
-│   ├── answer.py         # grounded answer generation (streaming + sync)
-│   ├── document_store.py # unified ParsedDocument JSONL store
-│   ├── evaluation.py     # mini regression suite
 │   ├── schema.py         # SearchHit, ParsedDocument
-│   ├── config.py         # load_env() + env_bool()
-│   └── web/              # bundled single-page web UI
-│       └── index.html
+│   ├── document_store.py # unified ParsedDocument JSONL store
+│   ├── answer.py         # grounded answer generation (streaming + sync)
+│   ├── evaluation.py     # mini regression suite
+│   ├── retrieval.py      # hybrid merge + normalize (pure functions, no mutation)
+│   ├── parsers/          # Parser implementations, registered at import time
+│   │   ├── pdf_parser.py # PyMuPDF + PaddleOCR-VL backends
+│   │   └── image_parser.py
+│   ├── embedders/        # Embedder implementations (Protocol conformers)
+│   │   ├── text_embedder.py
+│   │   └── image_embedder.py
+│   └── backends/         # VectorBackend implementations
+│       └── qdrant_backend.py
 ├── examples/data/        # 30 PDFs + 184 photos + asset_manifest.json
 ├── tests/unit/           # offline unit tests (fast)
 ├── tests/integration/    # marked @pytest.mark.integration (network / Qdrant)
 ├── docs/                 # architecture, configuration, api
 └── scripts/              # eval_rag.py, build_manifest.py
 ```
+
+### Adding a new modality (audio, video)
+
+Three-line change, no central dispatch to edit:
+
+1. Drop `parsers/audio_parser.py` whose class satisfies `protocols.Parser`.
+2. `register_parser(AudioParser())` in `parsers/__init__.py`.
+3. Drop `embedders/audio_embedder.py` whose class satisfies `protocols.Embedder`,
+   and `register_embedder(...)` it.
+
+The FastAPI app, the CLI, and the Qdrant backend all read from the
+registries at runtime — no if/elif source_type dispatch needs touching.
 
 ## Documentation
 

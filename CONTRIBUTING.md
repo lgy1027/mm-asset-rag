@@ -39,24 +39,29 @@ Integration tests are marked with `@pytest.mark.integration` and excluded from t
 
 ```
 mm-asset-rag/
-├── mm_asset_rag/         # single Python package (flat layout)
-│   ├── api.py            # FastAPI app: uploads, tasks, chat/stream, static UI
-│   ├── cli.py            # `mmrag` / `mmrag-api` console scripts
+├── mm_asset_rag/         # single Python package (flat layout + sub-packages)
+│   ├── api.py            # FastAPI app: thin route layer, delegates to service.py
+│   ├── cli.py            # `mmrag` / `mmrag-api` console scripts, also delegate
+│   ├── service.py        # IngestService: parse / index / task-history (shared)
+│   ├── settings.py       # pydantic-settings: every env var in one place
+│   ├── protocols.py      # Parser / Embedder / VectorBackend Protocol definitions
+│   ├── registry.py       # Module-level parsers / embedders / backends registries
 │   ├── paths.py          # on-disk layout under $MM_ASSET_RAG_HOME
+│   ├── config.py         # load_env() + env_bool() (legacy helpers)
 │   ├── assets.py         # asset_manifest loader + Asset dataclass
-│   ├── pdf_parser.py     # PyMuPDF + PaddleOCR-VL backends
-│   ├── image_parser.py   # OCR + VLM captioning for image assets
-│   ├── qdrant_store.py   # Qdrant client, collection mgmt, incremental upsert
-│   ├── embedding_config.py
-│   ├── providers.py      # OpenAI-compatible embedder + image embedder
-│   ├── retrieval.py      # hybrid merge + normalize
-│   ├── answer.py         # grounded answer generation (streaming + sync)
-│   ├── document_store.py # unified ParsedDocument JSONL store
-│   ├── evaluation.py     # mini regression suite
 │   ├── schema.py         # SearchHit, ParsedDocument
-│   ├── config.py         # load_env() + env_bool()
-│   └── web/              # bundled single-page web UI
-│       └── index.html
+│   ├── document_store.py # unified ParsedDocument JSONL store
+│   ├── answer.py         # grounded answer generation (streaming + sync)
+│   ├── evaluation.py     # mini regression suite
+│   ├── retrieval.py      # hybrid merge + normalize (pure functions)
+│   ├── parsers/          # Parser implementations, registered at import time
+│   │   ├── pdf_parser.py # PyMuPDF + PaddleOCR-VL backends
+│   │   └── image_parser.py
+│   ├── embedders/        # Embedder implementations (Protocol conformers)
+│   │   ├── text_embedder.py
+│   │   └── image_embedder.py
+│   └── backends/         # VectorBackend implementations
+│       └── qdrant_backend.py
 ├── examples/data/        # 30 PDFs + 184 photos + asset_manifest.json
 ├── tests/unit/           # offline unit tests (fast)
 ├── tests/integration/    # marked @pytest.mark.integration
@@ -64,11 +69,46 @@ mm-asset-rag/
 └── scripts/              # eval_rag.py, build_manifest.py
 ```
 
-If you want to plug in a different parser or vector backend, the practical swap points today are:
+## Adding a new modality (audio, video)
 
-- **Different PDF backend** → extend `parse_pdf()` in `pdf_parser.py` with a new branch in the `parser in (...)` dispatch.
-- **Different image embedding** → implement `ImageEmbeddingProvider` in `providers.py`.
-- **Different vector backend** → today only Qdrant is wired. The retrieval layer (`retrieval.py`) calls `qdrant_*_search` helpers, so swapping the backend means adding a parallel set of functions and a dispatch table.
+Three-line change, no central dispatch to edit:
+
+1. Drop `parsers/audio_parser.py` whose class satisfies the
+   `Parser` Protocol in `mm_asset_rag/protocols.py`.
+2. In `parsers/__init__.py`, `register_parser(AudioParser())`.
+3. Drop `embedders/audio_embedder.py` whose class satisfies the
+   `Embedder` Protocol, and `register_embedder(...)` it.
+
+The FastAPI app, the CLI, and the Qdrant backend all read from the
+registries at runtime — no `if asset.source_type == "pdf"` branch ever
+needs touching.
+
+## Adding a different parser implementation
+
+For a new PDF parser (e.g. a hypothetical `pdfplumber`):
+
+```python
+# parsers/pdf_parser.py — add a class:
+class PdfPlumberParser:
+    name = "pdfplumber"
+    source_type = "pdf"
+    def parse(self, asset, **options):
+        ...
+```
+
+Register it in `parsers/__init__.py`:
+
+```python
+register_parser(PdfPlumberParser())
+```
+
+It is now selectable via `--pdf-parser pdfplumber` on the CLI and via the
+`pdf_parser` form field on `POST /upload`.
+
+## Adding a new vector backend
+
+Implement the `VectorBackend` Protocol in `backends/<name>_backend.py` and
+`register_backend(...)` it in `backends/__init__.py`.
 
 ## Commit messages
 
