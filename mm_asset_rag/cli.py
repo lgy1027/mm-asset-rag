@@ -18,6 +18,7 @@ from .config import load_env
 from .evaluation import run_eval, write_eval_report
 from .paths import get_data_dir, get_documents_jsonl, get_text_index_dir
 from .backends.qdrant_backend import (
+    QdrantLockHeldError,
     build_qdrant_image_index,
     build_qdrant_text_index,
 )
@@ -67,15 +68,23 @@ def command_reindex(args: argparse.Namespace) -> None:
     The default ``index`` command is incremental (skips already-indexed docs);
     use ``reindex`` when you want a clean slate — e.g. after changing the
     embedding model or fixing a corrupted collection.
+
+    qdrant local mode is single-process: stop the API server (or any other
+    mm-asset-rag process) before running this command, otherwise the local
+    storage lock will block. Use ``QDRANT_URL`` (server mode) if you need
+    concurrent access.
     """
     load_env()
-    only = "text" if args.text_only else "image" if args.image_only else "both"
-    if only in ("text", "both"):
-        n, name = build_qdrant_text_index(force_recreate=True)
-        print(f"[reindex] text: {name}")
-    if only in ("image", "both"):
-        ni, ni_name = build_qdrant_image_index(force_recreate=True)
-        print(f"[reindex] image: {ni_name}")
+    try:
+        only = "text" if args.text_only else "image" if args.image_only else "both"
+        if only in ("text", "both"):
+            n, name = build_qdrant_text_index(force_recreate=True)
+            print(f"[reindex] text: {name}")
+        if only in ("image", "both"):
+            ni, ni_name = build_qdrant_image_index(force_recreate=True)
+            print(f"[reindex] image: {ni_name}")
+    except QdrantLockHeldError as exc:
+        raise SystemExit(f"error: {exc}")
 
 
 def print_hits(hits) -> None:

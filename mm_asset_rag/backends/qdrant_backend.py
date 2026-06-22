@@ -18,10 +18,12 @@ the ``llama-index-vector-stores-qdrant`` integration because:
 from __future__ import annotations
 
 import os
+import subprocess
 import threading
 import uuid
 from functools import lru_cache
 from pathlib import Path
+import subprocess
 
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient, models
@@ -31,6 +33,17 @@ from ..paths import get_assets_dir, get_indexes_dir
 from ..embedders.text_embedder import EmbeddingProvider
 from ..embedders.image_embedder import ImageEmbeddingProvider, ImageEmbeddingUnavailable
 from ..schema import SearchHit
+
+
+class QdrantLockHeldError(RuntimeError):
+    """Raised when Qdrant local storage is already open by another live process.
+
+    qdrant-client's local mode uses a process-local file lock at
+    ``<indexes>/qdrant/.lock`` and refuses to open the same storage from a
+    second process. The previous version of ``_clean_stale_lock``
+    silently deleted the lock in all cases, which caused ``mmrag reindex``
+    to hang when the API server (``uvicorn``) was still running.
+    """
 
 TEXT_COLLECTION_BASE = os.environ.get("QDRANT_TEXT_COLLECTION", "multimodal_text")
 IMAGE_COLLECTION_BASE = os.environ.get("QDRANT_IMAGE_COLLECTION", "multimodal_image")
@@ -124,7 +137,8 @@ def get_qdrant_client() -> QdrantClient:
 
 
 def _clean_stale_lock(qdrant_path: Path) -> None:
-    """Remove a stale ``.lock`` from a previous crashed session.
+    """Remove a stale ``.lock`` from a previous crashed session, but only
+    when the lock is *not* held by a live process.
 
     qdrant-client's local mode writes ``.lock`` on open and removes it on
     ``close()``. If the process is killed before close() runs (SIGKILL, OOM,
@@ -132,19 +146,66 @@ def _clean_stale_lock(qdrant_path: Path) -> None:
     fails with ``Storage folder X is already accessed by another instance of
     Qdrant client``.
 
-    The local client does not check whether the .lock corresponds to a live
-    process — it only checks file existence — so a stale lock from any source
-    will block startup. We simply unlink it before opening the new client.
+    If the lock is held by a *live* process (e.g. an ``uvicorn`` API server
+    is still running), we refuse to remove it — qdrant-client in the second
+    process would otherwise hang on the lock. Instead we raise
+    :class:`QdrantLockHeldError` so the caller (e.g. ``mmrag reindex``) can
+    surface a clear "stop the API server first" message.
+
     Safe for single-process use; switch to ``QDRANT_URL`` (server mode) for
     concurrent access.
     """
     lock = qdrant_path / ".lock"
-    if lock.exists():
-        try:
-            lock.unlink()
-            print(f"[qdrant] removed stale .lock from previous session: {lock.name}")
-        except OSError as exc:
-            print(f"[qdrant] warning: could not unlink {lock}: {exc}")
+    if not lock.exists():
+        return
+    holder_pid = _lock_holder_pid(lock)
+    if holder_pid is not None and _pid_alive(holder_pid):
+        raise QdrantLockHeldError(
+            f"Qdrant local storage at {qdrant_path} is already open by "
+            f"process {holder_pid} (probably the API server / another CLI). "
+            f"Stop that process first, or set QDRANT_URL to use Qdrant server mode."
+        )
+    try:
+        lock.unlink()
+        print(f"[qdrant] removed stale .lock from previous session: {lock.name}")
+    except OSError as exc:
+        print(f"[qdrant] warning: could not unlink {lock}: {exc}")
+
+
+def _lock_holder_pid(lock: Path) -> int | None:
+    """Return the PID holding ``lock``, or None if it can't be determined.
+
+    Uses ``lsof -F p <path>`` (works on Linux + macOS). Falls back to None
+    on platforms where lsof isn't available, so the caller treats it as
+    "unknown / safe to try unlink".
+    """
+    try:
+        result = subprocess.run(
+            ["lsof", "-F", "p", str(lock)],
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("p"):
+            try:
+                return int(line[1:])
+            except ValueError:
+                continue
+    return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True if a process with this PID is running on this system."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
 
 
 def _create_collection(
