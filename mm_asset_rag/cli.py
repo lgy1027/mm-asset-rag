@@ -65,17 +65,6 @@ def command_parse(args: argparse.Namespace) -> None:
     print(f"documents_jsonl={get_documents_jsonl()}")
 
 
-def command_index(args: argparse.Namespace) -> None:
-    """Incrementally upsert the Qdrant text + image indexes."""
-    load_env()
-    service = get_service()
-    # Trigger an empty-manifest ingest so the service does the index work
-    # through its normal pipeline (consistency with /upload).
-    rec = service.parse_manifest(limit=0, options=ParseOptions())
-    _wait_for_task(rec.task_id)
-    print(f"text_index={get_text_index_dir()}")
-
-
 def command_reindex(args: argparse.Namespace) -> None:
     """Drop and rebuild the qdrant collections from documents.jsonl.
 
@@ -157,12 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--vlm", action="store_true", help="Run OpenAI-compatible VLM captions for images"
     )
     parse_cmd.set_defaults(func=command_parse)
-
-    index_cmd = subparsers.add_parser(
-        "index",
-        help="Incrementally upsert text and image indexes in Qdrant (skips already-indexed docs)",
-    )
-    index_cmd.set_defaults(func=command_index)
 
     reindex_cmd = subparsers.add_parser(
         "reindex",

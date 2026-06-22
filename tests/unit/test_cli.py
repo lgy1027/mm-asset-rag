@@ -24,10 +24,14 @@ def test_cli_parse_subcommand_defaults() -> None:
     assert args.limit == 0
 
 
-def test_cli_index_subcommand_no_args() -> None:
+def test_cli_index_subcommand_removed() -> None:
+    """``mmrag index`` was removed: the same effect comes from
+    ``mmrag parse`` (which always indexes after parsing) and
+    ``mmrag reindex`` (full rebuild).
+    """
     parser = build_parser()
-    args = parser.parse_args(["index"])
-    assert args.command == "index"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["index"])
 
 
 def test_cli_search_subcommand_modes() -> None:
