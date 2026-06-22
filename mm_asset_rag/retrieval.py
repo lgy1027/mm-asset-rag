@@ -13,15 +13,42 @@ from .schema import SearchHit
 
 
 def normalize_scores(hits: list[SearchHit]) -> list[SearchHit]:
+    """Return new ``SearchHit`` objects with scores divided by ``max(hits)``.
+
+    Pure function: the input list is not mutated. This avoids surprising
+    side effects on the upstream ``qdrant_*_search`` result list, which
+    is shared across ``hybrid_search`` invocations.
+    """
     if not hits:
         return []
     max_score = max(hit.score for hit in hits) or 1.0
-    for hit in hits:
-        hit.score = hit.score / max_score
-    return hits
+    return [
+        SearchHit(
+            route=hit.route,
+            score=hit.score / max_score,
+            asset_id=hit.asset_id,
+            title=hit.title,
+            source_type=hit.source_type,
+            source_path=hit.source_path,
+            evidence=hit.evidence,
+            metadata=dict(hit.metadata),
+        )
+        for hit in hits
+    ]
+
+
+def _merge_routes(existing: list[str] | None, new_route: str) -> list[str]:
+    routes = list(existing or [])
+    routes.append(new_route)
+    return sorted(set(routes))
 
 
 def merge_hits(groups: list[list[SearchHit]], weights: list[float], top_k: int) -> list[SearchHit]:
+    """Combine per-route hits by ``asset_id`` using weighted scores.
+
+    Pure function: returns a new list of ``SearchHit`` instances; the
+    input groups are not mutated.
+    """
     merged: dict[str, SearchHit] = {}
     for group, weight in zip(groups, weights):
         for hit in normalize_scores(group):
@@ -30,17 +57,37 @@ def merge_hits(groups: list[list[SearchHit]], weights: list[float], top_k: int) 
             key = hit.asset_id
             weighted_score = hit.score * weight
             if key not in merged:
-                hit.score = weighted_score
-                hit.metadata = {**hit.metadata, "routes": [hit.route]}
-                merged[key] = hit
+                merged[key] = SearchHit(
+                    route=hit.route,
+                    score=weighted_score,
+                    asset_id=hit.asset_id,
+                    title=hit.title,
+                    source_type=hit.source_type,
+                    source_path=hit.source_path,
+                    evidence=hit.evidence,
+                    metadata={**hit.metadata, "routes": [hit.route]},
+                )
             else:
                 current = merged[key]
-                current.score += weighted_score
-                routes = list(current.metadata.get("routes", []))
-                routes.append(hit.route)
-                current.metadata["routes"] = sorted(set(routes))
-                if len(hit.evidence) > len(current.evidence):
-                    current.evidence = hit.evidence
+                merged[key] = SearchHit(
+                    route=current.route,
+                    score=current.score + weighted_score,
+                    asset_id=current.asset_id,
+                    title=current.title,
+                    source_type=current.source_type,
+                    source_path=current.source_path,
+                    evidence=(
+                        hit.evidence
+                        if len(hit.evidence) > len(current.evidence)
+                        else current.evidence
+                    ),
+                    metadata={
+                        **current.metadata,
+                        "routes": _merge_routes(
+                            current.metadata.get("routes"), hit.route
+                        ),
+                    },
+                )
     return sorted(merged.values(), key=lambda hit: hit.score, reverse=True)[:top_k]
 
 

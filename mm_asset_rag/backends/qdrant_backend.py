@@ -117,26 +117,29 @@ def _clean_stale_lock(qdrant_path: Path) -> None:
             print(f"[qdrant] warning: could not unlink {lock}: {exc}")
 
 
-def _recreate_text_collection(client: QdrantClient, name: str, vector_size: int) -> None:
-    """Drop and recreate the text collection. Used by the explicit reindex path."""
-    if client.collection_exists(name):
-        client.delete_collection(name)
-    client.create_collection(
-        collection_name=name,
-        vectors_config={
-            DENSE_VECTOR_NAME: models.VectorParams(
-                size=vector_size, distance=models.Distance.COSINE
-            ),
-        },
-        sparse_vectors_config={
-            SPARSE_VECTOR_NAME: models.SparseVectorParams(),
-        },
-    )
+def _create_collection(
+    client: QdrantClient,
+    name: str,
+    *,
+    vector_size: int,
+    sparse: bool = False,
+    recreate: bool = False,
+) -> None:
+    """Create (or recreate) a Qdrant collection with the standard config.
 
+    - ``recreate=True`` drops the collection first; used by the explicit
+      ``mmrag reindex`` command for a full rebuild.
+    - ``recreate=False`` (the default) is a no-op if the collection
+      already exists; used by the incremental ``build_qdrant_*_index`` path.
+    - ``sparse=True`` adds the BM25 sparse vector config (text collection).
+    """
+    if recreate:
+        if client.collection_exists(name):
+            client.delete_collection(name)
+    elif client.collection_exists(name):
+        return
 
-def _ensure_text_collection(client: QdrantClient, name: str, vector_size: int) -> None:
-    """Create the text collection only if it doesn't exist (idempotent)."""
-    if not client.collection_exists(name):
+    if sparse:
         client.create_collection(
             collection_name=name,
             vectors_config={
@@ -148,23 +151,7 @@ def _ensure_text_collection(client: QdrantClient, name: str, vector_size: int) -
                 SPARSE_VECTOR_NAME: models.SparseVectorParams(),
             },
         )
-
-
-def _recreate_image_collection(client: QdrantClient, name: str, vector_size: int) -> None:
-    """Drop and recreate the image collection. Used by the explicit reindex path."""
-    if client.collection_exists(name):
-        client.delete_collection(name)
-    client.create_collection(
-        collection_name=name,
-        vectors_config=models.VectorParams(
-            size=vector_size, distance=models.Distance.COSINE
-        ),
-    )
-
-
-def _ensure_image_collection(client: QdrantClient, name: str, vector_size: int) -> None:
-    """Create the image collection only if it doesn't exist (idempotent)."""
-    if not client.collection_exists(name):
+    else:
         client.create_collection(
             collection_name=name,
             vectors_config=models.VectorParams(
@@ -209,8 +196,8 @@ def build_qdrant_text_index(
     collection_name = text_collection(len(first_vector))
 
     if force_recreate:
-        _recreate_text_collection(client, collection_name, len(first_vector))
-    _ensure_text_collection(client, collection_name, len(first_vector))
+        _create_collection(client, collection_name, vector_size=len(first_vector), sparse=True, recreate=True)
+    _create_collection(client, collection_name, vector_size=len(first_vector), sparse=True)
 
     inserted = 0
     skipped = 0
@@ -314,8 +301,8 @@ def build_qdrant_image_index(
     collection_name = image_collection(len(first_vector))
 
     if force_recreate:
-        _recreate_image_collection(client, collection_name, len(first_vector))
-    _ensure_image_collection(client, collection_name, len(first_vector))
+        _create_collection(client, collection_name, vector_size=len(first_vector), recreate=True)
+    _create_collection(client, collection_name, vector_size=len(first_vector))
 
     # Bulk-load existing point ids (one scroll pass).
     existing_ids: set[str] = set()

@@ -41,6 +41,7 @@ from .qdrant_store import (
 )
 from .retrieval import hybrid_search
 from .service import IngestService, ParseOptions, get_service
+from .settings import get_settings
 
 
 @asynccontextmanager
@@ -211,6 +212,22 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 # ─── Upload + background parse ───────────────────────────────────────────
 
 
+def _coerce_bool(form_val: str | bool | None, default: bool) -> bool:
+    """Coerce a multipart boolean field to ``bool``.
+
+    FastAPI's ``bool = Form(...)`` parsing turns the string ``"true"`` /
+    ``"false"`` into ``True`` / ``False`` automatically. This helper
+    handles both that case and the case where the form value comes in as
+    a raw string (e.g. when declared as ``str | None = Form(default=None)``).
+    Returns ``default`` when ``form_val`` is ``None`` or empty.
+    """
+    if form_val is None or form_val == "":
+        return default
+    if isinstance(form_val, bool):
+        return form_val
+    return str(form_val).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 @app.post("/upload")
 async def upload(
     files: list[UploadFile] = File(...),
@@ -286,6 +303,15 @@ async def upload(
 
     if not saved:
         raise HTTPException(status_code=400, detail={"rejected": rejected})
+
+    settings = get_settings()
+    pdf_parser = pdf_parser or settings.pdf_parser
+    image_provider = image_provider or settings.image_provider
+    # The form value for booleans is a string ("true"/"false"); coerce via
+    # ``_coerce_bool`` so the precedence form > env > default applies uniformly.
+    auto_index = _coerce_bool(auto_index, settings.auto_index)
+    enable_ocr = _coerce_bool(enable_ocr, settings.enable_ocr)
+    enable_vlm = _coerce_bool(enable_vlm, settings.enable_vlm)
 
     options = ParseOptions(
         pdf_parser=pdf_parser,
@@ -370,7 +396,3 @@ if __name__ == "__main__":
     args = parser.parse_args()
     import uvicorn
     uvicorn.run(app, host=args.host, port=args.port)
-
-
-# Suppress an unused-import warning when running as a module.
-_ = (qdrant_image_to_image_search, qdrant_text_to_image_search)

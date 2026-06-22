@@ -63,6 +63,23 @@ def fake_qdrant_client(monkeypatch) -> MagicMock:
     return mock
 
 
+@pytest.fixture(autouse=True)
+def _clear_settings_cache():
+    """Drop the ``Settings`` singleton around each test.
+
+    Several tests set ``MM_ASSET_RAG_HOME`` (or other env vars) in a
+    fixture. Because :func:`get_settings` is ``lru_cache``-wrapped, the
+    first call freezes whatever env was visible at that point. Clearing
+    the cache around each test means the next ``get_settings()`` call
+    rebuilds from the current env, including monkeypatch overrides.
+    """
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
 @pytest.fixture
 def fixed_vector(monkeypatch) -> None:
     """Pin both embedding providers to a fixed deterministic vector.

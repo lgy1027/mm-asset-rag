@@ -39,11 +39,8 @@ class _QdrantBackend:
     name = "qdrant"
 
     def ensure_collection(self, *, name, dim, sparse=False):
-        from .qdrant_backend import _ensure_text_collection, _ensure_image_collection
-        if sparse:
-            _ensure_text_collection(self._client(), name, dim)
-        else:
-            _ensure_image_collection(self._client(), name, dim)
+        from .qdrant_backend import _create_collection
+        _create_collection(self._client(), name, vector_size=dim, sparse=sparse)
 
     def drop_collection(self, name):
         from qdrant_client import QdrantClient
