@@ -40,7 +40,13 @@ from .backends.qdrant_backend import (
     qdrant_text_to_image_search,
 )
 from .retrieval import hybrid_search
-from .service import IngestService, ParseOptions, get_service
+from .service import (
+    IngestService,
+    ParseOptions,
+    coerce_bool,
+    dispatch_search,
+    get_service,
+)
 from .settings import get_settings
 
 
@@ -126,20 +132,15 @@ def health() -> dict[str, object]:
 
 @app.post("/search")
 def search(request: SearchRequest) -> dict[str, object]:
-    if request.mode == "text":
-        hits = qdrant_text_search(request.query, top_k=request.top_k)
-    elif request.mode == "text-to-image":
-        hits = qdrant_text_to_image_search(request.query, top_k=request.top_k)
-    elif request.mode == "image-to-image":
-        if not request.image_path:
-            raise HTTPException(status_code=400, detail="image_path required for image-to-image")
-        hits = qdrant_image_to_image_search(Path(request.image_path), top_k=request.top_k)
-    else:
-        hits = hybrid_search(
-            request.query,
-            image_path=Path(request.image_path) if request.image_path else None,
+    try:
+        hits = dispatch_search(
+            query=request.query,
+            mode=request.mode,
+            image_path=request.image_path,
             top_k=request.top_k,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"query": request.query, "mode": request.mode, "hits": [h.__dict__ for h in hits]}
 
 
@@ -153,27 +154,18 @@ def eval_endpoint(request: EvalRequest) -> dict[str, object]:
     return {"results": [r.__dict__ for r in run_eval(top_k=request.top_k)]}
 
 
-def _retrieve_for_chat(request: ChatRequest) -> list:
-    """Shared retrieval for /chat and /chat/stream. Raises 400 if image mode lacks a path."""
-    if request.mode == "text":
-        return qdrant_text_search(request.question, top_k=request.top_k)
-    if request.mode == "text-to-image":
-        return qdrant_text_to_image_search(request.question, top_k=request.top_k)
-    if request.mode == "image-to-image":
-        if not request.image_path:
-            raise HTTPException(status_code=400, detail="image_path required for image-to-image")
-        return qdrant_image_to_image_search(Path(request.image_path), top_k=request.top_k)
-    return hybrid_search(
-        request.question,
-        image_path=Path(request.image_path) if request.image_path else None,
-        top_k=request.top_k,
-    )
-
-
 @app.post("/chat")
 def chat(request: ChatRequest) -> dict[str, object]:
     """One-call: retrieve + grounded LLM answer in a single response."""
-    hits = _retrieve_for_chat(request)
+    try:
+        hits = dispatch_search(
+            query=request.question,
+            mode=request.mode,
+            image_path=request.image_path,
+            top_k=request.top_k,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     answer = answer_question(request.question, top_k=request.top_k, hits=hits)
     return {
         "question": request.question,
@@ -195,7 +187,12 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 
     def gen():
         try:
-            hits = _retrieve_for_chat(request)
+            hits = dispatch_search(
+                query=request.question,
+                mode=request.mode,
+                image_path=request.image_path,
+                top_k=request.top_k,
+            )
             yield json.dumps(
                 {"event": "sources", "sources": [h.__dict__ for h in hits]},
                 ensure_ascii=False,
@@ -210,22 +207,6 @@ def chat_stream(request: ChatRequest) -> StreamingResponse:
 
 
 # ─── Upload + background parse ───────────────────────────────────────────
-
-
-def _coerce_bool(form_val: str | bool | None, default: bool) -> bool:
-    """Coerce a multipart boolean field to ``bool``.
-
-    FastAPI's ``bool = Form(...)`` parsing turns the string ``"true"`` /
-    ``"false"`` into ``True`` / ``False`` automatically. This helper
-    handles both that case and the case where the form value comes in as
-    a raw string (e.g. when declared as ``str | None = Form(default=None)``).
-    Returns ``default`` when ``form_val`` is ``None`` or empty.
-    """
-    if form_val is None or form_val == "":
-        return default
-    if isinstance(form_val, bool):
-        return form_val
-    return str(form_val).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 @app.post("/upload")
@@ -309,9 +290,9 @@ async def upload(
     image_provider = image_provider or settings.image_provider
     # The form value for booleans is a string ("true"/"false"); coerce via
     # ``_coerce_bool`` so the precedence form > env > default applies uniformly.
-    auto_index = _coerce_bool(auto_index, settings.auto_index)
-    enable_ocr = _coerce_bool(enable_ocr, settings.enable_ocr)
-    enable_vlm = _coerce_bool(enable_vlm, settings.enable_vlm)
+    auto_index = coerce_bool(auto_index, settings.auto_index)
+    enable_ocr = coerce_bool(enable_ocr, settings.enable_ocr)
+    enable_vlm = coerce_bool(enable_vlm, settings.enable_vlm)
 
     options = ParseOptions(
         pdf_parser=pdf_parser,

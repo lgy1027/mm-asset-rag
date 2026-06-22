@@ -32,7 +32,7 @@ def test_health_endpoint_reports_status(client: TestClient) -> None:
 
 def test_search_endpoint_text_mode(client: TestClient) -> None:
     with patch(
-        "mm_asset_rag.api.qdrant_text_search",
+        "mm_asset_rag.api.dispatch_search",
         return_value=[],
     ):
         response = client.post(
@@ -158,7 +158,7 @@ def test_chat_stream_endpoint_emits_sources_and_done(
     """/chat/stream emits an NDJSON line per event, starting with sources."""
     with (
         patch(
-            "mm_asset_rag.api.qdrant_text_search",
+            "mm_asset_rag.api.dispatch_search",
             return_value=[],
         ),
         patch(

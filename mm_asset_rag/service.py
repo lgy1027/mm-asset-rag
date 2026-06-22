@@ -36,7 +36,58 @@ from .paths import get_data_dir, get_documents_jsonl
 from .parsers.image_parser import parse_image
 from .parsers.pdf_parser import parse_pdf
 from .registry import get_backend
+from .retrieval import hybrid_search
 from .settings import Settings, get_settings
+
+
+# ─── Helpers shared by api.py and cli.py ──────────────────────────────────
+
+
+def coerce_bool(form_val: str | bool | None, default: bool) -> bool:
+    """Coerce a multipart boolean field to ``bool``.
+
+    FastAPI's ``bool = Form(...)`` parsing turns the string ``"true"`` /
+    ``"false"`` into ``True`` / ``False`` automatically. This helper
+    handles both that case and the case where the form value comes in as
+    a raw string (e.g. when declared as ``str | None = Form(default=None)``).
+    Returns ``default`` when ``form_val`` is ``None`` or empty.
+    """
+    if form_val is None or form_val == "":
+        return default
+    if isinstance(form_val, bool):
+        return form_val
+    return str(form_val).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def dispatch_search(
+    *,
+    query: str,
+    mode: str,
+    image_path: str | Path | None,
+    top_k: int,
+) -> list:
+    """Dispatch a search request to the right backend call.
+
+    Single source of truth for ``mode`` routing — used by ``/search``,
+    ``/chat`` (one-call helper) and the ``mmrag search`` CLI so they all
+    handle the four modes (``text``, ``text-to-image``, ``image-to-image``,
+    ``hybrid``) the same way.
+    """
+    backend = get_backend("qdrant")
+    if mode == "text":
+        return backend.search_text(query=query, top_k=top_k)
+    if mode == "text-to-image":
+        return backend.search_text_to_image(query=query, top_k=top_k)
+    if mode == "image-to-image":
+        if not image_path:
+            raise ValueError("image_path required for image-to-image")
+        return backend.search_image(image_path=image_path, top_k=top_k)
+    # hybrid (default)
+    return hybrid_search(
+        query,
+        image_path=Path(image_path) if image_path else None,
+        top_k=top_k,
+    )
 
 
 # ─── Data types ─────────────────────────────────────────────────────────

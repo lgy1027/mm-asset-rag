@@ -20,12 +20,8 @@ from .paths import get_data_dir, get_documents_jsonl, get_text_index_dir
 from .backends.qdrant_backend import (
     build_qdrant_image_index,
     build_qdrant_text_index,
-    qdrant_image_to_image_search,
-    qdrant_text_search,
-    qdrant_text_to_image_search,
 )
-from .retrieval import hybrid_search
-from .service import ParseOptions, get_service
+from .service import ParseOptions, dispatch_search, get_service
 
 
 def _wait_for_task(task_id: str, poll_interval: float = 1.0) -> None:
@@ -98,22 +94,19 @@ def safe_print(text: str) -> None:
 
 def command_search(args: argparse.Namespace) -> None:
     load_env()
-    if args.mode == "text":
-        hits = qdrant_text_search(args.query, top_k=args.top_k)
-    elif args.mode == "text-to-image":
-        hits = qdrant_text_to_image_search(args.query, top_k=args.top_k)
-    elif args.mode == "image-to-image":
-        if not args.image:
-            raise RuntimeError("--image is required for image-to-image search")
-        hits = qdrant_image_to_image_search(Path(args.image), top_k=args.top_k)
-    elif args.mode == "hybrid":
-        hits = hybrid_search(
-            args.query,
-            image_path=Path(args.image) if args.image else None,
+    if args.mode == "image-to-image" and not args.image:
+        raise RuntimeError("--image is required for image-to-image search")
+    try:
+        hits = dispatch_search(
+            query=args.query,
+            mode=args.mode,
+            image_path=args.image or None,
             top_k=args.top_k,
         )
-    else:
-        raise RuntimeError(f"Unsupported search mode: {args.mode}")
+    except RuntimeError as exc:
+        # dispatch_search raises HTTPException for image-to-image without
+        # image_path; surface a friendlier message for the CLI.
+        raise RuntimeError(str(exc)) from exc
     print_hits(hits)
 
 
