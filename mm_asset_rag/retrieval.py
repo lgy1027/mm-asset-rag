@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .qdrant_store import (
+from .backends.qdrant_backend import (
     qdrant_image_to_image_search,
     qdrant_text_search,
     qdrant_text_to_image_search,

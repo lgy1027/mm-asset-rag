@@ -28,7 +28,8 @@ from qdrant_client import QdrantClient, models
 
 from ..document_store import read_documents
 from ..paths import get_assets_dir, get_indexes_dir
-from ..providers import EmbeddingProvider, ImageEmbeddingProvider, ImageEmbeddingUnavailable
+from ..embedders.text_embedder import EmbeddingProvider
+from ..embedders.image_embedder import ImageEmbeddingProvider, ImageEmbeddingUnavailable
 from ..schema import SearchHit
 
 TEXT_COLLECTION_BASE = os.environ.get("QDRANT_TEXT_COLLECTION", "multimodal_text")

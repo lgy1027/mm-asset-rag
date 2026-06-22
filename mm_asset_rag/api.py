@@ -33,7 +33,7 @@ from .assets import load_assets
 from .config import load_env
 from .evaluation import run_eval
 from .paths import get_assets_dir, get_documents_jsonl, get_indexes_dir, get_text_index_dir
-from .qdrant_store import (
+from .backends.qdrant_backend import (
     get_qdrant_client,
     qdrant_image_to_image_search,
     qdrant_text_search,

@@ -59,7 +59,7 @@ def fake_qdrant_client(monkeypatch) -> MagicMock:
     mock.collection_exists.return_value = False
     mock.query_points.return_value = MagicMock(points=[])
     mock.scroll.return_value = ([], None)
-    monkeypatch.setattr("mm_asset_rag.qdrant_store.QdrantClient", lambda *a, **kw: mock)
+    monkeypatch.setattr("mm_asset_rag.backends.qdrant_backend.QdrantClient", lambda *a, **kw: mock)
     return mock
 
 

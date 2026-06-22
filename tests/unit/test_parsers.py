@@ -11,8 +11,8 @@ import pytest
 import responses
 
 from mm_asset_rag.assets import Asset
-from mm_asset_rag.image_parser import parse_image
-from mm_asset_rag.pdf_parser import parse_pdf
+from mm_asset_rag.parsers.image_parser import parse_image
+from mm_asset_rag.parsers.pdf_parser import parse_pdf
 
 
 def _make_asset(assets_dir: Path, asset_id: str, file_path: Path, source_type: str) -> Asset:

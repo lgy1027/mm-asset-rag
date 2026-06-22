@@ -17,7 +17,9 @@ from .answer import answer_json
 from .config import load_env
 from .evaluation import run_eval, write_eval_report
 from .paths import get_data_dir, get_documents_jsonl, get_text_index_dir
-from .qdrant_store import (
+from .backends.qdrant_backend import (
+    build_qdrant_image_index,
+    build_qdrant_text_index,
     qdrant_image_to_image_search,
     qdrant_text_search,
     qdrant_text_to_image_search,

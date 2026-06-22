@@ -12,7 +12,6 @@ import pytest
 import responses
 
 from mm_asset_rag.embedders.text_embedder import EmbeddingConfigError, TextEmbedder
-from mm_asset_rag.providers import EmbeddingProvider  # back-compat alias
 from mm_asset_rag.settings import Settings
 
 
@@ -49,7 +48,7 @@ def test_provider_requires_configuration(monkeypatch) -> None:
 def test_provider_alias_still_raises(monkeypatch) -> None:
     s = _isolated_settings(monkeypatch)
     with pytest.raises(EmbeddingConfigError, match="requires"):
-        EmbeddingProvider(settings=s)
+        TextEmbedder(settings=s)
 
 
 @responses.activate
