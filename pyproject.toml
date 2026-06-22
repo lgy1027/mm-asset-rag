@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "mm-asset-rag"
 dynamic = ["version"]
-description = "Multimodal asset RAG: parse PDFs and images, index with Qdrant or LlamaIndex, retrieve by text/image/hybrid."
+description = "Multimodal asset RAG: parse PDFs and images, index with Qdrant, retrieve by text/image/hybrid, stream grounded LLM answers over a bundled web UI."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [
     { name = "liguoyu", email = "guoyu.li@lcfuturecenter.com" },
 ]
-keywords = ["rag", "multimodal", "qdrant", "llamaindex", "clip"]
+keywords = ["rag", "multimodal", "qdrant", "clip", "pdf-parsing", "vector-search"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -31,10 +31,9 @@ dependencies = [
     "PyMuPDF>=1.23",
     "qdrant-client>=1.7",
     "fastembed>=0.5",
-    "llama-index-core>=0.10",
-    "llama-index-embeddings-openai>=0.1",
     "fastapi>=0.110",
     "uvicorn>=0.27",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
