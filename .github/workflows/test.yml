@@ -23,10 +23,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install package
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+        with:
+          version: "latest"
+
+      - name: Install package (locked)
+        # ``uv sync`` reads ``uv.lock`` for reproducible installs across
+        # CI runs and contributors. Bump ``uv.lock`` via ``uv lock --upgrade``
+        # locally before merging dependency changes.
+        run: uv sync --extra dev
 
       - name: Lint (ruff)
         run: |
@@ -35,3 +41,14 @@ jobs:
 
       - name: Run unit tests
         run: pytest tests/unit -q --cov=mm_asset_rag --cov-report=xml --cov-report=term
+
+      - name: Smoke-test scripts
+        # Each script under scripts/ must at least be importable and
+        # respond to --help. This catches syntax errors and missing
+        # dependencies without needing ollama / Qdrant / a real corpus.
+        run: |
+          for s in scripts/expand_corpus.py scripts/eval_extended.py scripts/prune_corpus.py scripts/eval_rag.py; do
+            echo "::group::$s --help"
+            python "$s" --help
+            echo "::endgroup::"
+          done
