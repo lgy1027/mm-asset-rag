@@ -54,6 +54,16 @@ htmlcov/
 /run_report.json
 /eval_report.json
 
+# Cross-scenario test fixtures downloaded by `scripts/expand_corpus.py`.
+# These PDFs are pulled at runtime from public-domain sources (Wikipedia,
+# arXiv, IRS) — they are not part of the source distribution because
+# they re-bloat every clone. The script is idempotent and the
+# `asset_manifest.json` records the URLs to fetch.
+/examples/data/chapter11_assets/pdfs/arxiv_*.pdf
+/examples/data/chapter11_assets/pdfs/irs_*.pdf
+/examples/data/chapter11_assets/pdfs/wiki_*.pdf
+/examples/data/chapter11_assets/pdfs/*__scan.pdf
+
 # IDE
 .idea/
 .vscode/

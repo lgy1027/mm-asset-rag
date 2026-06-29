@@ -119,7 +119,7 @@ def _hybrid_search(query: str, top_k: int):
 
 
 def _text_to_image_search(query: str, top_k: int):
-    from mm_asset_rag.qdrant_store import qdrant_text_to_image_search
+    from mm_asset_rag.backends.qdrant_backend import qdrant_text_to_image_search
     return qdrant_text_to_image_search(query, top_k=top_k)
 
 
