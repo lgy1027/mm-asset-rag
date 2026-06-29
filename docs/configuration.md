@@ -96,9 +96,56 @@ Image embedding requires the optional `[clip]` extra:
 | `qdrant_upsert_batch_size` | `QDRANT_UPSERT_BATCH_SIZE` | `16` |
 | `qdrant_bm25_model` | `QDRANT_BM25_MODEL` | `Qdrant/bm25` |
 | `qdrant_hybrid_prefetch_limit` | `QDRANT_HYBRID_PREFETCH_LIMIT` | `20` |
+| `bm25_zh_enabled` | `BM25_ZH_ENABLED` | `true` |
+| `bm25_zh_k1` | `BM25_ZH_K1` | `1.5` |
+| `bm25_zh_b` | `BM25_ZH_B` | `0.75` |
+| `bm25_zh_vector_name` | `BM25_ZH_VECTOR_NAME` | `bm25_zh` |
 
 When the embedding dimension changes, the active collection is
 auto-suffixed (`f"{base}_{dim}d"`, e.g. `multimodal_text_2560d`).
+
+### Chinese BM25 (`bm25_zh`)
+
+The Qdrant text collection stores three vector kinds when
+`bm25_zh_enabled` is true:
+
+- `dense` — OpenAI-compatible text embeddings (default `qwen3-embedding:4b`).
+- `bm25` — fastembed's English `Qdrant/bm25` sparse vector (RRF-fused with dense at query time).
+- `bm25_zh` — `jieba.cut` + Okapi BM25 sparse vector from
+  `mm_asset_rag.bm25_zh`. Catches token-level Chinese recall that the
+  English BM25 misses.
+
+`_hybrid_text_query` prefetches all three and fuses via RRF. The
+Chinese IDF table is persisted to
+`$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json` so query-time encoding
+does not re-tokenise the corpus. Setting `bm25_zh_enabled=false` and
+running `mmrag reindex` produces a 2-vector collection (English only)
+for backwards compatibility.
+
+## Retrieval tuning
+
+| Field | Env | Default | Purpose |
+| --- | --- | --- | --- |
+| `hybrid_weight_text` | `HYBRID_WEIGHT_TEXT` | `0.80` | Weight of the dense + BM25 (RRF) text route. |
+| `hybrid_weight_text_to_image` | `HYBRID_WEIGHT_TEXT_TO_IMAGE` | `0.20` | Weight of the CLIP text-to-image route. |
+| `hybrid_weight_image_to_image` | `HYBRID_WEIGHT_IMAGE_TO_IMAGE` | `0.0` | Weight of the CLIP image-to-image route. Only consulted when an `image_path` is supplied. |
+| `max_chunks_per_pdf` | `MAX_CHUNKS_PER_PDF` | unset (no cap) | Per-asset chunk cap applied during `mmrag index`. |
+
+`hybrid_search` merges the three routes by max-normalizing each
+group's scores and taking a weighted sum by `asset_id`. The weights
+list passed to the merge is built from whichever routes actually
+participate — the image-to-image route is only included when an
+`image_path` is supplied *and* `hybrid_weight_image_to_image > 0`.
+
+### `max_chunks_per_pdf`
+
+On the bundled sample set, three PDFs (`clip` 48 chunks, `flamingo`
+54, `gpt3` 75) contribute roughly a third of every dense top-5
+ranking. Capping each asset at `MAX_CHUNKS_PER_PDF` chunks
+(selected by a local BM25 Okapi score against the asset's title)
+gives every asset equal say in the dense ranking. Recommended value
+on the bundled set: `10` (reduces the 897-chunk index to ~365
+chunks; rebuild with `mmrag reindex` to take effect).
 
 ## Parser defaults (override per `/upload`)
 
@@ -116,7 +163,13 @@ The `/upload` form fields (`pdf_parser`, `enable_ocr`, `enable_vlm`,
 ## PaddleOCR-VL
 
 Required only when `PDF_PARSER=paddleocr_vl` (or `auto` with the
-token set).
+token set). Use this parser for **scanned PDFs** (no embedded text
+layer): `parse_with_paddleocr_vl` submits the document to the
+PaddleOCR-VL API and writes one markdown page per response row to
+`$MM_ASSET_RAG_HOME/parsed/<asset_id>/page_N.md`. With
+`PADDLEOCR_VL_USE_CHART_RECOGNITION=true` it also extracts charts and
+tables; with `PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=true` it
+auto-rotates mis-oriented scans.
 
 | Field | Env | Default |
 | --- | --- | --- |
@@ -136,6 +189,18 @@ token set).
 | --- | --- | --- |
 | `ocr_http_url` | `OCR_HTTP_URL` | — |
 | `ocr_http_timeout` | `OCR_HTTP_TIMEOUT` | `60` |
+
+Image OCR is enabled per-upload via `ENABLE_OCR=true` (or the
+`enable_ocr` flag on `/upload`). When the env var is set, every
+parsed image is POSTed to the local OCR service with a base64 payload
+and the structured `blocks` response is normalised and stored under
+`$MM_ASSET_RAG_HOME/parsed/<asset_id>/ocr.json`. See
+`scripts/expand_corpus.py` for an example pipeline that exercises this
+code path.
+
+For **PDFs** (including scanned PDFs without an embedded text layer)
+use `PDF_PARSER=paddleocr_vl` — see the PaddleOCR-VL section below.
+The CLI flag is `mmrag parse --pdf-parser paddleocr_vl`.
 
 ## VLM (image captioning)
 

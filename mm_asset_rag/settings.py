@@ -66,6 +66,37 @@ class Settings(BaseSettings):
     qdrant_bm25_model: str = "Qdrant/bm25"
     qdrant_hybrid_prefetch_limit: int = 20
 
+    # ─── Retrieval tuning ────────────────────────────────────────────────
+    # Weights used by ``retrieval.hybrid_search`` to merge the three
+    # routes (text / text-to-image / image-to-image). The list passed to
+    # ``merge_hits`` is built dynamically from whichever routes actually
+    # participate — ``image-to-image`` is only included when an
+    # ``image_path`` is supplied. Defaults tightened from the historical
+    # ``0.55 / 0.30 / 0.15`` because, on the bundled sample set, the
+    # ``text-to-image`` route was dragging unrelated images into pure
+    # text queries.
+    hybrid_weight_text: float = 0.80
+    hybrid_weight_text_to_image: float = 0.20
+    hybrid_weight_image_to_image: float = 0.0
+    # Per-asset chunk cap applied during ``build_qdrant_text_index``.
+    # Without a cap, dense embeddings skew toward the largest PDFs
+    # (clip / flamingo / gpt3 contribute 48 / 54 / 75 chunks each on the
+    # bundled set) and crowd smaller, more relevant assets out of the
+    # top-k. ``None`` keeps the current behaviour.
+    max_chunks_per_pdf: int | None = None
+
+    # ─── Chinese BM25 ─────────────────────────────────────────────────────
+    # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``
+    # (jieba tokenisation + Okapi BM25). Stored alongside the existing
+    # English fastembed BM25 in the same Qdrant collection, then fused
+    # via RRF at query time. The hybrid-text query prefetches both
+    # sparse vectors so token recall for Chinese is no longer reliant
+    # on the dense channel alone.
+    bm25_zh_enabled: bool = True
+    bm25_zh_k1: float = 1.5
+    bm25_zh_b: float = 0.75
+    bm25_zh_vector_name: str = "bm25_zh"
+
     # ─── PaddleOCR-VL ────────────────────────────────────────────────────
     paddleocr_vl_api_token: str | None = None
     paddleocr_vl_job_url: str = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"

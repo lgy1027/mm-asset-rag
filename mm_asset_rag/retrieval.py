@@ -10,6 +10,7 @@ from .backends.qdrant_backend import (
     qdrant_text_to_image_search,
 )
 from .schema import SearchHit
+from .settings import get_settings
 
 
 def normalize_scores(hits: list[SearchHit]) -> list[SearchHit]:
@@ -96,12 +97,16 @@ def hybrid_search(
     image_path: Path | None = None,
     top_k: int = 5,
 ) -> list[SearchHit]:
+    settings = get_settings()
     groups: list[list[SearchHit]] = [
         qdrant_text_search(query, top_k=top_k),
         qdrant_text_to_image_search(query, top_k=top_k),
     ]
-    weights = [0.55, 0.30]
-    if image_path:
+    weights = [settings.hybrid_weight_text, settings.hybrid_weight_text_to_image]
+    # Image-to-image is only consulted when an ``image_path`` is supplied
+    # *and* its weight is positive — calling it just to multiply by 0
+    # wastes a Qdrant round-trip.
+    if image_path and settings.hybrid_weight_image_to_image > 0:
         groups.append(qdrant_image_to_image_search(image_path, top_k=top_k))
-        weights.append(0.15)
+        weights.append(settings.hybrid_weight_image_to_image)
     return merge_hits(groups, weights, top_k=top_k)

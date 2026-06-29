@@ -18,6 +18,7 @@ the ``llama-index-vector-stores-qdrant`` integration because:
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import threading
 import uuid
@@ -33,6 +34,7 @@ from ..paths import get_assets_dir, get_indexes_dir
 from ..embedders.text_embedder import EmbeddingProvider
 from ..embedders.image_embedder import ImageEmbeddingProvider, ImageEmbeddingUnavailable
 from ..schema import SearchHit
+from ..settings import get_settings
 
 
 class QdrantLockHeldError(RuntimeError):
@@ -85,6 +87,149 @@ def _embed_bm25(texts: list[str]) -> list[models.SparseVector]:
         models.SparseVector(indices=enc.indices.tolist(), values=enc.values.tolist())
         for enc in result
     ]
+
+
+# ─── Chinese BM25 query-side ─────────────────────────────────────────────
+# The indexing side (``build_qdrant_text_index``) writes the per-corpus
+# IDF table to ``$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json`` once per
+# rebuild. The query side caches it in-process so we don't re-read the
+# file on every ``mmrag search``.
+
+_BM25_ZH_IDF_CACHE: dict | None = None
+
+
+def _load_bm25_zh_idf() -> dict | None:
+    """Load the persisted Chinese BM25 IDF table (cached in-process)."""
+    global _BM25_ZH_IDF_CACHE
+    if _BM25_ZH_IDF_CACHE is not None:
+        return _BM25_ZH_IDF_CACHE
+    idf_path = get_indexes_dir() / "bm25_zh_idf.json"
+    if not idf_path.exists():
+        return None
+    try:
+        _BM25_ZH_IDF_CACHE = json.loads(idf_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return _BM25_ZH_IDF_CACHE
+
+
+def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
+    """Encode ``query`` as a Chinese BM25 sparse vector, or ``None`` if disabled / no IDF."""
+    settings = get_settings()
+    if not settings.bm25_zh_enabled:
+        return None
+    idf = _load_bm25_zh_idf()
+    if not idf:
+        return None
+    from .. import bm25_zh as _bm25_zh_mod
+    tokens = _bm25_zh_mod.tokenize_zh(query)
+    return _bm25_zh_mod.bm25_zh_encode_query(tokens, idf)
+
+
+# ─── Per-asset chunk selector ─────────────────────────────────────────────
+# Independent BM25 Okapi implementation used only by
+# ``_select_top_chunks_per_pdf`` to keep the largest PDFs from dominating
+# the dense top-k. Not a drop-in for ``Qdrant/bm25``: the tokenizer is
+# intentionally simpler (Latin-script word splits + lowercase) because
+# we only score chunks against an asset's own title, not against an
+# arbitrary user query. Keeping it local avoids adding ``rank_bm25`` /
+# ``bm25s`` as dependencies.
+
+import math
+import re
+from collections import Counter, defaultdict
+
+
+def _tokenize_for_bm25(text: str) -> list[str]:
+    """Lowercase alphanumeric tokenizer for the chunk selector.
+
+    Splits on runs of non-alphanumeric characters and lowercases each
+    token. Empty input returns an empty list.
+    """
+    return [tok.lower() for tok in re.findall(r"[A-Za-z0-9]+", text or "")]
+
+
+def _bm25_okapi_scores(
+    query_tokens: list[str],
+    docs_tokens: list[list[str]],
+    k1: float = 1.5,
+    b: float = 0.75,
+) -> list[float]:
+    """Return BM25 Okapi scores of one query against many short docs.
+
+    Pure function: same shape as ``rank_bm25.BM25Okapi.get_scores`` for
+    the small per-asset document sets we care about. ``k1`` and ``b``
+    follow the Robertson–Walker defaults.
+    """
+    n = len(docs_tokens)
+    if n == 0:
+        return []
+    avgdl = sum(len(d) for d in docs_tokens) / n
+    df: Counter[str] = Counter()
+    for d in docs_tokens:
+        for term in set(d):
+            df[term] += 1
+    out: list[float] = []
+    for d in docs_tokens:
+        dl = max(len(d), 1)
+        tf: Counter[str] = Counter(d)
+        score = 0.0
+        for q in query_tokens:
+            fq = df.get(q, 0)
+            if fq == 0:
+                continue
+            idf = math.log(1 + (n - fq + 0.5) / (fq + 0.5))
+            f = tf.get(q, 0)
+            score += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * dl / avgdl))
+        out.append(score)
+    return out
+
+
+def _select_top_chunks_per_pdf(
+    documents: list,
+    max_per_pdf: int,
+) -> list:
+    """Cap each asset at ``max_per_pdf`` chunks by BM25 Okapi score.
+
+    The query is the asset's ``asset_title`` (``asset_id`` rewritten
+    with spaces as fallback). Documents whose count is below the cap
+    are passed through untouched. Input is not mutated; a new list is
+    returned.
+
+    Why: dense embeddings skew toward the largest PDFs on the bundled
+    sample set (``clip`` contributes 48 chunks, ``flamingo`` 54,
+    ``gpt3`` 75) and crowd smaller, more relevant assets out of the
+    dense top-k. Capping per-asset chunk count gives every asset equal
+    say in the dense ranking at retrieval time.
+    """
+    if max_per_pdf is None or max_per_pdf <= 0 or not documents:
+        return list(documents)
+
+    by_asset: dict[str, list] = defaultdict(list)
+    for d in documents:
+        by_asset[d.metadata.get("asset_id", "")].append(d)
+
+    keep: list = []
+    for asset_id, group in by_asset.items():
+        if len(group) <= max_per_pdf:
+            keep.extend(group)
+            continue
+        sample = group[0]
+        title = sample.metadata.get("asset_title") or asset_id.replace("_", " ")
+        query_tokens = _tokenize_for_bm25(title)
+        if not query_tokens:
+            # Title is empty / punctuation-only — fall back to first N
+            # by document order so we still cap deterministically.
+            keep.extend(group[:max_per_pdf])
+            continue
+        docs_tokens = [_tokenize_for_bm25(d.text or "") for d in group]
+        scores = _bm25_okapi_scores(query_tokens, docs_tokens)
+        # Tie-break on original index so the order is stable when many
+        # chunks share a score (typical for short snippets).
+        ranked = sorted(range(len(group)), key=lambda i: (-scores[i], i))
+        for i in ranked[:max_per_pdf]:
+            keep.append(group[i])
+    return keep
 
 
 def text_collection(vector_size: int | None = None) -> str:
@@ -223,14 +368,48 @@ def _create_collection(
     - ``recreate=False`` (the default) is a no-op if the collection
       already exists; used by the incremental ``build_qdrant_*_index`` path.
     - ``sparse=True`` adds the BM25 sparse vector config (text collection).
+      When ``bm25_zh_enabled`` is set on :class:`Settings`, a second
+      Chinese sparse vector (``bm25_zh``) is added so Chinese docs and
+      queries get token-level recall via a jieba-based Okapi BM25.
     """
     if recreate:
         if client.collection_exists(name):
             client.delete_collection(name)
     elif client.collection_exists(name):
+        # Schema check: when ``sparse=True``, the existing collection must
+        # carry every sparse vector the current Settings expect. Catches
+        # the silent-skip-after-upgrade footgun where adding a new
+        # sparse field (e.g. ``bm25_zh``) would otherwise leave the old
+        # 2-vector collection in place while the indexer tries to write
+        # 3-vector points.
+        if sparse:
+            info = client.get_collection(name)
+            existing_sparse = set((info.config.params.sparse_vectors or {}).keys())
+            settings = get_settings()
+            expected_sparse: set[str] = {SPARSE_VECTOR_NAME}
+            if settings.bm25_zh_enabled:
+                expected_sparse.add(settings.bm25_zh_vector_name)
+            missing = sorted(expected_sparse - existing_sparse)
+            unexpected = sorted(existing_sparse - expected_sparse)
+            if missing or unexpected:
+                raise RuntimeError(
+                    f"Qdrant collection '{name}' schema mismatch.\n"
+                    f"  expected sparse vectors: {sorted(expected_sparse)}\n"
+                    f"  actual sparse vectors:   {sorted(existing_sparse)}\n"
+                    f"  missing:   {missing or '(none)'}\n"
+                    f"  unexpected: {unexpected or '(none)'}\n"
+                    f"Run `mmrag reindex` to rebuild the collection with the "
+                    f"current Settings (it is drop+rebuild by default)."
+                )
         return
 
     if sparse:
+        sparse_config: dict[str, models.SparseVectorParams] = {
+            SPARSE_VECTOR_NAME: models.SparseVectorParams(),
+        }
+        settings = get_settings()
+        if settings.bm25_zh_enabled:
+            sparse_config[settings.bm25_zh_vector_name] = models.SparseVectorParams()
         client.create_collection(
             collection_name=name,
             vectors_config={
@@ -238,9 +417,7 @@ def _create_collection(
                     size=vector_size, distance=models.Distance.COSINE
                 ),
             },
-            sparse_vectors_config={
-                SPARSE_VECTOR_NAME: models.SparseVectorParams(),
-            },
+            sparse_vectors_config=sparse_config,
         )
     else:
         client.create_collection(
@@ -276,6 +453,33 @@ def build_qdrant_text_index(
     documents = read_documents()
     if not documents:
         return 0, "qdrant:text:empty"
+
+    # Optional per-asset chunk cap (see ``_select_top_chunks_per_pdf``).
+    # ``None`` keeps the previous behaviour of indexing every chunk.
+    max_chunks_per_pdf = get_settings().max_chunks_per_pdf
+    if max_chunks_per_pdf:
+        documents = _select_top_chunks_per_pdf(documents, max_chunks_per_pdf)
+
+    # Chinese BM25: tokenise the whole corpus once, persist the IDF table
+    # so the query-side ``_embed_bm25_zh_query`` can reuse it without
+    # re-scanning documents.jsonl. The per-doc sparse vectors below are
+    # indexed as ``bm25_zh`` alongside the English fastembed BM25 and the
+    # dense vector; ``_hybrid_text_query`` prefetches all three.
+    settings = get_settings()
+    bm25_zh_vectors: list[models.SparseVector] | None = None
+    if settings.bm25_zh_enabled:
+        from .. import bm25_zh as _bm25_zh_mod
+        bm25_zh_vectors, bm25_zh_idf = _bm25_zh_mod.build_bm25_zh_index(
+            documents,
+            k1=settings.bm25_zh_k1,
+            b=settings.bm25_zh_b,
+        )
+        idf_path = get_indexes_dir() / "bm25_zh_idf.json"
+        idf_path.parent.mkdir(parents=True, exist_ok=True)
+        idf_path.write_text(
+            json.dumps(bm25_zh_idf, ensure_ascii=False),
+            encoding="utf-8",
+        )
 
     batch_size = batch_size or max(1, int(os.environ.get("QDRANT_UPSERT_BATCH_SIZE", "16")))
     embedder = EmbeddingProvider()
@@ -346,13 +550,16 @@ def build_qdrant_text_index(
 
         for j, i in enumerate(to_do):
             payload = {**batch[i].metadata, "text": batch[i].text, "doc_key": doc_keys[i]}
+            vector_dict: dict[str, object] = {
+                DENSE_VECTOR_NAME: dense_vectors[j],
+                SPARSE_VECTOR_NAME: sparse_vectors[j],
+            }
+            if bm25_zh_vectors is not None:
+                vector_dict[settings.bm25_zh_vector_name] = bm25_zh_vectors[offset + i]
             pending.append(
                 models.PointStruct(
                     id=point_ids[i],
-                    vector={
-                        DENSE_VECTOR_NAME: dense_vectors[j],
-                        SPARSE_VECTOR_NAME: sparse_vectors[j],
-                    },
+                    vector=vector_dict,
                     payload=payload,
                 )
             )
@@ -448,29 +655,46 @@ def _hybrid_text_query(
     client: QdrantClient,
     collection_name: str,
     dense_vector: list[float],
-    sparse_vector: models.SparseVector,
+    sparse_vector_en: models.SparseVector,
+    sparse_vector_zh: models.SparseVector | None,
     top_k: int,
 ) -> list:
-    """Issue a single hybrid query (dense + BM25 prefetched, fused via RRF).
+    """Issue a single hybrid query (dense + BM25(en) + BM25(zh) prefetched, fused via RRF).
 
     Qdrant ranks each prefetch independently, then ``Fusion.RRF`` combines
-    the two ranked lists. The final ``limit`` is the top-k returned to the
+    the ranked lists. When ``bm25_zh_enabled`` is on (and the caller
+    passed a non-empty sparse vector), the Chinese channel is included
+    as a third prefetch. The final ``limit`` is the top-k returned to the
     caller.
     """
+    settings = get_settings()
+    prefetches = [
+        models.Prefetch(
+            query=dense_vector,
+            using=DENSE_VECTOR_NAME,
+            limit=HYBRID_PREFETCH_LIMIT,
+        ),
+        models.Prefetch(
+            query=sparse_vector_en,
+            using=SPARSE_VECTOR_NAME,
+            limit=HYBRID_PREFETCH_LIMIT,
+        ),
+    ]
+    if (
+        settings.bm25_zh_enabled
+        and sparse_vector_zh is not None
+        and len(sparse_vector_zh.indices) > 0
+    ):
+        prefetches.append(
+            models.Prefetch(
+                query=sparse_vector_zh,
+                using=settings.bm25_zh_vector_name,
+                limit=HYBRID_PREFETCH_LIMIT,
+            )
+        )
     return client.query_points(
         collection_name=collection_name,
-        prefetch=[
-            models.Prefetch(
-                query=dense_vector,
-                using=DENSE_VECTOR_NAME,
-                limit=HYBRID_PREFETCH_LIMIT,
-            ),
-            models.Prefetch(
-                query=sparse_vector,
-                using=SPARSE_VECTOR_NAME,
-                limit=HYBRID_PREFETCH_LIMIT,
-            ),
-        ],
+        prefetch=prefetches,
         query=models.FusionQuery(fusion=models.Fusion.RRF),
         limit=top_k,
         with_payload=True,
@@ -481,8 +705,8 @@ def qdrant_text_search(query: str, top_k: int = 5) -> list[SearchHit]:
     embedder = EmbeddingProvider()
     client = get_qdrant_client()
     dense_query = embedder.embed(query)
-    sparse_queries = _embed_bm25([query])
-    sparse_query = sparse_queries[0]
+    sparse_query = _embed_bm25([query])[0]
+    sparse_query_zh = _embed_bm25_zh_query(query)
 
     # Determine the active collection name (Qdrant active-text env var wins).
     results = _hybrid_text_query(
@@ -490,6 +714,7 @@ def qdrant_text_search(query: str, top_k: int = 5) -> list[SearchHit]:
         text_collection(len(dense_query)),
         dense_query,
         sparse_query,
+        sparse_query_zh,
         top_k,
     )
     return [_point_to_hit("qdrant_text", point) for point in results]
