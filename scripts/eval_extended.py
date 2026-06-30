@@ -308,15 +308,33 @@ EVAL_CASES: list[dict] = [
         "category": "image_search_sm",
         "mode": "text-to-image",
     },
-    # ── VLM caption retrieval (placeholder; needs ENABLE_VLM=true re-parse) ─
+    # ── VLM caption retrieval ────────────────────────────────────────────
     # Captions are written to ``captions/<asset_id>.json`` only when
     # ``ENABLE_VLM=true`` is set during ``mmrag parse``. The current
-    # bundled set was parsed without VLM, so the caption file is empty
-    # and the asset's text contribution comes from title + tags only.
-    # To exercise this path, run:
-    #     mmrag parse --pdf-parser pymupdf --enable-vlm=true --vlm-model gemma4:latest
-    # then re-add cases here. Skipped for now.
-    # {"query": "A Mona Lisa painting on a wall", "expected_ids": ["picsum_278", ...], "category": "vlm_sm", "mode": "text"},
+    # bundled set has captions for ~10 Caltech-101 images (gemma4:latest
+    # via ollama). The query is the *description* in natural language —
+    # the path proves that the VLM-generated text is correctly embedded
+    # and that the search can route back to the right image.
+    *[
+        {
+            "query": query,
+            "expected_ids": [expected],
+            "category": "vlm_caption",
+            "mode": "text",
+        }
+        for query, expected in [
+            ("海豚 海洋哺乳动物", "caltech_dolphin_01"),
+            ("大熊猫 黑白", "caltech_panda_01"),
+            ("比萨饼 食物", "caltech_pizza_01"),
+            ("向日葵 黄色花卉", "caltech_sunflower_01"),
+            ("宝塔 建筑", "caltech_pagoda_01"),
+            ("萨克斯管 乐器", "caltech_saxophone_01"),
+            ("佛像 雕塑", "caltech_buddha_01"),
+            ("脑部 解剖", "caltech_brain_01"),
+            ("飞机 航空器", "caltech_airplanes_01"),
+            ("莲花 水生植物", "caltech_lotus_01"),
+        ]
+    ],
 ]
 
 
