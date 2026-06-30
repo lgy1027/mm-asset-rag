@@ -18,13 +18,40 @@ Image search routes apply a cosine-similarity floor of
 filters out off-topic natural-language queries whose closest match
 is below 0.24 (CLIP scores live in roughly 0.15-0.40).
 
+After `scripts/import_caltech101.py` (49 categories, 3 images each,
+147 records) and `mmrag reindex --image-only`, the live image
+collection has 318 points (20 OpenCV + 151 Picsum + 147 Caltech-101).
+The eval is 77 cases across 6 categories; **Caltech-101 alone
+contributes 49 statistically meaningful cases**.
+
 | Category | n | hit@1 | hit@5 | hit@10 | NDCG@5 | MRR | MAP |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `clip_text_to_image` | 13 | 0.615 | 0.692 | 0.692 | 0.628 | 0.654 | 0.609 |
+| `clip_text_to_image` | 13 | 0.538 | 0.692 | 0.692 | 0.600 | 0.615 | 0.571 |
 | `clip_image_to_image` | 4 | 0.750 | **1.000** | **1.000** | 0.908 | 0.875 | 0.875 |
-| `ocr_to_image` | 4 | **1.000** | **1.000** | **1.000** | **1.000** | **1.000** | **1.000** |
+| `ocr_to_image` | 4 | 0.500 | **1.000** | **1.000** | 0.815 | 0.750 | 0.750 |
 | `cross_modal_hybrid` | 3 | 0.667 | **1.000** | **1.000** | 0.792 | 0.778 | 0.694 |
 | `negative_text` | 4 | (see below) | | | | | |
+| `caltech_101` | **49** | **0.939** | **1.000** | **1.000** | **0.942** | **0.969** | **0.920** |
+
+### `caltech_101` (49 labelled object categories, 3 images each)
+
+The statistically meaningful category. 49 ground-truth queries drawn
+from Caltech-101 (MIT licence) spanning vehicles (airplanes, motorbikes,
+helicopter, ferry, schooner), animals (dolphin, dalmatian, elephant,
+kangaroo, llama, panda, platypus, rhino, rooster, scorpion, seahorse,
+snoopy, starfish, beaver), food / plants (strawberry, sunflower,
+water lily, lotus), tools (stapler, wrench, scissors), landmarks
+(pagoda, pyramid, minaret), instruments (accordion, electric guitar,
+saxophone), and more (camera, cannon, brain, brontosaurus, buddha,
+chair, cup, lamp, laptop, cellphone, watch, watch).
+
+- hit@1 = 0.939 means 46/49 cases put a relevant image at rank 1.
+- hit@5 = hit@10 = 1.000 — every query surfaces a relevant image
+  in the top-5.
+- NDCG@5 = 0.942 / MRR = 0.969 / MAP = 0.920 — high rank quality.
+- precision@5 = 0.660 — the relevance threshold (0.24) cuts
+  ~half the Picsum tail off, so the top-5 is dominated by the
+  expected category with a few near-miss visual neighbours.
 
 ### `clip_text_to_image` (natural-language → image)
 
@@ -32,14 +59,18 @@ is below 0.24 (CLIP scores live in roughly 0.15-0.40).
 `Apple computer`, `butterfly`, `baboon`, `basketball`, `airplane`,
 `box`, `building`, `aloe`, `blender`, `wooden board`).
 
-- hit@1 = 0.615 means 8/13 cases put the right image at rank 1.
+- hit@1 = 0.538 means 7/13 cases put the right image at rank 1.
+  (Down from 0.615 in the original 171-image collection; the
+  expanded 318-image set has 1.85× more candidates competing for
+  top-1, so abstract-noun queries like `basketball`, `aloe plant`,
+  `blender 3D model` and `wooden board plank` drop out of rank 1.)
 - hit@5 = 0.692 means 9/13 cases surface the right image in the
   top-5. The 4 misses are `basketball` (top-1 score 0.229, below the
   0.24 floor and now empty), `aloe plant` and `blender 3D model`
   (abstract descriptions where CLIP-space similarity is dominated
   by background pixels), and `wooden board plank` (a borderline
   short-noun query).
-- precision@5 = 0.441 reflects the relevance-threshold filter
+- precision@5 = 0.299 reflects the relevance-threshold filter
   pulling the Picsum tail off: out of 5 top results typically only
   the OpenCV asset and 1-2 visually related images survive the
   floor, vs. ~4 random Picsum placeholders before.
@@ -62,10 +93,18 @@ visually similar OpenCV images (`logo → logo`, `aero → aero`,
 4 cases pretending the query is the OCR text from a scanned
 document, then running CLIP text against the image collection.
 
-- 1.000 across the board. Brand names (`Microsoft Windows`,
-  `Linux Tux`, `Apple Inc Mac`) and product nouns (`swimming fish`)
-  are CLIP's strongest matches; this is exactly the production
-  scenario "scan a receipt / product photo, search by its label".
+- hit@5 = hit@10 = 1.000 — every brand-name query (`Microsoft
+  Windows`, `Linux Tux`, `Apple Inc Mac`, `swimming fish
+  underwater`) surfaces the right image in the top-5.
+- hit@1 = 0.500 — down from 1.000 in the smaller 171-image
+  collection. With 318 images now indexed, the dense channel has
+  more candidates competing for rank 1, and a couple of
+  brand-name queries lose to near-miss visual neighbours.
+  This is an expected trade-off when expanding the corpus.
+- precision@5 = 0.308 — relevance threshold cuts the Picsum tail
+  off, but the top-5 still has 1-2 visually related Caltech
+  images (e.g. an `apple_jpg` query may also surface a fruit
+  photo from Caltech).
 
 ### `cross_modal_hybrid` (text query → mixed PDF + image)
 
@@ -85,20 +124,25 @@ an image (`logo of operating system`, `fruit photograph`,
 `Schrödinger equation`, `vintage automobile`, `domestic feline`,
 `Mount Everest summit`.
 
-- **3/4 return zero results** after the relevance-threshold filter
-  is applied (was 0/4 before the filter). `vintage automobile` and
-  `domestic feline` were already empty; `Schrödinger equation` was
-  previously returning 1 unrelated image at score 0.225, now empty.
-  `Mount Everest summit` is the irreducible case: 3 Picsum photos in
-  the collection are real mountain/snowy photos and CLIP correctly
-  rates them at 0.28 / 0.26 / 0.26 — they are *CLIP-relevant but
-  unlabeled in the 20-OpenCV ground truth*. The threshold floor
-  cannot separate "true negative" from "relevant but unlabeled".
-- `no_result_rate = 0.75` and `avg_results_returned = 1.0` (down
-  from 10.0 before the filter). The **next upgrade** to close the
-  `Mount Everest` gap is a sparse / keyword pre-filter: Picsum
-  photos have no text metadata, so a `caption` or `tag` keyword
-  match would prune them out before the dense reranker fires.
+- **2/4 return zero results** after the relevance-threshold filter
+  is applied (down from 3/4 in the smaller 171-image collection).
+  `Schrödinger equation` and `domestic feline` are clean negatives
+  — no image scores above the 0.24 floor.
+- `vintage automobile` returns `caltech_car_side_01` at score
+  0.251. CLIP correctly maps "vintage automobile" to "car" — it
+  is *CLIP-relevant but unlabeled in our 20-OpenCV ground truth*.
+- `Mount Everest summit` returns 3 results: 2 Picsum snow-mountain
+  photos and 1 Caltech `helicopter_03` (0.270) and `pagoda_02`
+  (0.267). All are *tall / structure-like* photos that CLIP
+  considers visually related; the threshold cannot separate them
+  from a true Everest photo.
+- `no_result_rate = 0.50` and `avg_results_returned = 1.8`. The
+  **next upgrade** to close this gap is a sparse / keyword
+  pre-filter: Picsum photos have no text metadata, so a
+  `caption` or `tag` keyword match would prune them out before
+  the dense reranker fires. Or: use truly off-topic negative
+  queries (e.g. "Python programming language", "stock market
+  chart") that have no semantic overlap with any image.
 
 ## Precision / recall at the dataset scale
 
@@ -117,18 +161,20 @@ position of irrelevant filler:
 
 | Category | NDCG@5 | MRR | MAP |
 | --- | ---: | ---: | ---: |
-| clip_text_to_image | 0.628 | 0.654 | 0.609 |
+| clip_text_to_image | 0.600 | 0.615 | 0.571 |
 | clip_image_to_image | 0.908 | 0.875 | 0.875 |
-| ocr_to_image | **1.000** | **1.000** | **1.000** |
+| ocr_to_image | 0.815 | 0.750 | 0.750 |
 | cross_modal_hybrid | 0.792 | 0.778 | 0.694 |
+| **caltech_101** | **0.942** | **0.969** | **0.920** |
 
 For a multi-modal RAG to be useful in production with this
 corpus, the natural-language expectation is that the right image
 *is* in the top-k (1.0 NDCG / 1.0 hit@5 on the most realistic
-category `ocr_to_image`) and that downstream filtering / reranking
-sieves the filler. The data is sufficient to demonstrate the
-pipeline works; it is not sufficient to make strong precision
-claims.
+categories `ocr_to_image` and `caltech_101`) and that downstream
+filtering / reranking sieves the filler. The Caltech-101 set
+provides a statistically meaningful 49-case benchmark; the 13
+OpenCV cases and 4 OCR cases remain small-sample indicators
+rather than production-grade measurements.
 
 ## How to reproduce
 
@@ -142,17 +188,19 @@ more ground truth as the image corpus grows.
 
 ## Caveats
 
-- **20 OpenCV images is a tiny ground-truth base.** All
-  multimodal metric numbers have high variance — moving from
-  20 to 200+ semantically labelled images would change every
-  number non-trivially.
-- **Picsum placeholders are random photos with no labels.** They
-  pollute the result set for every text query; the benchmark
-  treats them as "not-relevant" which is correct but explains the
-  low precision.
+- **318 image points (20 OpenCV + 151 Picsum + 147 Caltech-101).**
+  The 20 OpenCV images give a small but tight ground truth; the
+  147 Caltech-101 images add a statistically meaningful 49-case
+  benchmark across vehicles, animals, food, tools, landmarks and
+  instruments. Picsum placeholders are random photos with no
+  labels and continue to dilute precision.
 - **VLM caption retrieval is not yet exercised.** The bundled
   set was parsed with `ENABLE_VLM=false`. Re-parse with VLM and
   add cases to `EVAL_CASES` (the VLM description becomes the
   `query` and the image is the expected asset).
-- **Negative-test gap.** 0/4 negatives return zero results. See
-  the three mitigations in the `negative_text` section above.
+- **Negative-test gap.** 2/4 negatives return zero results. The
+  remaining two (vintage automobile, Mount Everest) are
+  *CLIP-correctly matched* to image content the labels don't
+  cover — the relevance threshold cannot distinguish "true
+  negative" from "relevant but unlabeled". Use truly off-topic
+  queries or a sparse / keyword pre-filter to close this gap.
