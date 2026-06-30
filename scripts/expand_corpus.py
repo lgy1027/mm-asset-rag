@@ -240,34 +240,34 @@ def main() -> None:
         print("No new PDFs downloaded — nothing to append.")
         return
 
-    # Append to asset_manifest.json. Use forward slashes for cross-platform.
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    by_id = {rec["id"]: rec for rec in manifest["records"]}
+    # Read-modify-write under a flock, with atomic temp-file replace +
+    # ``.bak`` rotation on commit. See ``assets.safe_write_manifest`` /
+    # ``assets.locked_manifest_session`` for the design rationale.
+    from mm_asset_rag.assets import locked_manifest_session
+
     appended: list[dict] = []
     merged: list[tuple[str, list[str]]] = []
-    for rec in new_records:
-        if rec["id"] in by_id:
-            existing = by_id[rec["id"]]
-            old_tags = list(existing.get("tags", []))
-            new_tags = list(rec.get("tags", []))
-            # Union preserving insertion order; new tags win on duplicates.
-            seen = set()
-            merged_tags: list[str] = []
-            for t in old_tags + new_tags:
-                if t not in seen:
-                    seen.add(t)
-                    merged_tags.append(t)
-            if merged_tags != old_tags:
-                existing["tags"] = merged_tags
-                merged.append((rec["id"], merged_tags))
-        else:
-            manifest["records"].append(rec)
-            appended.append(rec)
-    manifest["total"] = len(manifest["records"])
-    manifest_path.write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    with locked_manifest_session(manifest_path) as manifest:
+        by_id = {rec["id"]: rec for rec in manifest["records"]}
+        for rec in new_records:
+            if rec["id"] in by_id:
+                existing = by_id[rec["id"]]
+                old_tags = list(existing.get("tags", []))
+                new_tags = list(rec.get("tags", []))
+                # Union preserving insertion order; new tags win on duplicates.
+                seen = set()
+                merged_tags: list[str] = []
+                for t in old_tags + new_tags:
+                    if t not in seen:
+                        seen.add(t)
+                        merged_tags.append(t)
+                if merged_tags != old_tags:
+                    existing["tags"] = merged_tags
+                    merged.append((rec["id"], merged_tags))
+            else:
+                manifest["records"].append(rec)
+                appended.append(rec)
+        manifest["total"] = len(manifest["records"])
     print(f"\nAppended {len(appended)} new records to {manifest_path}.")
     if merged:
         print(f"Merged tags into {len(merged)} existing records:")

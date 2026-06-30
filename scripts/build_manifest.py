@@ -213,15 +213,18 @@ def build_records() -> list[dict]:
 
 
 def main() -> None:
+    from mm_asset_rag.assets import safe_write_manifest
+
     records = build_records()
     payload = {
         "name": "mm-asset-rag extended sample set (PDFs + Picsum photos + OpenCV)",
         "total": len(records),
         "records": records,
     }
-    MANIFEST.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    # Atomic temp-file + ``os.replace`` + ``.bak`` rotation. If a previous
+    # build of the manifest is on disk the .bak preserves the prior
+    # version for one round of recovery.
+    safe_write_manifest(MANIFEST, payload, backup=True)
     print(f"Wrote {MANIFEST} with {len(records)} records "
           f"({sum(1 for r in records if r['type'] == 'pdf')} pdf, "
           f"{sum(1 for r in records if r['type'] == 'image')} image)")
