@@ -6,10 +6,9 @@ pure functions, no Qdrant / no embedding model required.
 
 from __future__ import annotations
 
-import pytest
-
 from mm_asset_rag.backends.qdrant_backend import (
     _bm25_okapi_scores,
+    _filter_by_relevance,
     _select_top_chunks_per_pdf,
     _tokenize_for_bm25,
 )
@@ -165,3 +164,42 @@ def test_select_top_chunks_does_not_mutate_input() -> None:
     original_order = [d.text for d in docs]
     _select_top_chunks_per_pdf(docs, max_per_pdf=2)
     assert [d.text for d in docs] == original_order
+
+
+# ─── _filter_by_relevance ───────────────────────────────────────────────
+# Used by the image search routes to drop Qdrant points whose cosine
+# similarity is below the configured floor. Off-topic natural-language
+# queries (e.g. "Schrödinger equation" against a photo collection) tend
+# to score below the floor even for the closest image, so filtering
+# returns an empty list instead of ten random Picsum photos.
+
+
+class _StubPoint:
+    def __init__(self, score: float | None, pid: str = "x") -> None:
+        self.score = score
+        self.id = pid
+
+
+def test_filter_by_relevance_zero_threshold_keeps_everything() -> None:
+    pts = [_StubPoint(0.0), _StubPoint(0.18), _StubPoint(0.5)]
+    assert [p.id for p in _filter_by_relevance(pts, 0.0)] == ["x", "x", "x"]
+
+
+def test_filter_by_relevance_drops_below_floor() -> None:
+    pts = [
+        _StubPoint(0.05, "a"),
+        _StubPoint(0.21, "b"),
+        _StubPoint(0.22, "c"),
+        _StubPoint(0.30, "d"),
+    ]
+    assert [p.id for p in _filter_by_relevance(pts, 0.22)] == ["c", "d"]
+
+
+def test_filter_by_relevance_handles_none_score() -> None:
+    """Qdrant may report ``score=None`` for points without similarity."""
+    pts = [_StubPoint(None, "a"), _StubPoint(0.30, "b")]
+    assert [p.id for p in _filter_by_relevance(pts, 0.22)] == ["b"]
+
+
+def test_filter_by_relevance_keeps_empty_input() -> None:
+    assert _filter_by_relevance([], 0.22) == []

@@ -84,6 +84,19 @@ class Settings(BaseSettings):
     # bundled set) and crowd smaller, more relevant assets out of the
     # top-k. ``None`` keeps the current behaviour.
     max_chunks_per_pdf: int | None = None
+    # Cosine similarity floor for the image search routes. CLIP scores
+    # live in roughly 0.15-0.40; off-topic natural-language queries
+    # (e.g. "Schrödinger equation" against a photo collection) tend to
+    # land below 0.24 even for the closest image, while on-topic
+    # queries like "Linux logo" sit at 0.30+. Filtering below this
+    # threshold gives the image routes a relevance floor so negative
+    # queries return an empty list instead of ten random Picsum photos.
+    # Set to ``0.0`` to disable the floor. Note: this is a *partial*
+    # fix — when a Picsum photo is genuinely a close CLIP match
+    # (e.g. real mountain photos in response to "Mount Everest"), the
+    # threshold cannot tell apart "true negative" from "relevant but
+    # unlabeled"; a sparse / keyword pre-filter is the next upgrade.
+    image_relevance_threshold: float = 0.24
 
     # ─── Chinese BM25 ─────────────────────────────────────────────────────
     # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``
@@ -137,9 +150,7 @@ class Settings(BaseSettings):
     @property
     def has_llm(self) -> bool:
         """Whether the LLM triple is complete enough to issue real requests."""
-        return bool(
-            self.openai_api_key and self.openai_base_url and self.openai_model
-        )
+        return bool(self.openai_api_key and self.openai_base_url and self.openai_model)
 
     @property
     def text_embedding_creds(self) -> tuple[str | None, str | None, str | None]:

@@ -17,22 +17,21 @@ the ``llama-index-vector-stores-qdrant`` integration because:
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import subprocess
 import threading
 import uuid
 from functools import lru_cache
 from pathlib import Path
-import subprocess
 
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient, models
 
 from ..document_store import read_documents
-from ..paths import get_assets_dir, get_indexes_dir
-from ..embedders.text_embedder import EmbeddingProvider
 from ..embedders.image_embedder import ImageEmbeddingProvider, ImageEmbeddingUnavailable
+from ..embedders.text_embedder import EmbeddingProvider
+from ..paths import get_assets_dir, get_indexes_dir
 from ..schema import SearchHit
 from ..settings import get_settings
 
@@ -46,6 +45,7 @@ class QdrantLockHeldError(RuntimeError):
     silently deleted the lock in all cases, which caused ``mmrag reindex``
     to hang when the API server (``uvicorn``) was still running.
     """
+
 
 TEXT_COLLECTION_BASE = os.environ.get("QDRANT_TEXT_COLLECTION", "multimodal_text")
 IMAGE_COLLECTION_BASE = os.environ.get("QDRANT_IMAGE_COLLECTION", "multimodal_image")
@@ -122,6 +122,7 @@ def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
     if not idf:
         return None
     from .. import bm25_zh as _bm25_zh_mod
+
     tokens = _bm25_zh_mod.tokenize_zh(query)
     return _bm25_zh_mod.bm25_zh_encode_query(tokens, idf)
 
@@ -422,9 +423,7 @@ def _create_collection(
     else:
         client.create_collection(
             collection_name=name,
-            vectors_config=models.VectorParams(
-                size=vector_size, distance=models.Distance.COSINE
-            ),
+            vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
         )
 
 
@@ -469,6 +468,7 @@ def build_qdrant_text_index(
     bm25_zh_vectors: list[models.SparseVector] | None = None
     if settings.bm25_zh_enabled:
         from .. import bm25_zh as _bm25_zh_mod
+
         bm25_zh_vectors, bm25_zh_idf = _bm25_zh_mod.build_bm25_zh_index(
             documents,
             k1=settings.bm25_zh_k1,
@@ -491,7 +491,9 @@ def build_qdrant_text_index(
     collection_name = text_collection(len(first_vector))
 
     if force_recreate:
-        _create_collection(client, collection_name, vector_size=len(first_vector), sparse=True, recreate=True)
+        _create_collection(
+            client, collection_name, vector_size=len(first_vector), sparse=True, recreate=True
+        )
     _create_collection(client, collection_name, vector_size=len(first_vector), sparse=True)
 
     inserted = 0
@@ -720,6 +722,20 @@ def qdrant_text_search(query: str, top_k: int = 5) -> list[SearchHit]:
     return [_point_to_hit("qdrant_text", point) for point in results]
 
 
+def _filter_by_relevance(results, threshold: float) -> list:
+    """Drop Qdrant points whose cosine score is below ``threshold``.
+
+    Used by the image search routes to give them a relevance floor:
+    off-topic natural-language queries typically score below the floor
+    even for the closest image, so filtering returns an empty list
+    instead of ten random Picsum photos. ``threshold=0.0`` keeps every
+    result (i.e. the previous behaviour).
+    """
+    if threshold <= 0.0:
+        return list(results)
+    return [p for p in results if (p.score or 0.0) >= threshold]
+
+
 def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
     try:
         provider = ImageEmbeddingProvider()
@@ -733,6 +749,8 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
         limit=top_k,
         with_payload=True,
     ).points
+    threshold = get_settings().image_relevance_threshold
+    results = _filter_by_relevance(results, threshold)
     return [_point_to_hit("qdrant_text_to_image", point) for point in results]
 
 
@@ -749,6 +767,8 @@ def qdrant_image_to_image_search(image_path: Path, top_k: int = 5) -> list[Searc
         limit=top_k,
         with_payload=True,
     ).points
+    threshold = get_settings().image_relevance_threshold
+    results = _filter_by_relevance(results, threshold)
     return [_point_to_hit("qdrant_image_to_image", point) for point in results]
 
 
