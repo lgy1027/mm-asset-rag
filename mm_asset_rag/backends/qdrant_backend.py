@@ -620,25 +620,53 @@ def build_qdrant_image_index(
             if offset is None:
                 break
 
-    points: list[models.PointStruct] = []
-    inserted = 0
-    skipped = 0
-    if progress_cb:
-        progress_cb(0, len(image_documents), "indexing images")
-
-    for index, document in enumerate(image_documents):
+    # Two-pass build: first collect the (asset_id, path) pairs we still
+    # need to embed (skipping already-indexed ones), then call
+    # ``provider.embed_image_batch`` once for the whole batch. The
+    # per-image loop used to dominate ``mmrag reindex --image-only``
+    # runtime because each ``model.encode`` invocation re-pays the
+    # PIL decode + model setup cost.
+    todo_paths: list[Path] = []
+    todo_point_ids: list[str] = []
+    todo_docs: list = []
+    for document in image_documents:
         point_id = stable_point_id(f"image:{document.metadata.get('asset_id')}")
         if point_id in existing_ids:
             skipped += 1
             continue
-        image_path = assets_dir / str(document.metadata["source_path"])
         try:
-            vector = first_vector if index == 0 else provider.embed_image(image_path)
+            image_path = assets_dir / str(document.metadata["source_path"])
+        except (KeyError, TypeError):
+            print(f"image index skipped ({document.metadata.get('asset_id')}): missing source_path")
+            continue
+        todo_paths.append(image_path)
+        todo_point_ids.append(point_id)
+        todo_docs.append(document)
+
+    # Reuse the probe vector for the very first image so we don't
+    # re-embed what the dim probe already computed.
+    vectors: list[list[float]] = []
+    if first_vector is not None and todo_paths and todo_paths[0] == first_path:
+        vectors.append(first_vector)
+        batch_paths = todo_paths[1:]
+    else:
+        batch_paths = todo_paths
+    if batch_paths:
+        try:
+            vectors.extend(provider.embed_image_batch(batch_paths))
         except Exception as exc:
-            print(
-                f"image index skipped ({document.metadata.get('asset_id')}): "
-                f"{type(exc).__name__}: {exc}"
-            )
+            print(f"image batch embed failed: {type(exc).__name__}: {exc}")
+            # Fall back: empty slots will be skipped in the build below.
+            vectors.extend([[] for _ in batch_paths])
+
+    points: list[models.PointStruct] = []
+    inserted = 0
+    if progress_cb:
+        progress_cb(0, len(image_documents), "indexing images")
+
+    for point_id, document, vector in zip(todo_point_ids, todo_docs, vectors):
+        if not vector:
+            print(f"image index skipped (empty vector): {document.metadata.get('asset_id')}")
             continue
         payload = {**document.metadata, "text": document.text}
         points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))

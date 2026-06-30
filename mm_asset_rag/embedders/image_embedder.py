@@ -45,8 +45,7 @@ class ImageEmbedder:
     def _check_available() -> None:
         if not ImageEmbedder.is_available():
             raise ImageEmbeddingUnavailable(
-                "Image embedding requires the [clip] extra: "
-                "`pip install mm-asset-rag[clip]`"
+                "Image embedding requires the [clip] extra: `pip install mm-asset-rag[clip]`"
             )
 
     def dim(self) -> int:
@@ -71,8 +70,71 @@ class ImageEmbedder:
         image = Image.open(image_path).convert("RGB")
         return [float(v) for v in model.encode(image, normalize_embeddings=True).tolist()]
 
+    def embed_text_batch(self, texts: list[str]) -> list[list[float]]:
+        """Encode multiple text strings in one model call.
+
+        sentence-transformers' CLIP ``encode`` accepts a list of strings
+        and amortises model overhead; this is significantly faster than
+        calling :meth:`embed_text` in a loop for >2 strings.
+        """
+        if not texts:
+            return []
+        model = self._load_model()
+        vectors = model.encode(list(texts), normalize_embeddings=True, batch_size=32)
+        return [[float(v) for v in row.tolist()] for row in vectors]
+
+    def embed_image_batch(self, image_paths: list[Path]) -> list[list[float]]:
+        """Encode multiple images in one model call.
+
+        Like :meth:`embed_text_batch` but for image inputs. Images are
+        loaded eagerly and PIL-converted to RGB before the batched
+        ``model.encode`` call. The single model invocation amortises
+        the per-image CPU/GPU setup that the per-image ``embed_image``
+        loop repeats.
+        """
+        if not image_paths:
+            return []
+        from PIL import Image
+
+        model = self._load_model()
+        images = [Image.open(p).convert("RGB") for p in image_paths]
+        vectors = model.encode(images, normalize_embeddings=True, batch_size=32)
+        return [[float(v) for v in row.tolist()] for row in vectors]
+
     def embed_batch(self, contents: list[Any]) -> list[list[float]]:
-        return [self.embed(c) for c in contents]
+        """Mixed batch — text and Path items in one call.
+
+        Splits the input by type, calls the appropriate batched encode
+        for each, then reassembles in the original order. Falls back
+        to the per-item :meth:`embed` for unrecognised types so the
+        contract ``len(embed_batch(xs)) == len(xs)`` always holds.
+        """
+        if not contents:
+            return []
+        texts: list[str] = []
+        text_indices: list[int] = []
+        images: list[Path] = []
+        image_indices: list[int] = []
+        for i, c in enumerate(contents):
+            if isinstance(c, str):
+                texts.append(c)
+                text_indices.append(i)
+            elif isinstance(c, Path):
+                images.append(c)
+                image_indices.append(i)
+            else:
+                # Unrecognised type — fall back to single-item encode.
+                return [self.embed(c) for c in contents]
+        text_vecs = self.embed_text_batch(texts) if texts else []
+        image_vecs = self.embed_image_batch(images) if images else []
+        out: list[list[float] | None] = [None] * len(contents)
+        for idx, vec in zip(text_indices, text_vecs):
+            out[idx] = vec
+        for idx, vec in zip(image_indices, image_vecs):
+            out[idx] = vec
+        # ``None`` slots indicate a fall-through; should not happen with
+        # the dispatch above but assert defensively.
+        return [v if v is not None else [] for v in out]
 
     def _load_model(self):
         if self._model is None:
