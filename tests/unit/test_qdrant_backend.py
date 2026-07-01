@@ -7,10 +7,13 @@ pure functions, no Qdrant / no embedding model required.
 from __future__ import annotations
 
 from mm_asset_rag.backends.qdrant_backend import (
+    _STOP_TOKENS,
     _bm25_okapi_scores,
     _filter_by_relevance,
+    _has_any_token_overlap,
     _select_top_chunks_per_pdf,
     _tokenize_for_bm25,
+    _tokenize_for_prefilter,
 )
 from mm_asset_rag.schema import ParsedDocument
 
@@ -203,3 +206,73 @@ def test_filter_by_relevance_handles_none_score() -> None:
 
 def test_filter_by_relevance_keeps_empty_input() -> None:
     assert _filter_by_relevance([], 0.22) == []
+
+
+# ─── Sparse pre-filter for image search ─────────────────────────────────
+# The pre-filter is a pure-Python token-overlap check on user-controlled
+# payload fields. These tests cover the helpers without touching Qdrant.
+
+
+def test_tokenize_for_prefilter_drops_short_and_stopwords() -> None:
+    """Tokens shorter than the min length and English stopwords are dropped."""
+    tokens = _tokenize_for_prefilter("The fish in the jpg image of Linux logo")
+    # "the", "in", "jpg", "image" are dropped; the semantic words remain.
+    assert "the" not in tokens
+    assert "in" not in tokens
+    assert "jpg" not in tokens
+    assert "image" not in tokens
+    assert "fish" in tokens
+    assert "linux" in tokens
+    assert "logo" in tokens
+
+
+def test_tokenize_for_prefilter_is_lowercase_and_alpha_only() -> None:
+    tokens = _tokenize_for_prefilter("Hello, World! 2024 Q1")
+    assert tokens == {"hello", "world", "2024"}
+
+
+def test_tokenize_for_prefilter_handles_empty_and_punctuation() -> None:
+    assert _tokenize_for_prefilter("") == set()
+    assert _tokenize_for_prefilter("!!! ... ---") == set()
+
+
+def test_stopwords_are_universal_no_project_terms() -> None:
+    """The stopword set is intentionally generic — no project-specific words."""
+    forbidden = {"caltech", "caltech101", "sample", "category", "license"}
+    assert not (_STOP_TOKENS & forbidden), (
+        f"stopword set leaked project terms: {(_STOP_TOKENS & forbidden)!r}"
+    )
+
+
+def test_has_any_token_overlap_no_overlap() -> None:
+    """A query with no shared tokens → no overlap."""
+    index = {"img1": {"fish", "logo"}, "img2": {"bird"}}
+    assert _has_any_token_overlap(_tokenize_for_prefilter("schrödinger equation"), index) is False
+
+
+def test_has_any_token_overlap_exact_match() -> None:
+    index = {"img1": {"fish", "logo"}, "img2": {"bird"}}
+    assert _has_any_token_overlap(_tokenize_for_prefilter("logo design"), index) is True
+
+
+def test_has_any_token_overlap_handles_plurals_via_substring() -> None:
+    """``"airplane"`` matches ``"airplanes"`` via substring containment."""
+    index = {"img1": {"airplanes"}}
+    assert _has_any_token_overlap(_tokenize_for_prefilter("airplane"), index) is True
+
+
+def test_has_any_token_overlap_short_token_substring_does_not_match() -> None:
+    """Short tokens like ``"in"`` never make it into the index because the
+    index builder runs every value through ``_tokenize_for_prefilter``,
+    which drops tokens below the min length. Verify that a tokenised
+    index does not retain ``"in"`` and therefore cannot match.
+    """
+    index = {"img1": _tokenize_for_prefilter("box in scene png")}
+    assert "in" not in index["img1"]
+    assert _has_any_token_overlap(_tokenize_for_prefilter("vintage"), index) is False
+
+
+def test_has_any_token_overlap_empty_inputs() -> None:
+    index = {"img1": {"fish"}}
+    assert _has_any_token_overlap(set(), index) is False
+    assert _has_any_token_overlap(_tokenize_for_prefilter("fish"), {}) is False

@@ -124,25 +124,26 @@ an image (`logo of operating system`, `fruit photograph`,
 `Schrödinger equation`, `vintage automobile`, `domestic feline`,
 `Mount Everest summit`.
 
-- **2/4 return zero results** after the relevance-threshold filter
-  is applied (down from 3/4 in the smaller 171-image collection).
-  `Schrödinger equation` and `domestic feline` are clean negatives
-  — no image scores above the 0.24 floor.
-- `vintage automobile` returns `caltech_car_side_01` at score
-  0.251. CLIP correctly maps "vintage automobile" to "car" — it
-  is *CLIP-relevant but unlabeled in our 20-OpenCV ground truth*.
-- `Mount Everest summit` returns 3 results: 2 Picsum snow-mountain
-  photos and 1 Caltech `helicopter_03` (0.270) and `pagoda_02`
-  (0.267). All are *tall / structure-like* photos that CLIP
-  considers visually related; the threshold cannot separate them
-  from a true Everest photo.
-- `no_result_rate = 0.50` and `avg_results_returned = 1.8`. The
-  **next upgrade** to close this gap is a sparse / keyword
-  pre-filter: Picsum photos have no text metadata, so a
-  `caption` or `tag` keyword match would prune them out before
-  the dense reranker fires. Or: use truly off-topic negative
-  queries (e.g. "Python programming language", "stock market
-  chart") that have no semantic overlap with any image.
+- **4/4 return zero results** after the sparse pre-filter +
+  relevance-threshold filter. The pre-filter (see
+  `_load_image_tag_index` in `qdrant_backend.py`) indexes the
+  `tags` / `asset_id` / `asset_title` payload of every image point
+  (configurable via `Settings.image_prefilter_fields`) and short-
+  circuits any query that has zero token overlap with the corpus.
+  Picsum images carry `tags=['photo']` so any non-photo query is a
+  clean off-topic case; the Caltech-101 images share a token with
+  their category-name query and stay in the pipeline. Off-topic
+  queries like `Mount Everest summit` have no shared token with
+  `pagoda_02` or any of the 151 Picsum snow-mountain photos, so
+  the pre-filter returns empty before Qdrant is even called.
+- `no_result_rate = 1.000` and `avg_results_returned = 0.0` —
+  every negative test case is now caught.
+- The pre-filter is **not** a complete substitute for query-side
+  evaluation: a query that happens to share a token with an
+  unrelated image (e.g. `fruit` → `fruit_*` filename) would still
+  pass through. The complement to this pre-filter is the dense
+  relevance threshold (0.24) which catches the in-pass but
+  low-similarity cases.
 
 ## Precision / recall at the dataset scale
 

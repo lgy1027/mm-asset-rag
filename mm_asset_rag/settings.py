@@ -97,6 +97,19 @@ class Settings(BaseSettings):
     # threshold cannot tell apart "true negative" from "relevant but
     # unlabeled"; a sparse / keyword pre-filter is the next upgrade.
     image_relevance_threshold: float = 0.24
+    # Sparse pre-filter for image search: a token-overlap check on
+    # payload fields that you control. When the user query shares
+    # *zero* tokens with any image's indexed payload fields, the
+    # image route returns empty without even calling Qdrant. This
+    # catches the cases where dense-only top-k always returns
+    # random Picsum-style noise for off-topic queries.
+    #
+    # Defaults: ``["tags", "asset_id", "asset_title"]`` match the
+    # ``asset_manifest.json`` schema; the image payload stores these
+    # verbatim. Override if your pipeline uses different field names.
+    # Set to ``[]`` to disable the pre-filter entirely.
+    image_prefilter_fields: list[str] = ["tags", "asset_id", "asset_title"]
+    image_prefilter_min_token_len: int = 3
 
     # ─── Chinese BM25 ─────────────────────────────────────────────────────
     # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``

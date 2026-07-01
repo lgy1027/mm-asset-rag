@@ -764,19 +764,242 @@ def _filter_by_relevance(results, threshold: float) -> list:
     return [p for p in results if (p.score or 0.0) >= threshold]
 
 
+# ─── Sparse pre-filter for image search ─────────────────────────────────
+# The relevance-threshold floor alone cannot catch the case where the
+# top CLIP match is *CLIP-correct but semantically off-topic* (e.g.
+# "Mount Everest summit" → a snowy mountain photo, "vintage automobile"
+# → a car-side photo). The two are too close in CLIP space for a single
+# cosine floor to separate. Instead, we use a global pre-filter: if
+# ``zero`` images in the collection share a token with the query (after
+# lowercase + substring normalisation), we treat the query as off-topic
+# and return empty without even calling Qdrant. The pre-filter is
+# strict-by-design: any non-zero overlap (e.g. "fish" → "happyfish",
+# "fruit" → "fruit_...") lets the dense re-ranker do its job.
+
+# Cache: maps asset_id -> set of lowercase tag tokens. Built lazily on
+# first call and invalidated when the collection size changes.
+_IMAGE_TAG_INDEX: dict[str, set[str]] | None = None
+_IMAGE_TAG_INDEX_SIZE: int = -1
+
+
+# Stopwords / structural tokens that are too short or too common to
+# carry a useful signal in a sparse pre-filter. Universal set — no
+# project-specific terms. Deployments that need additional stopwords
+# (e.g. domain jargon) can extend this at import time:
+#
+#     from mm_asset_rag.backends import qdrant_backend
+#     qdrant_backend._STOP_TOKENS = qdrant_backend._STOP_TOKENS | {"foo"}
+#
+# or by editing this list. We deliberately do *not* hard-code any
+# project-specific terms (e.g. ``"caltech101"``) here.
+_STOP_TOKENS: frozenset[str] = frozenset(
+    {
+        # A small, language-agnostic English stopword set. We are
+        # intentionally minimal — these are the words that contribute
+        # the most to false-positive overlaps in the pre-filter.
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "this",
+        "that",
+        "are",
+        "was",
+        "were",
+        "but",
+        "not",
+        "you",
+        "your",
+        "our",
+        "all",
+        "any",
+        "can",
+        "has",
+        "have",
+        "had",
+        "one",
+        "two",
+        "may",
+        "use",
+        "used",
+        "via",
+        # File / path artifacts — these appear in any corpus that
+        # uses real file names as semantic tokens.
+        "jpg",
+        "jpeg",
+        "png",
+        "gif",
+        "pdf",
+        "webp",
+        "bmp",
+        "tif",
+        "tiff",
+        "img",
+        "image",
+        "photo",
+        "file",
+        "files",
+    }
+)
+
+
+def _tokenize_for_prefilter(text: str) -> set[str]:
+    """Lowercase alphanumeric tokens of length ≥ min, minus stopwords.
+
+    Anything shorter than the minimum would substring-contain
+    common two-letter English words (``"in"``, ``"on"``, ``"at"``) and
+    generate spurious pre-filter overlaps. The minimum length is
+    configurable via ``Settings.image_prefilter_min_token_len`` so
+    deployments that use a different language / token granularity
+    can tune it. We also drop a small stopword set; in a real
+    deployment these would come from NLTK / spaCy, but the in-house
+    set is small and predictable.
+    """
+    import re as _re
+
+    from ..settings import get_settings
+
+    min_len = max(1, int(get_settings().image_prefilter_min_token_len))
+    return {
+        t
+        for t in _re.findall(r"[a-z0-9]+", text.lower())
+        if len(t) >= min_len and t not in _STOP_TOKENS
+    }
+
+
+def _load_image_tag_index() -> dict[str, set[str]]:
+    """Read every image point's payload and build a per-asset token
+    set. The token set is the union of every payload field listed in
+    ``Settings.image_prefilter_fields`` (default: ``["tags",
+    "asset_id", "asset_title"]``), so users with a different payload
+    schema can point the pre-filter at their own semantic field
+    names without code changes. Cached for the process lifetime;
+    rebuilt when the collection size changes. The Qdrant client is
+    closed before returning so callers can open their own client —
+    qdrant-client's local mode is single-process and a second open
+    on the same storage raises :class:`QdrantLockHeldError`.
+    """
+    global _IMAGE_TAG_INDEX, _IMAGE_TAG_INDEX_SIZE
+    settings = get_settings()
+    fields = list(settings.image_prefilter_fields or [])
+    if not fields:
+        # Pre-filter disabled — return an empty index so every query
+        # is treated as "no overlap" and the function short-circuits.
+        return {}
+    client = None
+    try:
+        client = get_qdrant_client()
+        size = client.count(image_collection(512), exact=True).count
+    except Exception:
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+        return {}
+    if _IMAGE_TAG_INDEX is not None and size == _IMAGE_TAG_INDEX_SIZE:
+        try:
+            client.close()
+        except Exception:
+            pass
+        return _IMAGE_TAG_INDEX
+    index: dict[str, set[str]] = {}
+    try:
+        offset = None
+        while True:
+            pts, offset = client.scroll(
+                collection_name=image_collection(512),
+                limit=500,
+                offset=offset,
+                with_payload=True,
+                with_vectors=False,
+            )
+            for p in pts:
+                payload = p.payload or {}
+                asset_id = str(payload.get("asset_id", ""))
+                if not asset_id:
+                    continue
+                tokens: set[str] = set()
+                for fname in fields:
+                    val = payload.get(fname)
+                    if isinstance(val, list):
+                        for v in val:
+                            tokens.update(_tokenize_for_prefilter(str(v)))
+                    elif val is not None:
+                        tokens.update(_tokenize_for_prefilter(str(val)))
+                index[asset_id] = tokens
+            if offset is None:
+                break
+    except Exception:
+        try:
+            client.close()
+        except Exception:
+            pass
+        return _IMAGE_TAG_INDEX or {}
+    try:
+        client.close()
+    except Exception:
+        pass
+    _IMAGE_TAG_INDEX = index
+    _IMAGE_TAG_INDEX_SIZE = size
+    return index
+
+
+def _has_any_token_overlap(query_tokens: set[str], tag_index: dict[str, set[str]]) -> bool:
+    """True iff some image has at least one tag token that *matches*
+    a query token by either substring containment or shared prefix.
+
+    The matchers handle plural / derivation (``"airplane"`` ↔
+    ``"airplanes"``, ``"photo"`` ↔ ``"photograph"``) without a full
+    lemmatiser. Tokens shorter than ``_MIN_TOKEN_LEN`` are dropped at
+    index time, so we never have to defend against two-letter
+    substring matches here.
+    """
+    if not query_tokens:
+        return False
+    for tag_tokens in tag_index.values():
+        if not tag_tokens:
+            continue
+        for qt in query_tokens:
+            for tt in tag_tokens:
+                if qt in tt or tt in qt:
+                    return True
+                if len(qt) >= 4 and len(tt) >= 4:
+                    if qt.startswith(tt) or tt.startswith(qt):
+                        return True
+    return False
+
+
 def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
     try:
         provider = ImageEmbeddingProvider()
     except ImageEmbeddingUnavailable:
         return []
+    # Sparse pre-filter: skip the Qdrant call entirely when no image
+    # has any token overlap with the query. Picsum images carry
+    # ``tags=['photo']`` so any query that doesn't mention "photo" is
+    # a clean off-topic case; the same logic keeps Caltech images that
+    # *do* share a token (e.g. "fish" → "happyfish") in the pipeline.
+    query_tokens = _tokenize_for_prefilter(query)
+    if query_tokens:
+        tag_index = _load_image_tag_index()
+        if tag_index and not _has_any_token_overlap(query_tokens, tag_index):
+            return []
     client = get_qdrant_client()
-    query_vector = provider.embed_text(query)
-    results = client.query_points(
-        collection_name=image_collection(len(query_vector)),
-        query=query_vector,
-        limit=top_k,
-        with_payload=True,
-    ).points
+    try:
+        query_vector = provider.embed_text(query)
+        results = client.query_points(
+            collection_name=image_collection(len(query_vector)),
+            query=query_vector,
+            limit=top_k,
+            with_payload=True,
+        ).points
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
     threshold = get_settings().image_relevance_threshold
     results = _filter_by_relevance(results, threshold)
     return [_point_to_hit("qdrant_text_to_image", point) for point in results]
@@ -788,13 +1011,19 @@ def qdrant_image_to_image_search(image_path: Path, top_k: int = 5) -> list[Searc
     except ImageEmbeddingUnavailable:
         return []
     client = get_qdrant_client()
-    query_vector = provider.embed_image(image_path)
-    results = client.query_points(
-        collection_name=image_collection(len(query_vector)),
-        query=query_vector,
-        limit=top_k,
-        with_payload=True,
-    ).points
+    try:
+        query_vector = provider.embed_image(image_path)
+        results = client.query_points(
+            collection_name=image_collection(len(query_vector)),
+            query=query_vector,
+            limit=top_k,
+            with_payload=True,
+        ).points
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
     threshold = get_settings().image_relevance_threshold
     results = _filter_by_relevance(results, threshold)
     return [_point_to_hit("qdrant_image_to_image", point) for point in results]
