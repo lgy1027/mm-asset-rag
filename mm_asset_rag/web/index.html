@@ -70,6 +70,13 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     .pill.failed  { background: #5a1f1f; color: var(--err); }
     .file-list { font-size: 12px; color: var(--muted); margin: 6px 0 0; max-height: 100px; overflow-y: auto; }
     .file-list div { padding: 2px 0; }
+    .preview-card { background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-top: 8px; }
+    .preview-card.unsupported { border-color: var(--err); }
+    .preview-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .preview-head strong { flex: 1; font-size: 12px; }
+    .preview-head .meta { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
+    .preview-card input[type=text], .preview-card textarea { margin-bottom: 6px; }
+    .preview-actions { display: flex; gap: 8px; margin-top: 8px; }
     .chat { display: flex; flex-direction: column; height: 100%; }
     .messages { flex: 1; overflow-y: auto; padding-right: 8px; }
     .msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; line-height: 1.55; }
@@ -91,6 +98,44 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     .kpi { display: flex; gap: 12px; }
     .kpi .v { font-size: 18px; font-weight: 600; color: var(--accent); }
     .kpi .l { font-size: 11px; color: var(--muted); text-transform: uppercase; }
+    #assetDrawer {
+      position: fixed; top: 0; right: 0; width: 420px; max-width: 92vw;
+      height: 100vh; background: var(--panel); border-left: 1px solid var(--border);
+      transform: translateX(100%); transition: transform 0.2s ease;
+      z-index: 50; overflow-y: auto; padding: 16px; box-sizing: border-box;
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    #assetDrawer.open { transform: translateX(0); }
+    #assetDrawer .drawer-head { display: flex; align-items: center; justify-content: space-between; }
+    #assetDrawer .drawer-body { font-size: 12px; line-height: 1.5; }
+    #assetDrawer .drawer-body dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    #assetDrawer .drawer-body dd { margin: 0 0 4px 0; }
+    #assetDrawer .drawer-body button { padding: 4px 10px; font-size: 12px; }
+    #assetDrawer .drawer-body a.scroll-link { color: var(--accent); cursor: pointer; }
+    #assetDrawer .drawer-body a.scroll-link:hover { text-decoration: underline; }
+    .task-row-highlight {
+      animation: taskRowFlash 1.4s ease-out;
+    }
+    @keyframes taskRowFlash {
+      0%   { background-color: rgba(94, 177, 255, 0.35); }
+      100% { background-color: transparent; }
+    }
+    .modal {
+      position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55);
+      display: none; align-items: center; justify-content: center;
+      z-index: 100;
+    }
+    .modal.open { display: flex; }
+    .modal-dialog {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+      padding: 16px 20px; max-width: 440px; width: 92%;
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45);
+    }
+    .modal-title { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+    .modal-body { font-size: 13px; color: var(--fg); margin-bottom: 14px; line-height: 1.5; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    .modal-actions button { font-size: 13px; padding: 6px 14px; }
+    .modal-actions .ghost { color: var(--muted); }
   </style>
 </head>
 <body>
@@ -111,32 +156,22 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         </div>
       </div>
 
-      <h2>Upload &amp; Parse</h2>
+      <h2>Upload</h2>
       <div class="panel">
         <label>PDFs &amp; images (drag or click)</label>
         <input type="file" id="fileInput" multiple
-               accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp" />
+               accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp,.gif" />
         <div class="file-list" id="fileList"></div>
-        <div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap">
-          <select id="pdfParser" title="PDF parser (also PDF_PARSER in .env)">
-            <option value="auto">parser: auto</option>
-            <option value="pymupdf">parser: pymupdf</option>
-            <option value="paddleocr_vl">parser: paddleocr_vl</option>
-          </select>
-          <select id="imageProvider" title="Image embedding provider (also IMAGE_PROVIDER in .env)">
-            <option value="lite">embed: lite</option>
-            <option value="sentence_transformers">embed: CLIP</option>
-          </select>
-          <label class="check"><input type="checkbox" id="enableOcr"> OCR</label>
-          <label class="check"><input type="checkbox" id="enableVlm"> VLM</label>
-          <label class="check"><input type="checkbox" id="autoIndex" checked> auto-index</label>
-        </div>
         <div class="row" style="margin-top:8px">
           <span style="font-size:11px;color:var(--muted)">
-            defaults come from .env (PDF_PARSER / ENABLE_OCR / ENABLE_VLM / IMAGE_PROVIDER / AUTO_INDEX);
-            change here to override for this upload only.
+            Preview first: the server sniffs file type and auto-extracts title/tags with VLM when configured.
           </span>
-          <button class="shrink" id="uploadBtn" disabled>Upload &amp; Parse</button>
+          <button class="shrink" id="previewBtn" disabled>Preview</button>
+        </div>
+        <div id="previewList"></div>
+        <div class="preview-actions" id="previewActions" style="display:none">
+          <button class="ghost" id="clearPreviewBtn">Cancel</button>
+          <button id="confirmBtn">Confirm &amp; Ingest</button>
         </div>
       </div>
 
@@ -153,6 +188,19 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       <div class="panel panel-tight" id="tasksList">
         <div class="empty">no tasks yet</div>
       </div>
+
+      <h2>Assets</h2>
+      <div class="panel panel-tight" id="assetsList">
+        <div class="empty">no assets yet</div>
+      </div>
+    </aside>
+
+    <aside id="assetDrawer" aria-hidden="true">
+      <div class="drawer-head">
+        <strong id="assetDrawerTitle">asset</strong>
+        <button class="ghost" id="assetDrawerClose" aria-label="close">×</button>
+      </div>
+      <div class="drawer-body" id="assetDrawerBody">loading…</div>
     </aside>
 
     <section>
@@ -181,12 +229,26 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     </section>
   </main>
 
+  <div id="confirmModal" class="modal" aria-hidden="true" role="dialog" aria-modal="true">
+    <div class="modal-dialog">
+      <div class="modal-title" id="confirmTitle">Confirm</div>
+      <div class="modal-body" id="confirmBody">Are you sure?</div>
+      <div class="modal-actions">
+        <button class="ghost" id="confirmNo">Cancel</button>
+        <button id="confirmYes">Confirm</button>
+      </div>
+    </div>
+  </div>
+
   <script>
     const $ = (id) => document.getElementById(id);
     const fileInput = $("fileInput");
     const fileList = $("fileList");
-    const uploadBtn = $("uploadBtn");
-    const autoIndex = $("autoIndex");
+    const previewBtn = $("previewBtn");
+    const previewList = $("previewList");
+    const previewActions = $("previewActions");
+    const confirmBtn = $("confirmBtn");
+    const clearPreviewBtn = $("clearPreviewBtn");
     const taskPanel = $("taskPanel");
     const taskStatusPill = $("taskStatusPill");
     const taskBar = $("taskBar");
@@ -200,9 +262,62 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     let pickedFiles = [];
     let activeTaskId = null;
     let llmModel = "";
+    let currentPreview = null;
+    let previewSubmitted = false;
+
+    // Single-flight gate: when ``refreshHealth`` / ``refreshTasksList`` /
+    // ``refreshAssetsList`` are called back-to-back (e.g. the user
+    // hits upload → confirm → retry in quick succession) we don't
+    // want N parallel ``fetch``s each racing to overwrite the same
+    // DOM with stale results. ``singleFlight`` reuses the in-flight
+    // promise and skips empty result sets when nothing changed.
+    function singleFlight(key, fn) {
+      const pending = singleFlight._inflight.get(key);
+      if (pending) return pending;
+      const p = (async () => {
+        try {
+          return await fn();
+        } finally {
+          singleFlight._inflight.delete(key);
+        }
+      })();
+      singleFlight._inflight.set(key, p);
+      return p;
+    }
+    singleFlight._inflight = new Map();
 
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+
+    // Cache-bust wrapper: most SPA routes are JSON, and a stale
+    // 200-from-disk-cache response would show wrong asset counts or a
+    // missing task. We pin one ``?v=`` query for the lifetime of the
+    // tab and re-key only when the page reloads. The version comes
+    // from ``/health`` so a deploy that bumps ``__version__`` invalidates
+    // the local tab's cache automatically.
+    let _appVersion = null;
+    function apiFetch(url, opts) {
+      // Streaming endpoints (NDJSON, server-sent) must NOT get
+      // ``?v=`` appended — backwards proxies and FastAPI's
+      // StreamingResponse misbehave when the query carries extra
+      // params that the generator doesn't know about. The two
+      // streaming routes we hit today are listed explicitly.
+      const streamRoute = url.startsWith("/tasks/") && url.endsWith("/stream");
+      const streaming = streamRoute || url === "/chat/stream";
+      if (streaming || _appVersion == null) return fetch(url, opts);
+      const sep = url.includes("?") ? "&" : "?";
+      return fetch(`${url}${sep}v=${encodeURIComponent(_appVersion)}`, opts);
+    }
+    async function primeAppVersion() {
+      try {
+        const r = await apiFetch("/health");
+        if (!r.ok) return;
+        const d = await r.json();
+        _appVersion = String(d.version || "0");
+      } catch {
+        /* offline at boot: leave _appVersion null and fall back to plain fetches */
+      }
     }
 
     function setStatus(text, dotClass = "ok") {
@@ -210,9 +325,9 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       $("statusDot").style.background = `var(--${dotClass})`;
     }
 
-    async function refreshHealth() {
+    async function _refreshHealthOnce() {
       try {
-        const r = await fetch("/health");
+        const r = await apiFetch("/health");
         const d = await r.json();
         $("kpiAssets").textContent = d.assets ?? "–";
         $("kpiDocs").textContent = d.documents_jsonl_exists ? "✓" : "✗";
@@ -223,26 +338,112 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         setStatus("backend unreachable", "err");
       }
     }
+    function refreshHealth() {
+      return singleFlight("health", _refreshHealthOnce);
+    }
 
     fileInput.addEventListener("change", () => {
       pickedFiles = Array.from(fileInput.files);
       fileList.innerHTML = pickedFiles.map((f) => `<div>📄 ${escapeHtml(f.name)} <span style="color:var(--muted)">(${Math.round(f.size/1024)} KB)</span></div>`).join("");
-      uploadBtn.disabled = pickedFiles.length === 0;
+      previewBtn.disabled = pickedFiles.length === 0;
+      previewList.innerHTML = "";
+      previewActions.style.display = "none";
+      currentPreview = null;
+      previewSubmitted = false;
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "Confirm & Ingest";
     });
 
-    uploadBtn.addEventListener("click", async () => {
+    previewBtn.addEventListener("click", async () => {
       if (!pickedFiles.length) return;
-      uploadBtn.disabled = true;
+      previewBtn.disabled = true;
+      previewBtn.textContent = "Previewing…";
       const fd = new FormData();
       for (const f of pickedFiles) fd.append("files", f, f.name);
-      // Per-upload overrides; .env provides the default if a value is omitted.
-      fd.append("auto_index", autoIndex.checked ? "true" : "false");
-      fd.append("pdf_parser", $("pdfParser").value);
-      fd.append("enable_ocr", $("enableOcr").checked ? "true" : "false");
-      fd.append("enable_vlm", $("enableVlm").checked ? "true" : "false");
-      fd.append("image_provider", $("imageProvider").value);
       try {
-        const r = await fetch("/upload", { method: "POST", body: fd });
+        const r = await apiFetch("/upload/preview", { method: "POST", body: fd });
+        const d = await r.json();
+        if (!r.ok) throw new Error(JSON.stringify(d));
+        currentPreview = d;
+        previewSubmitted = false;
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = "Confirm & Ingest";
+        renderPreviewCards(d.previews || []);
+        previewActions.style.display = (d.previews || []).length ? "flex" : "none";
+        setStatus(`preview ready · ${(d.previews || []).length} file(s)`, "ok");
+      } catch (e) {
+        setStatus(`preview failed: ${e.message}`, "err");
+      } finally {
+        previewBtn.disabled = false;
+        previewBtn.textContent = "Preview";
+      }
+    });
+
+    clearPreviewBtn.addEventListener("click", () => {
+      currentPreview = null;
+      pickedFiles = [];
+      fileInput.value = "";
+      fileList.innerHTML = "";
+      previewList.innerHTML = "";
+      previewActions.style.display = "none";
+      previewSubmitted = false;
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "Confirm & Ingest";
+      previewBtn.disabled = true;
+    });
+
+    function renderPreviewCards(previews) {
+      previewList.innerHTML = previews.map((p) => {
+        const sn = p.sniff || {};
+        const disabled = sn.source_type === "unknown" ? "checked" : "";
+        const kind = sn.source_type === "pdf" ? "PDF" : sn.source_type === "image" ? "IMAGE" : "UNSUPPORTED";
+        const tags = (p.effective_tags || []).join(", ");
+        const detail = sn.source_type === "pdf"
+          ? `${sn.page_count || "?"} page(s)`
+          : sn.source_type === "image" ? `${sn.width || "?"}×${sn.height || "?"}` : (p.rejected_reason || "unsupported");
+        const dupBadge = p.existing_asset_id
+          ? `<span class="pill warn" style="margin-left:6px">已存在 asset ${escapeHtml(p.existing_asset_id)}</span>`
+          : "";
+        return `
+          <div class="preview-card ${sn.source_type === "unknown" ? "unsupported" : ""}" data-preview-id="${escapeHtml(p.preview_id)}">
+            <div class="preview-head">
+              <strong>${kind} · ${escapeHtml(sn.relative_path || "file")}</strong>
+              <span class="meta">${escapeHtml(detail)}</span>
+              ${dupBadge}
+            </div>
+            <label>Title</label>
+            <input type="text" class="preview-title" value="${escapeHtml(p.effective_title || sn.title || "")}">
+            <label>Tags</label>
+            <input type="text" class="preview-tags" value="${escapeHtml(tags)}" placeholder="tag1, tag2, tag3">
+            <label>Description</label>
+            <textarea class="preview-desc" placeholder="optional description">${escapeHtml(p.effective_description || "")}</textarea>
+            <label class="check"><input type="checkbox" class="preview-reject" ${disabled}> skip this file</label>
+          </div>`;
+      }).join("");
+    }
+
+    confirmBtn.addEventListener("click", async () => {
+      if (!currentPreview?.cache_id) return;
+      // Mark as submitted before the fetch leaves the browser: even on
+      // a network failure we don't want the user to re-click and post a
+      // second confirm with the same ``cache_id`` (the server may have
+      // already accepted and dispatched a task, or the cache may have
+      // been consumed by the first attempt).
+      previewSubmitted = true;
+      confirmBtn.disabled = true;
+      const edits = Array.from(previewList.querySelectorAll(".preview-card")).map((card) => ({
+        preview_id: card.dataset.previewId,
+        title: card.querySelector(".preview-title").value.trim(),
+        tags: card.querySelector(".preview-tags").value.split(/[,，;；\n]+/).map(s => s.trim()).filter(Boolean),
+        description: card.querySelector(".preview-desc").value.trim(),
+        rejected: card.querySelector(".preview-reject").checked,
+      }));
+      try {
+        const r = await apiFetch("/upload/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cache_id: currentPreview.cache_id, edits }),
+        });
         const d = await r.json();
         if (!r.ok) throw new Error(JSON.stringify(d));
         activeTaskId = d.task_id;
@@ -250,65 +451,302 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         taskStatusPill.textContent = "pending";
         taskStatusPill.className = "pill pending";
         taskBar.style.width = "0%";
-        const opts = d.options || {};
-        const optSummary = `parser=${opts.pdf_parser} ocr=${opts.enable_ocr} vlm=${opts.enable_vlm} embed=${opts.image_provider} idx=${opts.auto_index}`;
-        taskDetail.textContent = `task ${d.task_id} · ${d.uploaded.length} file(s) · kind=${d.kind} · ${optSummary}`;
-        pickedFiles = [];
-        fileInput.value = "";
-        fileList.innerHTML = "";
-        await pollTask();
+        taskDetail.textContent = `task ${d.task_id} · ${d.uploaded.length} file(s) · kind=${d.kind}`;
+        previewList.querySelectorAll("input, textarea").forEach((el) => { el.disabled = true; });
+        confirmBtn.textContent = "Submitted";
+        setStatus(`submitted task ${d.task_id} · ${d.uploaded.length} file(s)`, "ok");
+        await streamWithBackoff(d.task_id);
       } catch (e) {
-        setStatus(`upload failed: ${e.message}`, "err");
-        uploadBtn.disabled = false;
+        // Roll the flag back so the user can retry after a *failed*
+        // submit (no server-side task was created). Cache is still
+        // valid until the user picks a new file or waits for TTL.
+        previewSubmitted = false;
+        setStatus(`confirm failed: ${e.message}`, "err");
+        confirmBtn.disabled = false;
       }
     });
 
     refreshTaskBtn.addEventListener("click", pollTask);
 
+    // Track the last known status of the active task so visibility-based
+    // reconnect can decide whether to re-subscribe. The stream itself
+    // is coordinated through ``streamAbortController`` (see
+    // ``streamWithBackoff``); there is no separate ``streamInFlight``
+    // boolean because the AbortController handles both cancellation
+    // and single-flight semantics.
+    let lastTaskStatus = null;
+
+    function isTaskLive(taskId) {
+      return taskId === activeTaskId && (lastTaskStatus === "pending" || lastTaskStatus === "running");
+    }
+
+    function renderTaskSnapshot(d) {
+      taskStatusPill.textContent = d.status;
+      taskStatusPill.className = `pill ${d.status}`;
+      taskBar.style.width = d.progress ? `${(d.progress * 100).toFixed(1)}%` : "0%";
+      const cur = d.current || "";
+      const skip = d.skipped ? `· skipped ${d.skipped}` : "";
+      const fail = d.failed ? `· failed ${d.failed}` : "";
+      taskDetail.textContent = `${cur} ${skip} ${fail}`.trim();
+      lastTaskStatus = d.status;
+    }
+
+    function handleTaskTerminal(d) {
+      if (d.status === "done") {
+        setStatus(`task done · ${d.processed}/${d.total}`, "ok");
+        refreshHealth();
+      } else if (d.status === "failed") {
+        setStatus(`task failed: ${d.error || "unknown"}`, "err");
+      } else if (d.status === "partial") {
+        setStatus(`task partial · processed ${d.processed}/${d.total}`, "err");
+      } else if (d.status === "interrupted") {
+        setStatus(
+          `task interrupted (process exited) · ${d.error || "use Retry to resume"}`,
+          "warn",
+        );
+      }
+    }
+
     async function pollTask() {
       if (!activeTaskId) return;
       try {
-        const r = await fetch(`/tasks/${activeTaskId}`);
+        const r = await apiFetch(`/tasks/${activeTaskId}`);
+        if (!r.ok) {
+          setStatus(`poll failed: HTTP ${r.status}`, "err");
+          return;
+        }
         const d = await r.json();
-        taskStatusPill.textContent = d.status;
-        taskStatusPill.className = `pill ${d.status}`;
-        taskBar.style.width = d.progress ? `${(d.progress * 100).toFixed(1)}%` : "0%";
-        const cur = d.current || "";
-        const skip = d.skipped ? `· skipped ${d.skipped}` : "";
-        const fail = d.failed ? `· failed ${d.failed}` : "";
-        taskDetail.textContent = `${cur} ${skip} ${fail}`.trim();
+        renderTaskSnapshot(d);
+        handleTaskTerminal(d);
+        refreshTasksList();
         if (d.status === "running" || d.status === "pending") {
           setTimeout(pollTask, 2000);
-        } else if (d.status === "done") {
-          setStatus(`task done · ${d.processed}/${d.total}`, "ok");
-          refreshHealth();
-        } else if (d.status === "failed") {
-          setStatus(`task failed: ${d.error || "unknown"}`, "err");
         }
-        refreshTasksList();
       } catch (e) {
         setStatus(`poll failed: ${e.message}`, "err");
       }
     }
 
-    async function refreshTasksList() {
+    async function connectTaskStream(taskId, signal) {
+      const r = await fetch(`/tasks/${encodeURIComponent(taskId)}/stream`, { signal });
+      if (!r.ok || !r.body) {
+        throw new Error(`stream handshake failed: HTTP ${r.status}`);
+      }
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
       try {
-        const r = await fetch("/tasks");
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            try {
+              const ev = JSON.parse(trimmed);
+              handleStreamEvent(taskId, ev);
+            } catch {
+              /* ignore malformed line */
+            }
+          }
+        }
+      } finally {
+        // Release the reader so the server-side generator can unwind
+        // and free its Event subscription even when the network drops
+        // mid-stream. ``cancel`` is best-effort and tolerates a
+        // already-closed reader.
+        try {
+          await reader.cancel();
+        } catch {
+          /* reader may already be closed */
+        }
+      }
+    }
+
+    function handleStreamEvent(taskId, ev) {
+      if (ev.event === "snapshot" && ev.task) {
+        renderTaskSnapshot(ev.task);
+        refreshTasksList();
+      } else if (ev.event === "heartbeat") {
+        /* keep-alive; nothing UI-visible */
+      } else if (ev.event === "done") {
+        renderTaskSnapshot({ ...(ev.task || {}), status: ev.status });
+        handleTaskTerminal({ ...(ev.task || {}), status: ev.status });
+        refreshTasksList();
+      } else if (ev.event === "error") {
+        setStatus(`stream error: ${ev.message || "unknown"}`, "err");
+      }
+    }
+
+    const MAX_STREAM_RETRIES = 5;
+    const STREAM_BACKOFF_BASE_MS = 500;
+    const STREAM_BACKOFF_MAX_MS = 30000;
+
+    // AbortController for the in-flight stream: every ``streamWithBackoff``
+    // call gets its own controller, so a visibilitychange reconnect or
+    // a retry handler that fires while a stream is in backoff-delay
+    // will abort the previous attempt instead of producing two parallel
+    // streams (which would each render their own "done" event).
+    let streamAbortController = null;
+
+    function cancelInFlightStream() {
+      if (streamAbortController) {
+        try {
+          streamAbortController.abort();
+        } catch {
+          /* ignore */
+        }
+        streamAbortController = null;
+      }
+    }
+
+    async function streamWithBackoff(taskId, attempt = 0) {
+      cancelInFlightStream();
+      const controller = new AbortController();
+      streamAbortController = controller;
+      try {
+        await connectTaskStream(taskId, controller.signal);
+        // Server-initiated close (terminal status reached) resolves cleanly.
+      } catch (e) {
+        // AbortError is expected when we cancel a previous attempt; do
+        // not retry or surface it as a status warning.
+        if (e?.name === "AbortError") return;
+        if (attempt >= MAX_STREAM_RETRIES) {
+          setStatus(`stream lost · falling back to polling · ${e.message}`, "warn");
+          await pollTask();
+          return;
+        }
+        const base = Math.min(STREAM_BACKOFF_MAX_MS, STREAM_BACKOFF_BASE_MS * 2 ** attempt);
+        const delay = base + Math.random() * 250;
+        setStatus(
+          `stream lost (${attempt + 1}/${MAX_STREAM_RETRIES}) · retry in ${Math.round(delay / 1000)}s`,
+          "warn",
+        );
+        await new Promise((r) => setTimeout(r, delay));
+        if (controller.signal.aborted) return;
+        if (!isTaskLive(taskId)) return;
+        return streamWithBackoff(taskId, attempt + 1);
+      } finally {
+        if (streamAbortController === controller) {
+          streamAbortController = null;
+        }
+      }
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      if (activeTaskId && isTaskLive(activeTaskId)) {
+        streamWithBackoff(activeTaskId);
+      }
+    });
+
+    async function _refreshTasksListOnce() {
+      try {
+        const r = await apiFetch("/tasks");
         const d = await r.json();
         if (!d.tasks.length) {
           tasksList.innerHTML = '<div class="empty">no tasks yet</div>';
           return;
         }
+        const retryable = new Set(["failed", "partial", "interrupted"]);
         tasksList.innerHTML = d.tasks
           .slice()
           .reverse()
+          .map((t) => {
+            const isRetryable = retryable.has(t.status);
+            const originSuffix =
+              t.source === "retry" && t.origin_task_id
+                ? ` · retry of ${t.origin_task_id}`
+                : "";
+            return `
+            <div data-task-id="${escapeHtml(t.task_id)}" style="padding:4px 0;border-bottom:1px solid var(--border)">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span class="pill ${escapeHtml(t.status)}">${escapeHtml(t.status)}</span>
+                <span style="font-size:11px">${escapeHtml(t.task_id)}</span>
+                <span style="margin-left:auto;color:var(--muted);font-size:11px">${escapeHtml(t.kind)}</span>
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">
+                ${escapeHtml((t.current || '').slice(0, 60))}${originSuffix}
+              </div>
+              <div style="margin-top:4px;display:flex;gap:4px;align-items:center">
+                <select data-retry-mode="${escapeHtml(t.task_id)}" style="font-size:11px" ${isRetryable ? "" : "disabled"}>
+                  <option value="">normal</option>
+                  <option value="force">--force</option>
+                  <option value="failed-only">--failed-only</option>
+                </select>
+                <button data-retry="${escapeHtml(t.task_id)}" style="font-size:11px" ${isRetryable ? "" : "disabled"}>Retry</button>
+              </div>
+            </div>`;
+          })
+          .join("");
+      } catch (e) {
+        /* ignore */
+      }
+    }
+    function refreshTasksList() {
+      return singleFlight("tasks", _refreshTasksListOnce);
+    }
+
+    tasksList.addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-retry]");
+      if (!btn) return;
+      const taskId = btn.dataset.retry;
+      const sel = tasksList.querySelector(`select[data-retry-mode="${taskId}"]`);
+      const mode = sel ? sel.value : "";
+      const params = new URLSearchParams();
+      if (mode === "force") params.set("force", "true");
+      if (mode === "failed-only") params.set("failed_only", "true");
+      const qs = params.toString();
+      btn.disabled = true;
+      try {
+        const r = await apiFetch(`/tasks/${taskId}/retry${qs ? "?" + qs : ""}`, {
+          method: "POST",
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          setStatus(`retry failed: ${body.detail || r.status}`, "err");
+          btn.disabled = false;
+          return;
+        }
+        activeTaskId = body.task_id;
+        taskPanel.style.display = "block";
+        taskStatusPill.textContent = "pending";
+        taskStatusPill.className = "pill pending";
+        taskBar.style.width = "0%";
+        taskDetail.textContent = `retry task ${body.task_id} · origin ${body.origin_task_id || taskId}`;
+        refreshTasksList();
+        await streamWithBackoff(body.task_id);
+      } catch (err) {
+        setStatus(`retry failed: ${err.message}`, "err");
+        btn.disabled = false;
+      }
+    });
+
+    async function _refreshAssetsListOnce() {
+      const list = document.getElementById("assetsList");
+      try {
+        const r = await apiFetch("/assets");
+        const d = await r.json();
+        const items = d.assets || [];
+        if (!items.length) {
+          list.innerHTML = '<div class="empty">no assets yet</div>';
+          return;
+        }
+        list.innerHTML = items
           .map(
-            (t) => `
-            <div style="padding:4px 0;border-bottom:1px solid var(--border)">
-              <span class="pill ${t.status}">${t.status}</span>
-              <span style="margin-left:6px;font-size:11px">${t.task_id}</span>
-              <span style="float:right;color:var(--muted);font-size:11px">${t.kind}</span>
-              <div style="font-size:11px;color:var(--muted)">${escapeHtml((t.current || '').slice(0, 60))}</div>
+            (a) => `
+            <div data-asset-id="${escapeHtml(a.asset_id)}" style="padding:4px 0;border-bottom:1px solid var(--border);cursor:pointer">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span class="pill">${escapeHtml(a.source_type || "?")}</span>
+                <span style="font-size:11px">${escapeHtml(a.asset_id)}</span>
+                <button class="shrink ghost" data-delete="${escapeHtml(a.asset_id)}" style="margin-left:auto">Delete</button>
+              </div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px">
+                ${escapeHtml(a.asset_title || "")} · ${escapeHtml(a.relative_path || "")}
+              </div>
             </div>`,
           )
           .join("");
@@ -316,6 +754,360 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         /* ignore */
       }
     }
+    function refreshAssetsList() {
+      return singleFlight("assets", _refreshAssetsListOnce);
+    }
+
+    const assetDrawer = document.getElementById("assetDrawer");
+    const assetDrawerBody = document.getElementById("assetDrawerBody");
+    const assetDrawerTitle = document.getElementById("assetDrawerTitle");
+
+    // ─── In-page confirm modal ─────────────────────────────────────
+    // Replaces window.confirm so the page stays CSP-friendly and
+    // matches the dark theme. One global resolver: every call captures
+    // its own callback so concurrent modals (impossible today, but
+    // future-proof) wouldn't clobber each other.
+    const confirmModalEl = document.getElementById("confirmModal");
+    const confirmTitleEl = document.getElementById("confirmTitle");
+    const confirmBodyEl = document.getElementById("confirmBody");
+    const confirmYesBtn = document.getElementById("confirmYes");
+    const confirmNoBtn = document.getElementById("confirmNo");
+    let confirmResolver = null;
+
+    // Modal focus trap: while the modal is up, mark the rest of the
+    // body (header, main, drawer) as inert so Tab can't escape the
+    // dialog. The confirm modal is the topmost layer, so it traps
+    // everything *including* an open asset drawer.
+    const _MODAL_FOCUS_TRAP_TARGETS = () =>
+      Array.from(document.querySelectorAll("body > *:not(#confirmModal)"));
+
+    function _setModalTrapActive(active) {
+      _MODAL_FOCUS_TRAP_TARGETS().forEach((el) => {
+        if (active) {
+          if (!el.hasAttribute("data-prev-aria-hidden")) {
+            el.setAttribute(
+              "data-prev-aria-hidden",
+              el.getAttribute("aria-hidden") || "",
+            );
+          }
+          el.setAttribute("aria-hidden", "true");
+          try {
+            el.inert = true;
+          } catch {
+            /* inert unsupported */
+          }
+        } else {
+          const prev = el.getAttribute("data-prev-aria-hidden");
+          if (prev) el.setAttribute("aria-hidden", prev);
+          else el.removeAttribute("aria-hidden");
+          el.removeAttribute("data-prev-aria-hidden");
+          try {
+            el.inert = false;
+          } catch {
+            /* inert unsupported */
+          }
+        }
+      });
+    }
+
+    function openConfirmModal() {
+      confirmModalEl.classList.add("open");
+      confirmModalEl.setAttribute("aria-hidden", "false");
+      _setModalTrapActive(true);
+      confirmYesBtn.focus();
+    }
+
+    function closeConfirmModal(result) {
+      confirmModalEl.classList.remove("open");
+      confirmModalEl.setAttribute("aria-hidden", "true");
+      _setModalTrapActive(false);
+      if (confirmResolver) {
+        const r = confirmResolver;
+        confirmResolver = null;
+        r(result);
+      }
+    }
+
+    function confirmModal(message, { title = "Confirm", confirmLabel = "Confirm" } = {}) {
+      // If a previous modal is still up, treat the new call as a
+      // cancellation so the queue doesn't deadlock. Better to bail
+      // than to strand the UI.
+      if (confirmResolver) closeConfirmModal(false);
+      confirmTitleEl.textContent = title;
+      confirmBodyEl.textContent = message;
+      confirmYesBtn.textContent = confirmLabel;
+      openConfirmModal();
+      return new Promise((resolve) => {
+        confirmResolver = resolve;
+      });
+    }
+
+    confirmYesBtn.addEventListener("click", () => closeConfirmModal(true));
+    confirmNoBtn.addEventListener("click", () => closeConfirmModal(false));
+    confirmModalEl.addEventListener("click", (e) => {
+      if (e.target === confirmModalEl) closeConfirmModal(false);
+    });
+
+    // Focus-trap helpers: scope the inert toggle to elements that share
+    // a parent with the drawer so we never disturb the confirm modal
+    // (which has its own open/close logic). Currently the drawer and
+    // modal are siblings of <body>; we only trap the main + header
+    // chrome, leaving the modal free to layer on top.
+    const _DRAWER_FOCUS_TRAP_TARGETS = () =>
+      Array.from(document.querySelectorAll("body > header, body > main"));
+
+    function _setDrawerTrapActive(active) {
+      _DRAWER_FOCUS_TRAP_TARGETS().forEach((el) => {
+        if (active) {
+          if (!el.hasAttribute("data-prev-aria-hidden")) {
+            el.setAttribute(
+              "data-prev-aria-hidden",
+              el.getAttribute("aria-hidden") || "",
+            );
+          }
+          el.setAttribute("aria-hidden", "true");
+          try {
+            el.inert = true;
+          } catch {
+            /* inert unsupported */
+          }
+        } else {
+          const prev = el.getAttribute("data-prev-aria-hidden");
+          if (prev) el.setAttribute("aria-hidden", prev);
+          else el.removeAttribute("aria-hidden");
+          el.removeAttribute("data-prev-aria-hidden");
+          try {
+            el.inert = false;
+          } catch {
+            /* inert unsupported */
+          }
+        }
+      });
+    }
+
+    function openAssetDrawer() {
+      assetDrawer.classList.add("open");
+      assetDrawer.setAttribute("aria-hidden", "false");
+      _setDrawerTrapActive(true);
+    }
+
+    function closeAssetDrawer() {
+      assetDrawer.classList.remove("open");
+      assetDrawer.setAttribute("aria-hidden", "true");
+      assetDrawerBody.innerHTML = "";
+      _setDrawerTrapActive(false);
+    }
+
+    async function openAssetDetail(assetId) {
+      assetDrawerTitle.textContent = assetId;
+      assetDrawerBody.innerHTML = '<div style="color:var(--muted)">loading…</div>';
+      openAssetDrawer();
+      try {
+        const r = await apiFetch(`/assets/${encodeURIComponent(assetId)}`);
+        if (r.status === 404) {
+          assetDrawerBody.innerHTML = `<div style="color:var(--err)">asset not found: ${escapeHtml(assetId)}</div>`;
+          return;
+        }
+        if (!r.ok) {
+          assetDrawerBody.innerHTML = `<div style="color:var(--err)">failed to load (HTTP ${r.status})</div>`;
+          return;
+        }
+        const d = await r.json();
+        const tags = (d.tags || []).length
+          ? (d.tags || []).map((t) => `<span class="pill" style="margin-right:4px">${escapeHtml(t)}</span>`).join("")
+          : '<span style="color:var(--muted)">(none)</span>';
+        const fmtBytes = (n) => (n > 0 ? `${(n / 1024).toFixed(1)} KB` : "0 B");
+        const dot = (ok) => (ok ? "🟢" : "🔴");
+        assetDrawerBody.innerHTML = `
+          <dl style="margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:12px">
+            <dt style="color:var(--muted)">title</dt><dd>${escapeHtml(d.title || "")}</dd>
+            <dt style="color:var(--muted)">type</dt><dd>${escapeHtml(d.source_type || "")}</dd>
+            <dt style="color:var(--muted)">tags</dt><dd>${tags}</dd>
+            <dt style="color:var(--muted)">relative path</dt><dd style="word-break:break-all">${escapeHtml(d.relative_path || "")}</dd>
+            <dt style="color:var(--muted)">ingested at</dt><dd>${new Date((d.ingested_at || 0) * 1000).toLocaleString()}</dd>
+            <dt style="color:var(--muted)">last task</dt><dd>${
+              d.last_task_id
+                ? `<a href="#" class="scroll-link" data-scroll-task="${escapeHtml(d.last_task_id)}">${escapeHtml(d.last_task_id)}</a>`
+                : "—"
+            }</dd>
+            <dt style="color:var(--muted)">file</dt><dd>${dot(d.file_exists)} ${fmtBytes(d.file_size || 0)}</dd>
+            <dt style="color:var(--muted)">parsed</dt><dd>${dot(d.parsed_exists)} ${fmtBytes(d.parsed_size || 0)} <span style="color:var(--muted)">· ${escapeHtml(d.parsed_dir || "")}</span></dd>
+            <dt style="color:var(--muted)">captions</dt><dd>${dot(d.captions_exists)} <span style="color:var(--muted)">· ${escapeHtml(d.captions_path || "")}</span></dd>
+            <dt style="color:var(--muted)">sha256</dt><dd style="word-break:break-all;font-family:ui-monospace,monospace;font-size:11px">${escapeHtml(d.sha256 || "")}</dd>
+          </dl>
+          <div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+            <select data-asset-retry-mode="${escapeHtml(assetId)}" style="font-size:11px;width:auto;flex:0 0 auto" title="retry mode">
+              <option value="">normal</option>
+              <option value="force">--force</option>
+              <option value="failed-only">--failed-only</option>
+            </select>
+            <button class="ghost" data-asset-retry="${escapeHtml(assetId)}">Retry last task</button>
+            <button class="ghost" data-asset-delete="${escapeHtml(assetId)}">Delete</button>
+          </div>
+        `;
+      } catch (err) {
+        assetDrawerBody.innerHTML = `<div style="color:var(--err)">load error: ${escapeHtml(err.message)}</div>`;
+      }
+    }
+
+    document.getElementById("assetDrawerClose").addEventListener("click", closeAssetDrawer);
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      if (confirmModalEl.classList.contains("open")) {
+        closeConfirmModal(false);
+        return;
+      }
+      if (assetDrawer.classList.contains("open")) {
+        closeAssetDrawer();
+      }
+    });
+    assetDrawer.addEventListener("click", (e) => {
+      if (e.target === assetDrawer) closeAssetDrawer();
+    });
+
+    document.getElementById("assetsList").addEventListener("click", async (e) => {
+      const btn = e.target.closest("button[data-delete]");
+      if (btn) {
+        const assetId = btn.dataset.delete;
+        if (!(await confirmModal(
+          `Delete asset ${assetId}? This removes its file, parsed/, captions/, Qdrant points and asset index entry.`,
+          { title: "Delete asset", confirmLabel: "Delete" },
+        ))) {
+          return;
+        }
+        btn.disabled = true;
+        try {
+          const r = await apiFetch(`/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
+          if (r.status === 404) {
+            setStatus(`asset not found: ${assetId}`, "err");
+            btn.disabled = false;
+            await refreshAssetsList();
+            return;
+          }
+          if (!r.ok) {
+            const body = await r.json().catch(() => ({}));
+            setStatus(`delete failed: ${body.detail || r.status}`, "err");
+            btn.disabled = false;
+            return;
+          }
+          setStatus(`asset ${assetId} deleted`, "ok");
+          closeAssetDrawer();
+          await refreshAssetsList();
+          await refreshHealth();
+        } catch (err) {
+          setStatus(`delete failed: ${err.message}`, "err");
+          btn.disabled = false;
+        }
+        return;
+      }
+      const row = e.target.closest("[data-asset-id]");
+      if (row) {
+        openAssetDetail(row.dataset.assetId);
+      }
+    });
+
+    assetDrawerBody.addEventListener("click", (e) => {
+      const link = e.target.closest("a.scroll-link[data-scroll-task]");
+      if (link) {
+        e.preventDefault();
+        const taskId = link.dataset.scrollTask;
+        const row = document.querySelector(`#tasksList [data-task-id="${CSS.escape(taskId)}"]`);
+        if (!row) {
+          setStatus(`task ${taskId} not in history (may be > 200 kept)`, "warn");
+          return;
+        }
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+        // Re-trigger the animation if the row already has the class.
+        row.classList.remove("task-row-highlight");
+        // Force reflow so removing + re-adding actually replays the keyframes.
+        void row.offsetWidth;
+        row.classList.add("task-row-highlight");
+        setTimeout(() => row.classList.remove("task-row-highlight"), 1500);
+        return;
+      }
+    });
+
+    assetDrawerBody.addEventListener("click", async (e) => {
+      const retry = e.target.closest("button[data-asset-retry]");
+      if (retry) {
+        const assetId = retry.dataset.assetRetry;
+        const modeSel = assetDrawerBody.querySelector(
+          `select[data-asset-retry-mode="${assetId}"]`
+        );
+        const mode = modeSel ? modeSel.value : "";
+        const params = new URLSearchParams();
+        if (mode === "force") params.set("force", "true");
+        if (mode === "failed-only") params.set("failed_only", "true");
+        const qs = params.toString();
+        const label =
+          mode === "force" ? " (force)"
+            : mode === "failed-only" ? " (failed-only)"
+            : "";
+        retry.disabled = true;
+        try {
+          const list = (await (await apiFetch("/tasks")).json()).tasks || [];
+          const target = list.find(
+            (t) => (t.uploaded_files || []).some((p) => p.includes(assetId)),
+          );
+          if (!target) {
+            setStatus(`no recent task found for ${assetId}`, "err");
+            retry.disabled = false;
+            return;
+          }
+          const r = await apiFetch(
+            `/tasks/${target.task_id}/retry${qs ? "?" + qs : ""}`,
+            { method: "POST" },
+          );
+          const body = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            setStatus(`retry failed: ${body.detail || r.status}`, "err");
+            retry.disabled = false;
+            return;
+          }
+          activeTaskId = body.task_id;
+          taskPanel.style.display = "block";
+          taskStatusPill.textContent = "pending";
+          taskStatusPill.className = "pill pending";
+          taskBar.style.width = "0%";
+          const flags = [body.force ? "force" : "", body.failed_only ? "failed-only" : ""]
+            .filter(Boolean)
+            .join("+");
+          taskDetail.textContent = `retry task ${body.task_id}${flags ? " [" + flags + "]" : ""} · origin ${body.origin_task_id || target.task_id}`;
+          setStatus(`retry ${body.task_id} started${label}`, "ok");
+          closeAssetDrawer();
+          await refreshTasksList();
+          await streamWithBackoff(body.task_id);
+        } catch (err) {
+          setStatus(`retry failed: ${err.message}`, "err");
+          retry.disabled = false;
+        }
+        return;
+      }
+      const del = e.target.closest("button[data-asset-delete]");
+      if (del) {
+        const assetId = del.dataset.assetDelete;
+        if (!(await confirmModal(
+          `Delete asset ${assetId}? This removes its file, parsed/, captions/, Qdrant points and asset index entry.`,
+          { title: "Delete asset", confirmLabel: "Delete" },
+        ))) {
+          return;
+        }
+        try {
+          const r = await apiFetch(`/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
+          if (!r.ok) {
+            const body = await r.json().catch(() => ({}));
+            setStatus(`delete failed: ${body.detail || r.status}`, "err");
+            return;
+          }
+          setStatus(`asset ${assetId} deleted`, "ok");
+          closeAssetDrawer();
+          await refreshAssetsList();
+          await refreshHealth();
+        } catch (err) {
+          setStatus(`delete failed: ${err.message}`, "err");
+        }
+      }
+    });
 
     function appendMessage(role, html) {
       if (messages.querySelector(".empty")) messages.innerHTML = "";
@@ -362,7 +1154,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
           if (done) break;
           buf += decoder.decode(value, { stream: true });
           const lines = buf.split("\n");
-          buf = lines.pop();
+          buf = lines.pop() || "";
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
@@ -383,6 +1175,13 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       } catch (e) {
         ansText.textContent = `error: ${e.message}`;
       } finally {
+        // Only show "(no answer)" if the stream actually completed with
+        // no tokens *and* the catch path didn't already set an error
+        // message — otherwise the catch's "error: ..." would be
+        // silently overwritten.
+        if (!answerBuf && !/^error:/.test(ansText.textContent || "")) {
+          ansText.textContent = "(no answer)";
+        }
         askBtn.disabled = false;
         queryInput.focus();
       }
@@ -418,9 +1217,41 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     });
 
     // Bootstrap
-    refreshHealth();
-    refreshTasksList();
-    setInterval(refreshHealth, 15000);
+    // ``primeAppVersion`` runs first so the first ``apiFetch`` after
+    // it already pins ``?v=``. Falls back to plain fetches if /health
+    // is unreachable.
+    primeAppVersion().finally(() => {
+      refreshHealth();
+      refreshTasksList();
+      refreshAssetsList();
+    });
+    // Background poll: when the tab is hidden we *skip* the fetch
+    // (no point hammering the API while the page isn't visible) and
+    // flush a single refresh as soon as the tab is shown again so the
+    // panel doesn't display stale numbers for the rest of the session.
+    let healthTimer = null;
+    function scheduleHealthPoll() {
+      if (healthTimer != null) clearInterval(healthTimer);
+      if (document.visibilityState !== "visible") {
+        healthTimer = null;
+        return;
+      }
+      healthTimer = setInterval(() => {
+        if (document.visibilityState === "visible") refreshHealth();
+      }, 15000);
+    }
+    scheduleHealthPoll();
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        refreshHealth();
+        scheduleHealthPoll();
+      } else {
+        if (healthTimer != null) {
+          clearInterval(healthTimer);
+          healthTimer = null;
+        }
+      }
+    });
   </script>
 </body>
 </html>
