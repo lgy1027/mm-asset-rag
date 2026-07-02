@@ -21,8 +21,7 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .assets import Asset
-from .schema import ParsedDocument, SearchHit
-
+from .schema import ParsedDocument
 
 # ─── Parser ──────────────────────────────────────────────────────────────
 
@@ -44,8 +43,7 @@ class Parser(Protocol):
     name: str
     source_type: str  # "pdf" | "image" | "audio" | "video"
 
-    def parse(self, asset: Asset, **options: object) -> list[ParsedDocument]:
-        ...
+    def parse(self, asset: Asset, **options: object) -> list[ParsedDocument]: ...
 
 
 # ─── Embedder ────────────────────────────────────────────────────────────
@@ -59,6 +57,13 @@ class Embedder(Protocol):
     ``VectorBackend``: the active collection becomes
     ``{base}_{modality}_{dim}d`` (or similar). ``name`` is the model
     identifier used for logging / debugging.
+
+    Modality-specific helpers live in :class:`TextEmbedderProtocol`
+    and :class:`ImageEmbedderProtocol`; an embedder opts into either
+    or both as appropriate. ``qdrant_backend`` uses ``isinstance``
+    to check the capability at the call site, so a custom audio
+    embedder that implements only :class:`Embedder` is still a
+    valid participant in the registry.
     """
 
     name: str
@@ -66,11 +71,38 @@ class Embedder(Protocol):
 
     def dim(self) -> int: ...
 
-    def embed(self, content: object) -> list[float]:
-        ...
+    def embed(self, content: object) -> list[float]: ...
 
-    def embed_batch(self, contents: list[object]) -> list[list[float]]:
-        ...
+    def embed_batch(self, contents: list[object]) -> list[list[float]]: ...
+
+
+@runtime_checkable
+class TextEmbedderProtocol(Protocol):
+    """Mixin protocol an :class:`Embedder` implements to handle text.
+
+    ``qdrant_text_search`` and ``build_qdrant_text_index`` call
+    ``embed_text`` directly when the registered embedder conforms to
+    this Protocol; otherwise they fall back to the generic
+    ``embed_batch`` path.
+    """
+
+    def embed_text(self, text: str) -> list[float]: ...
+
+
+@runtime_checkable
+class ImageEmbedderProtocol(Protocol):
+    """Mixin protocol an :class:`Embedder` implements to handle images.
+
+    ``qdrant_image_to_image_search`` / ``build_qdrant_image_index`` use
+    ``embed_image`` / ``embed_image_batch`` when the registered
+    embedder conforms; the helper returns ``None`` for files the
+    underlying model cannot process (e.g. non-image paths), letting
+    the caller skip them without a hard error.
+    """
+
+    def embed_image(self, path: Path) -> list[float] | None: ...
+
+    def embed_image_batch(self, paths: list[Path]) -> list[list[float] | None]: ...
 
 
 # ─── VectorBackend ───────────────────────────────────────────────────────
@@ -94,11 +126,9 @@ class VectorBackend(Protocol):
         name: str,
         dim: int,
         sparse: bool = False,
-    ) -> None:
-        ...
+    ) -> None: ...
 
-    def drop_collection(self, name: str) -> None:
-        ...
+    def drop_collection(self, name: str) -> None: ...
 
     def upsert(
         self,
@@ -106,13 +136,9 @@ class VectorBackend(Protocol):
         collection: str,
         points: list[object],
         wait: bool = True,
-    ) -> int:
-        ...
+    ) -> int: ...
 
-    def retrieve_existing_ids(
-        self, *, collection: str, ids: list[str]
-    ) -> set[str]:
-        ...
+    def retrieve_existing_ids(self, *, collection: str, ids: list[str]) -> set[str]: ...
 
     def search_points(
         self,
@@ -123,8 +149,7 @@ class VectorBackend(Protocol):
         vector_name_dense: str,
         vector_name_sparse: str,
         top_k: int,
-    ) -> list[object]:
-        ...
+    ) -> list[object]: ...
 
     def search_image_to_image(
         self,
@@ -132,5 +157,4 @@ class VectorBackend(Protocol):
         collection: str,
         image_path: Path,
         top_k: int,
-    ) -> list[object]:
-        ...
+    ) -> list[object]: ...

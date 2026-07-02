@@ -17,11 +17,15 @@ the ``llama-index-vector-stores-qdrant`` integration because:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import math
 import os
+import re
 import subprocess
 import threading
 import uuid
+from collections import Counter, defaultdict
 from functools import lru_cache
 from pathlib import Path
 
@@ -29,8 +33,11 @@ from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient, models
 
 from ..document_store import read_documents
-from ..embedders.image_embedder import ImageEmbeddingProvider, ImageEmbeddingUnavailable
-from ..embedders.text_embedder import EmbeddingProvider
+from ..embedders import (
+    ImageEmbeddingUnavailable,
+    get_default_image_embedder,
+    get_default_text_embedder,
+)
 from ..paths import get_assets_dir, get_indexes_dir
 from ..schema import SearchHit
 from ..settings import get_settings
@@ -47,14 +54,14 @@ class QdrantLockHeldError(RuntimeError):
     """
 
 
-TEXT_COLLECTION_BASE = os.environ.get("QDRANT_TEXT_COLLECTION", "multimodal_text")
-IMAGE_COLLECTION_BASE = os.environ.get("QDRANT_IMAGE_COLLECTION", "multimodal_image")
+TEXT_COLLECTION_BASE = get_settings().qdrant_text_collection
+IMAGE_COLLECTION_BASE = get_settings().qdrant_image_collection
 
 # Hybrid search tuning
-BM25_MODEL_NAME = os.environ.get("QDRANT_BM25_MODEL", "Qdrant/bm25")
+BM25_MODEL_NAME = get_settings().qdrant_bm25_model
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "bm25"
-HYBRID_PREFETCH_LIMIT = int(os.environ.get("QDRANT_HYBRID_PREFETCH_LIMIT", "20"))
+HYBRID_PREFETCH_LIMIT = get_settings().qdrant_hybrid_prefetch_limit
 
 
 # Module-level cache for the active collection names. Replaces
@@ -62,6 +69,25 @@ HYBRID_PREFETCH_LIMIT = int(os.environ.get("QDRANT_HYBRID_PREFETCH_LIMIT", "20")
 # raced across threads and leaked into child processes.
 _ACTIVE_TEXT_COLLECTION: str | None = None
 _ACTIVE_IMAGE_COLLECTION: str | None = None
+
+# Process-wide shared QdrantClient (local-file mode only). See
+# ``get_qdrant_client`` for the rationale. Tests can call
+# ``reset_qdrant_client_cache()`` to drop the cached instance between
+# cases.
+_QDRANT_CLIENT: QdrantClient | None = None
+_QDRANT_CLIENT_KEY: str | None = None
+_QDRANT_CLIENT_LOCK = threading.Lock()
+
+
+def reset_qdrant_client_cache() -> None:
+    """Drop the cached local QdrantClient. Test-only helper."""
+    global _QDRANT_CLIENT, _QDRANT_CLIENT_KEY
+    with _QDRANT_CLIENT_LOCK:
+        if _QDRANT_CLIENT is not None:
+            with contextlib.suppress(Exception):
+                _QDRANT_CLIENT.close()
+        _QDRANT_CLIENT = None
+        _QDRANT_CLIENT_KEY = None
 
 
 @lru_cache(maxsize=1)
@@ -136,10 +162,6 @@ def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
 # arbitrary user query. Keeping it local avoids adding ``rank_bm25`` /
 # ``bm25s`` as dependencies.
 
-import math
-import re
-from collections import Counter, defaultdict
-
 
 def _tokenize_for_bm25(text: str) -> list[str]:
     """Lowercase alphanumeric tokenizer for the chunk selector.
@@ -160,7 +182,7 @@ def _bm25_okapi_scores(
 
     Pure function: same shape as ``rank_bm25.BM25Okapi.get_scores`` for
     the small per-asset document sets we care about. ``k1`` and ``b``
-    follow the Robertson–Walker defaults.
+    follow the Robertson-Walker defaults.
     """
     n = len(docs_tokens)
     if n == 0:
@@ -237,8 +259,8 @@ def text_collection(vector_size: int | None = None) -> str:
     """Resolve the active text collection name.
 
     Without ``vector_size`` returns whatever was last set via
-    ``text_collection(2560)`` (the ``QDRANT_ACTIVE_TEXT_COLLECTION``
-    env-var, if set, otherwise the base name). With ``vector_size``,
+    ``text_collection(2560)`` (the ``qdrant_active_text_collection``
+    setting, if set, otherwise the base name). With ``vector_size``,
     sets the active collection to ``f"{base}_{vector_size}d"`` and
     returns it.
 
@@ -251,8 +273,7 @@ def text_collection(vector_size: int | None = None) -> str:
     if vector_size is None:
         if _ACTIVE_TEXT_COLLECTION is not None:
             return _ACTIVE_TEXT_COLLECTION
-        env = os.environ.get("QDRANT_ACTIVE_TEXT_COLLECTION")
-        return env or TEXT_COLLECTION_BASE
+        return get_settings().qdrant_active_text_collection or TEXT_COLLECTION_BASE
     name = f"{TEXT_COLLECTION_BASE}_{vector_size}d"
     _ACTIVE_TEXT_COLLECTION = name
     return name
@@ -264,22 +285,41 @@ def image_collection(vector_size: int | None = None) -> str:
     if vector_size is None:
         if _ACTIVE_IMAGE_COLLECTION is not None:
             return _ACTIVE_IMAGE_COLLECTION
-        env = os.environ.get("QDRANT_ACTIVE_IMAGE_COLLECTION")
-        return env or IMAGE_COLLECTION_BASE
+        return get_settings().qdrant_active_image_collection or IMAGE_COLLECTION_BASE
     name = f"{IMAGE_COLLECTION_BASE}_{vector_size}d"
     _ACTIVE_IMAGE_COLLECTION = name
     return name
 
 
 def get_qdrant_client() -> QdrantClient:
-    url = os.environ.get("QDRANT_URL")
-    api_key = os.environ.get("QDRANT_API_KEY")
-    if url:
-        return QdrantClient(url=url, api_key=api_key)
+    """Return a process-wide shared ``QdrantClient`` instance.
+
+    Qdrant's local-file mode writes ``<storage>/.lock`` on open and
+    refuses a second open from another instance. Without this cache
+    each concurrent worker thread would instantiate its own client
+    and they would race on the lock (or fail with
+    ``Storage folder already accessed``). The cache is keyed by the
+    storage location so the same path always returns the same client
+    but switching to ``QDRANT_URL`` (server mode) does not share state
+    with a stale local client.
+    """
+    global _QDRANT_CLIENT, _QDRANT_CLIENT_KEY
+    settings = get_settings()
+    if settings.qdrant_url:
+        # Remote mode: each call returns its own client. Qdrant
+        # server handles concurrency; the in-process cache would
+        # just hold a connection alive longer than necessary.
+        return QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+
     qdrant_path = get_indexes_dir() / "qdrant"
-    qdrant_path.mkdir(parents=True, exist_ok=True)
-    _clean_stale_lock(qdrant_path)
-    return QdrantClient(path=str(qdrant_path))
+    key = str(qdrant_path)
+    with _QDRANT_CLIENT_LOCK:
+        if key != _QDRANT_CLIENT_KEY or _QDRANT_CLIENT is None:
+            qdrant_path.mkdir(parents=True, exist_ok=True)
+            _clean_stale_lock(qdrant_path)
+            _QDRANT_CLIENT = QdrantClient(path=key)
+            _QDRANT_CLIENT_KEY = key
+        return _QDRANT_CLIENT
 
 
 def _clean_stale_lock(qdrant_path: Path) -> None:
@@ -481,8 +521,8 @@ def build_qdrant_text_index(
             encoding="utf-8",
         )
 
-    batch_size = batch_size or max(1, int(os.environ.get("QDRANT_UPSERT_BATCH_SIZE", "16")))
-    embedder = EmbeddingProvider()
+    batch_size = batch_size or max(1, get_settings().qdrant_upsert_batch_size)
+    embedder = get_default_text_embedder()
 
     # One embedding call up front to learn the vector size (= collection name).
     # On a warm cache this doc may already be in qdrant; we still need it.
@@ -583,7 +623,7 @@ def build_qdrant_image_index(
     fires from the worker thread for status reporting.
     """
     try:
-        provider = ImageEmbeddingProvider()
+        provider = get_default_image_embedder()
     except ImageEmbeddingUnavailable as exc:
         return 0, f"skipped: {exc}"
 
@@ -605,6 +645,7 @@ def build_qdrant_image_index(
     _create_collection(client, collection_name, vector_size=len(first_vector))
 
     # Bulk-load existing point ids (one scroll pass).
+    skipped = 0
     existing_ids: set[str] = set()
     if not force_recreate:
         offset = None
@@ -732,7 +773,7 @@ def _hybrid_text_query(
 
 
 def qdrant_text_search(query: str, top_k: int = 5) -> list[SearchHit]:
-    embedder = EmbeddingProvider()
+    embedder = get_default_text_embedder()
     client = get_qdrant_client()
     dense_query = embedder.embed(query)
     sparse_query = _embed_bm25([query])[0]
@@ -887,22 +928,16 @@ def _load_image_tag_index() -> dict[str, set[str]]:
         # Pre-filter disabled — return an empty index so every query
         # is treated as "no overlap" and the function short-circuits.
         return {}
-    client = None
+    # The Qdrant client is process-wide singleton (see
+    # ``get_qdrant_client``); we never close it here so the next caller
+    # can reuse the connection. ``api.py``'s lifespan hook closes it
+    # exactly once at process shutdown.
     try:
         client = get_qdrant_client()
         size = client.count(image_collection(512), exact=True).count
     except Exception:
-        if client is not None:
-            try:
-                client.close()
-            except Exception:
-                pass
         return {}
     if _IMAGE_TAG_INDEX is not None and size == _IMAGE_TAG_INDEX_SIZE:
-        try:
-            client.close()
-        except Exception:
-            pass
         return _IMAGE_TAG_INDEX
     index: dict[str, set[str]] = {}
     try:
@@ -932,15 +967,7 @@ def _load_image_tag_index() -> dict[str, set[str]]:
             if offset is None:
                 break
     except Exception:
-        try:
-            client.close()
-        except Exception:
-            pass
         return _IMAGE_TAG_INDEX or {}
-    try:
-        client.close()
-    except Exception:
-        pass
     _IMAGE_TAG_INDEX = index
     _IMAGE_TAG_INDEX_SIZE = size
     return index
@@ -965,15 +992,14 @@ def _has_any_token_overlap(query_tokens: set[str], tag_index: dict[str, set[str]
             for tt in tag_tokens:
                 if qt in tt or tt in qt:
                     return True
-                if len(qt) >= 4 and len(tt) >= 4:
-                    if qt.startswith(tt) or tt.startswith(qt):
-                        return True
+                if len(qt) >= 4 and len(tt) >= 4 and (qt.startswith(tt) or tt.startswith(qt)):
+                    return True
     return False
 
 
 def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
     try:
-        provider = ImageEmbeddingProvider()
+        provider = get_default_image_embedder()
     except ImageEmbeddingUnavailable:
         return []
     # Sparse pre-filter: skip the Qdrant call entirely when no image
@@ -987,19 +1013,13 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
         if tag_index and not _has_any_token_overlap(query_tokens, tag_index):
             return []
     client = get_qdrant_client()
-    try:
-        query_vector = provider.embed_text(query)
-        results = client.query_points(
-            collection_name=image_collection(len(query_vector)),
-            query=query_vector,
-            limit=top_k,
-            with_payload=True,
-        ).points
-    finally:
-        try:
-            client.close()
-        except Exception:
-            pass
+    query_vector = provider.embed_text(query)
+    results = client.query_points(
+        collection_name=image_collection(len(query_vector)),
+        query=query_vector,
+        limit=top_k,
+        with_payload=True,
+    ).points
     threshold = get_settings().image_relevance_threshold
     results = _filter_by_relevance(results, threshold)
     return [_point_to_hit("qdrant_text_to_image", point) for point in results]
@@ -1007,23 +1027,17 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
 
 def qdrant_image_to_image_search(image_path: Path, top_k: int = 5) -> list[SearchHit]:
     try:
-        provider = ImageEmbeddingProvider()
+        provider = get_default_image_embedder()
     except ImageEmbeddingUnavailable:
         return []
     client = get_qdrant_client()
-    try:
-        query_vector = provider.embed_image(image_path)
-        results = client.query_points(
-            collection_name=image_collection(len(query_vector)),
-            query=query_vector,
-            limit=top_k,
-            with_payload=True,
-        ).points
-    finally:
-        try:
-            client.close()
-        except Exception:
-            pass
+    query_vector = provider.embed_image(image_path)
+    results = client.query_points(
+        collection_name=image_collection(len(query_vector)),
+        query=query_vector,
+        limit=top_k,
+        with_payload=True,
+    ).points
     threshold = get_settings().image_relevance_threshold
     results = _filter_by_relevance(results, threshold)
     return [_point_to_hit("qdrant_image_to_image", point) for point in results]
@@ -1045,3 +1059,44 @@ def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> Sea
         evidence=str(payload.get("text", ""))[:1000],
         metadata=dict(payload),
     )
+
+
+def delete_points_by_asset_id(
+    asset_id: str,
+    *,
+    text: bool = True,
+    image: bool = True,
+) -> dict[str, int]:
+    """Delete every Qdrant point whose payload carries ``asset_id``.
+
+    Returns a small ``{"text": N, "image": M}`` map with the number of
+    deletion calls attempted for each collection. Failures are logged
+    but do not raise so the caller's overall ``delete_asset`` cleanup
+    can still complete.
+
+    Qdrant does not return a per-call deleted-count from
+    ``client.delete``; the counters here reflect collection calls,
+    not points removed. Use ``client.count`` for an exact count.
+    """
+    if not asset_id:
+        return {"text": 0, "image": 0}
+    selector = models.FilterSelector(
+        filter=models.Filter(
+            must=[models.FieldCondition(key="asset_id", match=models.MatchValue(value=asset_id))]
+        )
+    )
+    counts = {"text": 0, "image": 0}
+    client = get_qdrant_client()
+    if text:
+        try:
+            client.delete(collection_name=text_collection(), points_selector=selector)
+            counts["text"] += 1
+        except Exception as exc:
+            print(f"[qdrant] failed to delete text points for {asset_id}: {exc}")
+    if image:
+        try:
+            client.delete(collection_name=image_collection(), points_selector=selector)
+            counts["image"] += 1
+        except Exception as exc:
+            print(f"[qdrant] failed to delete image points for {asset_id}: {exc}")
+    return counts

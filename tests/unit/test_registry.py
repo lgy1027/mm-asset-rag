@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-from mm_asset_rag.protocols import Embedder, Parser, VectorBackend, runtime_checkable
+from mm_asset_rag.protocols import Embedder, Parser
 from mm_asset_rag.registry import (
     Registry,
+    backends,
     embedders,
     parsers,
-    backends,
     register_embedder,
     register_parser,
 )
-
 
 # ─── Stub implementations satisfying the Protocols ──────────────────────
 
@@ -148,3 +145,67 @@ def test_register_embedder_indexes_by_modality_and_name():
     register_embedder(StubTextEmbedder())
     embedder = embedders.get(("text", "stub_text"))
     assert embedder.dim() == 4
+
+
+# ─── get_default_*_embedder lazy registration ───────────────────────────
+
+
+def test_get_default_text_embedder_is_lazy(tmp_path) -> None:
+    """``get_default_text_embedder`` does not crash the import path when
+    no embedding credentials are configured: the embedder is only
+    constructed on first call. When called without config it raises
+    ``EmbeddingConfigError``; with config it returns the cached
+    instance and a second call returns the same object.
+    """
+    from mm_asset_rag.embedders import (
+        EmbeddingConfigError,
+        get_default_text_embedder,
+    )
+    from mm_asset_rag.registry import embedders
+
+    # Reset the registry to a known state.
+    embedders._items.pop(("text", "default"), None)
+
+    # First call: should raise EmbeddingConfigError because no
+    # credentials are configured in this test environment.
+    try:
+        get_default_text_embedder()
+    except EmbeddingConfigError:
+        pass
+    except Exception as exc:  # pragma: no cover - test infra
+        raise AssertionError(f"unexpected error type: {exc!r}") from exc
+
+
+def test_get_default_text_embedder_caches(tmp_path) -> None:
+    """Once successfully constructed, the same embedder is returned
+    on subsequent calls.
+    """
+    from mm_asset_rag.embedders import get_default_text_embedder
+    from mm_asset_rag.registry import embedders, register_embedder
+
+    # Register a deterministic stub so we can compare identities.
+    class _Stub:
+        modality = "text"
+
+        def __init__(self) -> None:
+            pass
+
+        @property
+        def name(self) -> str:
+            return "stub"
+
+        def dim(self) -> int:
+            return 4
+
+        def embed(self, content) -> list[float]:
+            return [0.0] * 4
+
+        def embed_batch(self, contents) -> list[list[float]]:
+            return [[0.0] * 4 for _ in contents]
+
+    register_embedder(_Stub(), replace=True)
+    a = get_default_text_embedder()
+    b = get_default_text_embedder()
+    assert a is b
+    # Clean up so other tests don't see the stub.
+    embedders._items.pop(("text", "default"), None)

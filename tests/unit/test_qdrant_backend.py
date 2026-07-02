@@ -137,7 +137,7 @@ def test_select_top_chunks_handles_multiple_assets_independently() -> None:
     bert_docs = [_doc(f"bert passage {i}", "bert") for i in range(4)]
     clip_docs = [_doc(f"clip passage {i}", "clip") for i in range(6)]
     selected = _select_top_chunks_per_pdf(bert_docs + clip_docs, max_per_pdf=3)
-    by_asset = {d.metadata["asset_id"]: d for d in selected}
+    {d.metadata["asset_id"]: d for d in selected}
     # Order is preserved within each asset group (per-asset cap), but
     # we just check counts here.
     counts = {}
@@ -276,3 +276,47 @@ def test_has_any_token_overlap_empty_inputs() -> None:
     index = {"img1": {"fish"}}
     assert _has_any_token_overlap(set(), index) is False
     assert _has_any_token_overlap(_tokenize_for_prefilter("fish"), {}) is False
+
+
+# ─── get_qdrant_client singleton ─────────────────────────────────────────
+
+
+def test_get_qdrant_client_returns_singleton(tmp_path, monkeypatch) -> None:
+    """Two calls in the same process should return the same client.
+
+    Without the singleton, two threads that both call
+    ``get_qdrant_client`` would each construct a fresh ``QdrantClient``,
+    and qdrant-client's local mode would refuse the second one
+    (``Storage folder already accessed``).
+    """
+    from mm_asset_rag.backends import qdrant_backend
+
+    # Redirect indexes_dir so the test uses a private storage location.
+    monkeypatch.setattr(
+        "mm_asset_rag.backends.qdrant_backend.get_indexes_dir",
+        lambda: tmp_path / "indexes",
+    )
+    qdrant_backend.reset_qdrant_client_cache()
+    try:
+        c1 = qdrant_backend.get_qdrant_client()
+        c2 = qdrant_backend.get_qdrant_client()
+        assert c1 is c2
+    finally:
+        qdrant_backend.reset_qdrant_client_cache()
+
+
+def test_get_qdrant_client_resets_after_reset(tmp_path, monkeypatch) -> None:
+    """``reset_qdrant_client_cache()`` drops the cached instance so a
+    subsequent call returns a new client (used by tests)."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    monkeypatch.setattr(
+        "mm_asset_rag.backends.qdrant_backend.get_indexes_dir",
+        lambda: tmp_path / "indexes",
+    )
+    qdrant_backend.reset_qdrant_client_cache()
+    c1 = qdrant_backend.get_qdrant_client()
+    qdrant_backend.reset_qdrant_client_cache()
+    c2 = qdrant_backend.get_qdrant_client()
+    assert c1 is not c2
+    qdrant_backend.reset_qdrant_client_cache()

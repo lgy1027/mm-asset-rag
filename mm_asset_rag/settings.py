@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     qdrant_api_key: str | None = None
     qdrant_text_collection: str = "multimodal_text"
     qdrant_image_collection: str = "multimodal_image"
+    # Optional override for the *active* collection name; falls back to
+    # the base name from ``qdrant_text_collection`` / ``qdrant_image_collection``
+    # suffixed with the embedding dim. Set to e.g. ``multimodal_text_2560d``
+    # to force a specific collection (useful when migrating between
+    # embedding models without rebuilding from scratch).
+    qdrant_active_text_collection: str | None = None
+    qdrant_active_image_collection: str | None = None
     qdrant_upsert_batch_size: int = 16
     qdrant_bm25_model: str = "Qdrant/bm25"
     qdrant_hybrid_prefetch_limit: int = 20
@@ -105,8 +112,8 @@ class Settings(BaseSettings):
     # random Picsum-style noise for off-topic queries.
     #
     # Defaults: ``["tags", "asset_id", "asset_title"]`` match the
-    # ``asset_manifest.json`` schema; the image payload stores these
-    # verbatim. Override if your pipeline uses different field names.
+    # payload fields produced by the upload pipeline; the image payload
+    # stores these verbatim. Override if your pipeline uses different field names.
     # Set to ``[]`` to disable the pre-filter entirely.
     image_prefilter_fields: list[str] = ["tags", "asset_id", "asset_title"]
     image_prefilter_min_token_len: int = 3
@@ -135,11 +142,22 @@ class Settings(BaseSettings):
     paddleocr_vl_use_chart_recognition: bool = False
 
     # ─── Parser defaults (drives /upload; UI can override per request) ───
+    # NOTE: pdf_parser / enable_ocr / enable_vlm / image_provider / auto_index
+    # are kept as legacy fields for backward compat with old deployments, but
+    # the modern upload pipeline auto-decides everything from sniff + VLM.
     pdf_parser: Literal["auto", "pymupdf", "paddleocr_vl"] = "auto"
     enable_ocr: bool = False
     enable_vlm: bool = False
     image_provider: Literal["lite", "sentence_transformers"] = "lite"
     auto_index: bool = True
+
+    # ─── Upload preview safety limits ─────────────────────────────────────
+    upload_max_file_bytes: int = 50 * 1024 * 1024
+    upload_max_batch_bytes: int = 200 * 1024 * 1024
+    upload_max_pdf_pages: int = 500
+    upload_max_image_pixels: int = 50_000_000
+    upload_slug_max_len: int = 80
+    preview_cache_ttl_seconds: int = 24 * 60 * 60
 
     # ─── OCR / VLM HTTP backends (optional) ──────────────────────────────
     ocr_http_url: str | None = None
@@ -149,7 +167,23 @@ class Settings(BaseSettings):
     vlm_api_key: str | None = None
     vlm_model: str | None = None
     vlm_temperature: float = 0.1
+    vlm_max_tokens: int = 2000
     vlm_timeout: float = 120.0
+
+    # ─── Auto-extracted metadata (VLM-driven) ────────────────────────────
+    # When enabled, the upload pipeline calls the VLM during the preview
+    # phase to extract title / description / tags / dominant_objects in one
+    # round trip. Disable on deployments where VLM cost is a concern or when
+    # the model is unreliable for the corpus.
+    auto_meta_enabled: bool = True
+    auto_meta_timeout: float = 30.0
+    auto_meta_max_tokens: int = 800
+    auto_meta_max_concurrency: int = 3
+    auto_meta_image_prompt: str | None = None
+    auto_meta_pdf_prompt: str | None = None
+    auto_meta_pdf_max_pages: int = 100
+    auto_meta_pdf_render_dpi: int = 120
+    auto_meta_pdf_max_render_pixels: int = 8_000_000
 
     # ─── Derived properties ───────────────────────────────────────────────
 

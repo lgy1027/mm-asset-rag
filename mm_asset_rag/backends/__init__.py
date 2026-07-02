@@ -44,6 +44,7 @@ class _QdrantBackend:
 
     def ensure_collection(self, *, name, dim, sparse=False):
         from .qdrant_backend import _create_collection
+
         _create_collection(self._client(), name, vector_size=dim, sparse=sparse)
 
     def drop_collection(self, name):
@@ -73,9 +74,8 @@ class _QdrantBackend:
         top_k,
     ):
         from .qdrant_backend import _hybrid_text_query
-        return _hybrid_text_query(
-            self._client(), collection, query_vector, sparse_vector, top_k
-        )
+
+        return _hybrid_text_query(self._client(), collection, query_vector, sparse_vector, top_k)
 
     def search_image_to_image(self, *, collection, image_path, top_k):
         return qdrant_image_to_image_search(image_path, top_k=top_k)
