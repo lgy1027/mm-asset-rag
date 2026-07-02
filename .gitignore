@@ -44,8 +44,6 @@ htmlcov/
 
 # Project runtime data (indices, parsed artifacts, captions, etc.)
 # The library writes here at runtime; not part of source distribution.
-# Leading slash = only match at the repo root, so that
-# `examples/data/` (sample assets shipped with the package) is not ignored.
 /data/
 /indexes/
 /parsed/
@@ -54,15 +52,13 @@ htmlcov/
 /run_report.json
 /eval_report.json
 
-# Cross-scenario test fixtures downloaded by `scripts/expand_corpus.py`.
-# These PDFs are pulled at runtime from public-domain sources (Wikipedia,
-# arXiv, IRS) — they are not part of the source distribution because
-# they re-bloat every clone. The script is idempotent and the
-# `asset_manifest.json` records the URLs to fetch.
-/examples/data/chapter11_assets/pdfs/arxiv_*.pdf
-/examples/data/chapter11_assets/pdfs/irs_*.pdf
-/examples/data/chapter11_assets/pdfs/wiki_*.pdf
-/examples/data/chapter11_assets/pdfs/*__scan.pdf
+# Sample assets and developer fixtures kept locally for manual testing.
+# The full `examples/data/chapter11_assets/` subtree (sample PDFs +
+# photos) is intentionally not tracked: it bloats every clone and is
+# no longer required now that the project is upload-first. Restore
+# locally with `git checkout HEAD -- examples/data/` if you need it.
+# Also covers any PDFs that future `scripts/*` might download.
+/examples/data/
 
 # IDE
 .idea/
