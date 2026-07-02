@@ -13,9 +13,8 @@
                        ┌────────────────────────────────────────────┐
                        │     Service (mm_asset_rag/service.py)      │
                        │  IngestService:                            │
-                       │   - parse_manifest / parse_uploaded         │
-                       │   - ingest_uploaded (parse + index)         │
-                       │   - reindex (force-recreate)                 │
+                       │   - parse_assets / ingest_assets            │
+                       │   - reindex (force-recreate)                │
                        │   - load_history / list_tasks / get_task    │
                        └─────────────────┬──────────────────────────┘
                                          │
@@ -41,9 +40,13 @@
 
 ## What each layer does
 
-- **`api.py` / `cli.py`** are thin entry points. Both call into the same
-  `IngestService` for parse / index / task-history work, so the CLI and
-  the HTTP server cannot drift apart.
+- **`api.py` / `cli.py`** are thin entry points. Both use the upload-first
+  pipeline: files are sniffed, previewed, confirmed, then passed to the same
+  `IngestService` for parse / index / task-history work.
+- **`upload_pipeline.UploadPipeline`** owns the two-stage upload flow:
+  `/upload/preview` copies files into `.preview-cache`, calls `sniff.py` and
+  optional VLM metadata extraction, then `/upload/confirm` moves confirmed
+  files into `assets/pdfs` or `assets/images` and constructs `Asset` objects.
 - **`service.IngestService`** owns parse + index + task state. It uses
   `Protocol`s from `protocols.py` to dispatch to the right parser /
   embedder / backend via `registry.py`, and persists every state change to
@@ -58,8 +61,8 @@
   (local file or remote server). The `VectorBackend` Protocol is the
   swap-in point for Milvus / Pinecone.
 - **`retrieval.hybrid_search`** is pure (no I/O); it normalizes per-route
-  scores and weights them with text 0.55, text-to-image 0.30,
-  image-to-image 0.15.
+  scores and weights them from `Settings` (defaults: text 0.80,
+  text-to-image 0.20, image-to-image 0.0 unless an image query is provided).
 - **`answer.llm_answer` / `stream_answer_chunks`** issue an OpenAI-
   compatible chat completion with the retrieved evidence as context. When
   no LLM is configured, an evidence-summary fallback is returned instead.

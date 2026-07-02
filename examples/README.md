@@ -2,14 +2,14 @@
 
 ## `api_client.py`
 
-A minimal end-to-end client that exercises every HTTP endpoint.
+A minimal HTTP client for a running local server.
 
 ```bash
 # Terminal 1
 mmrag-api
 
-# Terminal 2 (with assets prepared in $MM_ASSET_RAG_HOME/assets)
+# Terminal 2
 python examples/api_client.py
 ```
 
-Requires the server to be running locally and `MM_ASSET_RAG_HOME/assets/asset_manifest.json` to point to actual files. The `image-to-image` block in the script is commented out — uncomment and supply a real `image_path` to try it.
+The project is upload-first: use the web UI or `/upload/preview` + `/upload/confirm` before running search/answer examples. The `image-to-image` block in the script is commented out — uncomment and supply a real `image_path` to try it.

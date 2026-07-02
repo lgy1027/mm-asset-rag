@@ -1,5 +1,7 @@
 # mm-asset-rag full evaluation report
 
+> Historical report: this was generated against the old bundled evaluation corpus before the project moved to upload-first ingestion. The repository no longer ships that corpus as default sample data; use this page as a record of historical measurements, not as current reproduction instructions.
+
 Generated from a clean rebuild: `~/.mm_asset_rag/` was wiped, the
 bundled corpus re-parsed (`mmrag parse --pdf-parser pymupdf`),
 the text collection re-indexed (`mmrag reindex --text-only` with

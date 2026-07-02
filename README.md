@@ -1,6 +1,6 @@
 # mm-asset-rag
 
-> Multimodal asset RAG — parse PDFs and images, index with Qdrant, retrieve by text/image/hybrid, stream grounded LLM answers through a bundled single-page web UI.
+> Multimodal asset RAG — upload PDFs and images, auto-detect file type, extract metadata, index with Qdrant, retrieve by text/image/hybrid, and stream grounded LLM answers through a bundled web UI.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
@@ -8,15 +8,16 @@
 
 ## What is this?
 
-A small, self-contained Python package for multimodal Retrieval-Augmented Generation over a collection of PDFs and images. It supports:
+A small, self-contained Python package for multimodal Retrieval-Augmented Generation over user-uploaded PDFs and images. It supports:
 
+- **Upload-first ingestion**: no `asset_manifest.json`. `/upload/preview` sniffs file magic bytes, extracts dimensions / PDF metadata, optionally asks a VLM for title / description / tags, then `/upload/confirm` parses and indexes.
 - **Parsing**: PyMuPDF (local, free) or PaddleOCR-VL (API, better for scanned PDFs) for PDFs; OCR + VLM captioning for images.
 - **Indexing**: Qdrant (local file or server). Text points carry dense + BM25 sparse vectors and are fused with RRF at query time.
 - **Retrieval**: text-to-text, text-to-image, image-to-image, and weighted hybrid.
 - **Generation**: OpenAI-compatible chat completion with strict evidence grounding and NDJSON streaming.
-- **Web UI**: a bundled single-page HTML (`mm_asset_rag/web/index.html`) served by FastAPI for upload, task status, and chat.
+- **Web UI**: a bundled single-page HTML (`mm_asset_rag/web/index.html`) served by FastAPI for upload preview, task status, and chat.
 
-It is designed to **run end-to-end with zero external services** when an OpenAI-compatible endpoint (local ollama, vLLM, etc.) is available. When no LLM is configured the `/answer` and `/chat` endpoints return an evidence summary instead of failing.
+When no LLM is configured the `/answer` and `/chat` endpoints return an evidence summary instead of failing. VLM-based auto-tagging is also optional; upload still works with sniff-only metadata.
 
 ## Why this project?
 
@@ -24,7 +25,7 @@ If you have a folder of PDFs and images and want to ask questions like *"which d
 
 Compared to larger frameworks:
 
-- **vs LlamaIndex Studio / Verba**: this ships with a web UI for free, focuses on multimodal from day one, and stays under 2k lines per module.
+- **vs LlamaIndex Studio / Verba**: this ships with a web UI, focuses on multimodal from day one, and stays under 2k lines per module.
 - **vs Haystack / txtai**: smaller surface area, multimodal-first, easier to read end-to-end.
 
 ## Installation
@@ -49,36 +50,43 @@ pip install -e ".[dev,clip]"
 
 ## Quick start
 
-The repo ships with a sample dataset of 30 PDFs + 184 photos under `examples/data/chapter11_assets/`. Point the data root at it and run the pipeline:
-
 ```bash
-# Tell the package where to store parsed data, indexes, etc.
-# A symlink is the simplest way to reuse the bundled samples.
-ln -s "$(pwd)/examples/data/chapter11_assets" ~/.mm_asset_rag/assets
-# (Equivalent: export MM_ASSET_RAG_HOME="$(pwd)/examples/data/chapter11_assets")
+# 1. Start the API + web UI
+mmrag-api
+# → http://127.0.0.1:8011/
+# → http://127.0.0.1:8011/docs
 
-# 1. Parse all assets into a unified document store
-mmrag parse --pdf-parser paddleocr_vl --vlm
+# 2. Open the web UI, drag PDFs/images, review the preview cards,
+#    edit title/tags if needed, then click Confirm & Ingest.
 
-# 2. Build the text + image index (incremental — skips already-indexed docs)
-mmrag index
-
-# 3. Search
+# 3. Search / answer from CLI after ingest completes
 mmrag search "which document covers retrieval-augmented generation?"
-
-# 4. Answer with grounded citations
 mmrag answer "which document covers retrieval-augmented generation?"
-
-# 5. Run a small regression suite
-mmrag eval
 ```
 
-Or run the HTTP service (with the bundled web UI):
+CLI ingestion is also upload-first:
 
 ```bash
-mmrag-api
-# → http://127.0.0.1:8011/         (web UI)
-# → http://127.0.0.1:8011/docs     (OpenAPI / Swagger)
+mmrag parse ./paper.pdf ./photo.jpg
+mmrag reindex
+mmrag search "find the beach photo"
+```
+
+## Upload flow
+
+```
+POST /upload/preview (multipart files)
+  ├─ stream files into .preview-cache/
+  ├─ sniff magic bytes: pdf / image / unsupported
+  ├─ extract local metadata: PDF /Info, page count, image size, EXIF
+  ├─ optional VLM JSON mode: title / description / tags
+  └─ return editable preview cards
+
+POST /upload/confirm (cache_id + edited previews)
+  ├─ move confirmed files into assets/pdfs or assets/images
+  ├─ parse PDF/image into documents.jsonl
+  ├─ upsert text chunks into Qdrant text collection
+  └─ upsert image vectors into Qdrant image collection
 ```
 
 ## Configuration
@@ -87,13 +95,15 @@ All settings come from environment variables (a `.env` file in the current direc
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `MM_ASSET_RAG_HOME` | Where to put parsed data, indexes, task log. | `~/.mm_asset_rag` |
+| `MM_ASSET_RAG_HOME` | Where to put uploaded assets, parsed data, indexes, task log. | `~/.mm_asset_rag` |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | LLM for `/answer` and `/chat`. | — |
 | `EMBEDDING_*` | Text embedding provider (defaults to OpenAI-compatible). | — |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server mode (omit to use local file mode). | — |
 | `CLIP_MODEL` | Sentence-transformers CLIP model name (with `[clip]` extra). | `clip-ViT-B-32` |
-| `PADDLEOCR_VL_API_TOKEN` | PaddleOCR-VL API token. | — |
-| `PDF_PARSER` / `ENABLE_OCR` / `ENABLE_VLM` / `IMAGE_PROVIDER` | Parser / image embedding defaults, overridable per `/upload`. | `auto` / `false` / `false` / `lite` |
+| `VLM_BASE_URL` / `VLM_API_KEY` / `VLM_MODEL` | VLM for upload auto-tagging and image captions. Falls back to `OPENAI_*`. | — |
+| `AUTO_META_ENABLED` | Enable VLM title/description/tag extraction during upload preview. | `true` |
+| `PADDLEOCR_VL_API_TOKEN` | PaddleOCR-VL API token for scanned PDFs. | — |
+| `OCR_HTTP_URL` | Optional local OCR service for image text extraction. | — |
 
 See [`.env.example`](.env.example) and [`docs/configuration.md`](docs/configuration.md) for the full list.
 
@@ -103,32 +113,28 @@ See [`.env.example`](.env.example) and [`docs/configuration.md`](docs/configurat
 mm-asset-rag/
 ├── mm_asset_rag/         # single Python package (flat layout + sub-packages)
 │   ├── api.py            # FastAPI app: thin route layer, delegates to service.py
-│   ├── cli.py            # `mmrag` / `mmrag-api` console scripts, also delegates
-│   ├── service.py        # IngestService: parse / index / task-history (shared)
+│   ├── cli.py            # `mmrag` / `mmrag-api` console scripts
+│   ├── service.py        # IngestService: parse / index / task-history
+│   ├── upload_pipeline.py# preview → confirm upload flow
+│   ├── sniff.py          # file magic + local metadata detection
+│   ├── auto_meta.py      # VLM JSON-mode metadata extraction
 │   ├── settings.py       # pydantic-settings: every env var in one place
 │   ├── protocols.py      # Parser / Embedder / VectorBackend Protocol definitions
 │   ├── registry.py       # Module-level parsers / embedders / backends registries
 │   ├── paths.py          # on-disk layout under $MM_ASSET_RAG_HOME
-│   ├── config.py         # load_env() + env_bool() (legacy helpers, kept for compat)
-│   ├── assets.py         # asset_manifest loader + Asset dataclass
+│   ├── assets.py         # Asset dataclass
 │   ├── schema.py         # SearchHit, ParsedDocument
 │   ├── document_store.py # unified ParsedDocument JSONL store
 │   ├── answer.py         # grounded answer generation (streaming + sync)
 │   ├── evaluation.py     # mini regression suite
-│   ├── retrieval.py      # hybrid merge + normalize (pure functions, no mutation)
-│   ├── parsers/          # Parser implementations, registered at import time
-│   │   ├── pdf_parser.py # PyMuPDF + PaddleOCR-VL backends
-│   │   └── image_parser.py
-│   ├── embedders/        # Embedder implementations (Protocol conformers)
-│   │   ├── text_embedder.py
-│   │   └── image_embedder.py
-│   └── backends/         # VectorBackend implementations
-│       └── qdrant_backend.py
-├── examples/data/        # 30 PDFs + 184 photos + asset_manifest.json
-├── tests/unit/           # offline unit tests (fast)
-├── tests/integration/    # marked @pytest.mark.integration (network / Qdrant)
+│   ├── retrieval.py      # hybrid merge + normalize
+│   ├── parsers/          # PDF/image parser implementations
+│   ├── embedders/        # text/image embedder implementations
+│   └── backends/         # Qdrant backend implementation
+├── tests/unit/           # offline unit tests
+├── tests/integration/    # marked @pytest.mark.integration
 ├── docs/                 # architecture, configuration, api
-└── scripts/              # eval_rag.py, build_manifest.py
+└── scripts/              # eval_rag.py, benchmark.py
 ```
 
 ### Adding a new modality (audio, video)
@@ -137,17 +143,16 @@ Three-line change, no central dispatch to edit:
 
 1. Drop `parsers/audio_parser.py` whose class satisfies `protocols.Parser`.
 2. `register_parser(AudioParser())` in `parsers/__init__.py`.
-3. Drop `embedders/audio_embedder.py` whose class satisfies `protocols.Embedder`,
-   and `register_embedder(...)` it.
+3. Drop `embedders/audio_embedder.py` whose class satisfies `protocols.Embedder`, and `register_embedder(...)` it.
 
-The FastAPI app, the CLI, and the Qdrant backend all read from the
-registries at runtime — no if/elif source_type dispatch needs touching.
+The FastAPI app, CLI, and Qdrant backend all read from the registries at runtime.
 
 ## Documentation
 
 - [Architecture](docs/architecture.md)
 - [Configuration](docs/configuration.md)
 - [HTTP API](docs/api.md)
+- [Upload flow](docs/upload-flow.md)
 
 ## Contributing
 
@@ -156,7 +161,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](.github/CODE_OF_
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
-
-## Citation
-
-If you use this in research, please cite the underlying projects it depends on (`qdrant-client`, `PyMuPDF`, `fastembed`, etc.) per their respective licenses.

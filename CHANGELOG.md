@@ -35,6 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /ingest` endpoint (replaced by `POST /upload`).
 - `src/mm_asset_rag/` layout documentation in `README.md` / `CONTRIBUTING.md` — package is a flat layout, not src-layout.
 - Unused llama-index dependencies from `pyproject.toml`.
+- `examples/data/chapter11_assets/` — bundled sample assets (≈30 PDFs + 184 photos) removed from the repo; upload-first design means users bring their own files via `/upload/preview`. Developers who need the corpus locally can `git checkout HEAD -- examples/data/` (kept locally via `.gitignore`).
+- `scripts/build_manifest.py`, `expand_corpus.py`, `prune_corpus.py`, `import_caltech101.py`, `import_vlm_captions.py`, `eval_extended.py`, `eval_multimodal.py` — manifest-era utilities superseded by the upload-first pipeline.
+- `docs/asset-store-design.md`, `docs/multimodal-eval-report.md` — superseded by `docs/upload-flow.md` + `docs/eval-report.md`.
+- `tests/unit/test_assets.py` — covered by the service-layer test suite after the upload-first refactor.
 
 ### Fixed
 - `iter_lines(chunk_size=1, decode_unicode=True)` in `stream_answer_chunks` was shredding multi-byte UTF-8 into mojibake. Now reads raw bytes with `iter_content` and decodes UTF-8 manually.

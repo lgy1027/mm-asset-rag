@@ -43,12 +43,15 @@ mm-asset-rag/
 │   ├── api.py            # FastAPI app: thin route layer, delegates to service.py
 │   ├── cli.py            # `mmrag` / `mmrag-api` console scripts, also delegate
 │   ├── service.py        # IngestService: parse / index / task-history (shared)
+│   ├── upload_pipeline.py# preview → confirm upload flow
+│   ├── sniff.py          # file magic + local metadata detection
+│   ├── auto_meta.py      # VLM JSON-mode metadata extraction
 │   ├── settings.py       # pydantic-settings: every env var in one place
 │   ├── protocols.py      # Parser / Embedder / VectorBackend Protocol definitions
 │   ├── registry.py       # Module-level parsers / embedders / backends registries
 │   ├── paths.py          # on-disk layout under $MM_ASSET_RAG_HOME
 │   ├── config.py         # load_env() + env_bool() (legacy helpers)
-│   ├── assets.py         # asset_manifest loader + Asset dataclass
+│   ├── assets.py         # Asset dataclass
 │   ├── schema.py         # SearchHit, ParsedDocument
 │   ├── document_store.py # unified ParsedDocument JSONL store
 │   ├── answer.py         # grounded answer generation (streaming + sync)
@@ -62,11 +65,11 @@ mm-asset-rag/
 │   │   └── image_embedder.py
 │   └── backends/         # VectorBackend implementations
 │       └── qdrant_backend.py
-├── examples/data/        # 30 PDFs + 184 photos + asset_manifest.json
+├── examples/             # API client examples
 ├── tests/unit/           # offline unit tests (fast)
 ├── tests/integration/    # marked @pytest.mark.integration
 ├── docs/                 # architecture, configuration, api
-└── scripts/              # eval_rag.py, build_manifest.py
+└── scripts/              # eval_rag.py, benchmark.py
 ```
 
 ## Adding a new modality (audio, video)
@@ -102,8 +105,9 @@ Register it in `parsers/__init__.py`:
 register_parser(PdfPlumberParser())
 ```
 
-It is now selectable via `--pdf-parser pdfplumber` on the CLI and via the
-`pdf_parser` form field on `POST /upload`.
+It is now selectable via `--pdf-parser pdfplumber` on the CLI. The web
+upload flow still auto-sniffs file type first, then uses parser settings
+inside the service layer.
 
 ## Adding a new vector backend
 
