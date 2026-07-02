@@ -1,219 +1,173 @@
 # Configuration
 
-Every environment variable the codebase reads is declared as a typed
-field on [`Settings`](https://github.com/lgy1027/mm-asset-rag/blob/main/mm_asset_rag/settings.py)
-(pydantic-settings). The same module is the single source of truth — both
-the API and the CLI read from it.
+`mm-asset-rag` reads configuration from environment variables through `mm_asset_rag.settings.Settings`. A `.env` file in the current working directory is loaded automatically.
 
-This document groups the fields by purpose and lists defaults,
-overrides, and the `.env` keys you should set per environment. For the
-canonical list (with types), see
-[`Settings` in settings.py](../mm_asset_rag/settings.py).
+## Runtime layout
 
-## Loading
+All mutable data lives under `MM_ASSET_RAG_HOME` (default `~/.mm_asset_rag`):
 
-`.env` in the current working directory is loaded automatically at
-process startup (`config.load_env()` reads it via `python-dotenv`).
-Process-level env vars override `.env` values.
-
-```python
-from mm_asset_rag.settings import get_settings
-
-settings = get_settings()  # cached lru_cache singleton
-print(settings.openai_model)  # str | None
-print(settings.data_dir)      # Path: ~/.mm_asset_rag or MM_ASSET_RAG_HOME
-print(settings.has_llm)       # bool: triple (key/url/model) is complete
+```text
+$MM_ASSET_RAG_HOME/
+├── assets/
+│   ├── pdfs/                # confirmed uploaded PDFs
+│   └── images/              # confirmed uploaded images
+├── .preview-cache/<id>/     # short-lived upload preview files
+├── parsed/<asset_id>/       # PDF page markdown / image OCR JSON
+├── captions/<asset_id>.json # VLM captions
+├── indexes/qdrant/          # local Qdrant persistence
+├── documents.jsonl          # ParsedDocument store
+└── tasks.jsonl              # background task history
 ```
 
-For tests:
+There is no `asset_manifest.json`; uploaded files are auto-sniffed and converted into `Asset` objects during `/upload/confirm`.
 
-```python
-from mm_asset_rag.settings import Settings
-s = Settings(_env_file=None)   # bypass .env, read os.environ only
-```
+## Core variables
 
-## Paths
-
-| Field | Env | Default | Purpose |
-| --- | --- | --- | --- |
-| `mm_asset_rag_home` | `MM_ASSET_RAG_HOME` | `~/.mm_asset_rag` | Root for assets / indexes / task log. |
-
-Layout under `$MM_ASSET_RAG_HOME`:
-
-```
-assets/                  # PDFs, images, asset_manifest.json
-parsed/<asset_id>/       # per-asset parsed output (markdown pages, OCR JSON)
-captions/<asset_id>.json # VLM captions (when VLM is enabled)
-indexes/
-  qdrant/                # Qdrant local persistence
-documents.jsonl          # unified ParsedDocument store
-tasks.jsonl              # background-task history (read on startup)
-```
-
-## LLM (for `/answer`, `/chat`, `mmrag answer`)
-
-| Field | Env | Default |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `openai_api_key` | `OPENAI_API_KEY` | — |
-| `openai_base_url` | `OPENAI_BASE_URL` | — |
-| `openai_model` | `OPENAI_MODEL` | — |
-| `llm_timeout` | `LLM_TIMEOUT` | `120` (seconds) |
+| `MM_ASSET_RAG_HOME` | `~/.mm_asset_rag` | Runtime data directory |
+| `OPENAI_API_KEY` | unset | Chat LLM API key |
+| `OPENAI_BASE_URL` | unset | OpenAI-compatible chat base URL |
+| `OPENAI_MODEL` | unset | Chat model |
+| `LLM_TIMEOUT` | `120.0` | Chat timeout seconds |
 
-Any local or hosted endpoint works: ollama / vLLM / LM Studio / OpenAI /
-DeepSeek / Moonshot / etc., as long as it speaks the OpenAI Chat
-Completions protocol.
+When the OpenAI triple is incomplete, `/answer` and `/chat` return evidence-summary fallback answers instead of failing.
 
-## Embedding (text)
+## Text embedding
 
-| Field | Env | Default |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `embedding_api_key` | `EMBEDDING_API_KEY` | falls back to `OPENAI_API_KEY` |
-| `embedding_base_url` | `EMBEDDING_BASE_URL` | falls back to `OPENAI_BASE_URL` |
-| `embedding_model` | `EMBEDDING_MODEL` | falls back to `OPENAI_MODEL` |
-| `embedding_batch_size` | `EMBEDDING_BATCH_SIZE` | `5` |
-| `embedding_request_interval` | `EMBEDDING_REQUEST_INTERVAL` | `0.25` (seconds between batches) |
-| `embedding_retry_count` | `EMBEDDING_RETRY_COUNT` | `5` |
-| `embedding_timeout` | `EMBEDDING_TIMEOUT` | `120` (seconds) |
-| `embedding_max_input_chars` | `EMBEDDING_MAX_INPUT_CHARS` | `8192` |
+| `EMBEDDING_API_KEY` | `OPENAI_API_KEY` fallback | Embedding API key |
+| `EMBEDDING_BASE_URL` | `OPENAI_BASE_URL` fallback | Embedding base URL |
+| `EMBEDDING_MODEL` | unset | Embedding model |
+| `EMBEDDING_BATCH_SIZE` | `5` | Batch size |
+| `EMBEDDING_REQUEST_INTERVAL` | `0.25` | Delay between requests |
+| `EMBEDDING_RETRY_COUNT` | `5` | Retry attempts |
+| `EMBEDDING_TIMEOUT` | `120.0` | Timeout seconds |
+| `EMBEDDING_MAX_INPUT_CHARS` | `8192` | Per-text truncation limit |
 
-## Image embedding (CLIP)
+## Image embedding
 
-| Field | Env | Default |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `clip_model` | `CLIP_MODEL` | `clip-ViT-B-32` |
+| `CLIP_MODEL` | `clip-ViT-B-32` | Sentence-transformers CLIP model name |
+| `IMAGE_PROVIDER` | `lite` | Legacy provider selector |
 
-Image embedding requires the optional `[clip]` extra:
-`pip install "mm-asset-rag[clip]"`.
+Install `[clip]` to use sentence-transformers CLIP:
+
+```bash
+pip install -e ".[clip]"
+```
 
 ## Qdrant
 
-| Field | Env | Default |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `qdrant_url` | `QDRANT_URL` | — (omit to use local file mode) |
-| `qdrant_api_key` | `QDRANT_API_KEY` | — |
-| `qdrant_text_collection` | `QDRANT_TEXT_COLLECTION` | `multimodal_text` |
-| `qdrant_image_collection` | `QDRANT_IMAGE_COLLECTION` | `multimodal_image` |
-| `qdrant_upsert_batch_size` | `QDRANT_UPSERT_BATCH_SIZE` | `16` |
-| `qdrant_bm25_model` | `QDRANT_BM25_MODEL` | `Qdrant/bm25` |
-| `qdrant_hybrid_prefetch_limit` | `QDRANT_HYBRID_PREFETCH_LIMIT` | `20` |
-| `bm25_zh_enabled` | `BM25_ZH_ENABLED` | `true` |
-| `bm25_zh_k1` | `BM25_ZH_K1` | `1.5` |
-| `bm25_zh_b` | `BM25_ZH_B` | `0.75` |
-| `bm25_zh_vector_name` | `BM25_ZH_VECTOR_NAME` | `bm25_zh` |
+| `QDRANT_URL` | unset | Remote Qdrant URL; unset = local file mode |
+| `QDRANT_API_KEY` | unset | Remote Qdrant API key |
+| `QDRANT_TEXT_COLLECTION` | `multimodal_text` | Base text collection name |
+| `QDRANT_IMAGE_COLLECTION` | `multimodal_image` | Base image collection name |
+| `QDRANT_UPSERT_BATCH_SIZE` | `16` | Upsert batch size |
+| `QDRANT_BM25_MODEL` | `Qdrant/bm25` | fastembed sparse model |
+| `QDRANT_HYBRID_PREFETCH_LIMIT` | `20` | Per-channel prefetch limit |
 
-When the embedding dimension changes, the active collection is
-auto-suffixed (`f"{base}_{dim}d"`, e.g. `multimodal_text_2560d`).
-
-### Chinese BM25 (`bm25_zh`)
-
-The Qdrant text collection stores three vector kinds when
-`bm25_zh_enabled` is true:
-
-- `dense` — OpenAI-compatible text embeddings (default `qwen3-embedding:4b`).
-- `bm25` — fastembed's English `Qdrant/bm25` sparse vector (RRF-fused with dense at query time).
-- `bm25_zh` — `jieba.cut` + Okapi BM25 sparse vector from
-  `mm_asset_rag.bm25_zh`. Catches token-level Chinese recall that the
-  English BM25 misses.
-
-`_hybrid_text_query` prefetches all three and fuses via RRF. The
-Chinese IDF table is persisted to
-`$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json` so query-time encoding
-does not re-tokenise the corpus. Setting `bm25_zh_enabled=false` and
-running `mmrag reindex` produces a 2-vector collection (English only)
-for backwards compatibility.
+Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`.
 
 ## Retrieval tuning
 
-| Field | Env | Default | Purpose |
-| --- | --- | --- | --- |
-| `hybrid_weight_text` | `HYBRID_WEIGHT_TEXT` | `0.80` | Weight of the dense + BM25 (RRF) text route. |
-| `hybrid_weight_text_to_image` | `HYBRID_WEIGHT_TEXT_TO_IMAGE` | `0.20` | Weight of the CLIP text-to-image route. |
-| `hybrid_weight_image_to_image` | `HYBRID_WEIGHT_IMAGE_TO_IMAGE` | `0.0` | Weight of the CLIP image-to-image route. Only consulted when an `image_path` is supplied. |
-| `max_chunks_per_pdf` | `MAX_CHUNKS_PER_PDF` | unset (no cap) | Per-asset chunk cap applied during `mmrag index`. |
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `HYBRID_WEIGHT_TEXT` | `0.80` | Text-route merge weight |
+| `HYBRID_WEIGHT_TEXT_TO_IMAGE` | `0.20` | Text→image merge weight |
+| `HYBRID_WEIGHT_IMAGE_TO_IMAGE` | `0.0` | Image→image merge weight when an image query is provided |
+| `MAX_CHUNKS_PER_PDF` | unset | Per-PDF chunk cap before text indexing |
+| `IMAGE_RELEVANCE_THRESHOLD` | `0.24` | CLIP cosine floor for image routes |
+| `IMAGE_PREFILTER_FIELDS` | `tags,asset_id,asset_title` | Payload fields used for sparse image pre-filter |
+| `IMAGE_PREFILTER_MIN_TOKEN_LEN` | `3` | Drop shorter tokens from image pre-filter |
 
-`hybrid_search` merges the three routes by max-normalizing each
-group's scores and taking a weighted sum by `asset_id`. The weights
-list passed to the merge is built from whichever routes actually
-participate — the image-to-image route is only included when an
-`image_path` is supplied *and* `hybrid_weight_image_to_image > 0`.
+Changing `MAX_CHUNKS_PER_PDF` requires `mmrag reindex` to rebuild existing collections.
 
-### `max_chunks_per_pdf`
+## Chinese BM25
 
-On the bundled sample set, three PDFs (`clip` 48 chunks, `flamingo`
-54, `gpt3` 75) contribute roughly a third of every dense top-5
-ranking. Capping each asset at `MAX_CHUNKS_PER_PDF` chunks
-(selected by a local BM25 Okapi score against the asset's title)
-gives every asset equal say in the dense ranking. Recommended value
-on the bundled set: `10` (reduces the 897-chunk index to ~365
-chunks; rebuild with `mmrag reindex` to take effect).
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `BM25_ZH_ENABLED` | `true` | Enable jieba + Okapi sparse vector |
+| `BM25_ZH_K1` | `1.5` | BM25 k1 |
+| `BM25_ZH_B` | `0.75` | BM25 b |
+| `BM25_ZH_VECTOR_NAME` | `bm25_zh` | Qdrant sparse vector name |
 
-## Parser defaults (override per `/upload`)
+## Upload safety limits
 
-| Field | Env | Default |
-| --- | --- | --- |
-| `pdf_parser` | `PDF_PARSER` | `auto` (`auto` / `pymupdf` / `paddleocr_vl`) |
-| `enable_ocr` | `ENABLE_OCR` | `false` |
-| `enable_vlm` | `ENABLE_VLM` | `false` |
-| `image_provider` | `IMAGE_PROVIDER` | `lite` (`lite` / `sentence_transformers`) |
-| `auto_index` | `AUTO_INDEX` | `true` |
+These limits protect `/upload/preview` from accidental very large uploads. Oversized multipart bodies return HTTP 413; files that sniff as too large/complex are shown as rejected preview cards and cannot be confirmed.
 
-The `/upload` form fields (`pdf_parser`, `enable_ocr`, `enable_vlm`,
-`image_provider`, `auto_index`) override these defaults per request.
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `UPLOAD_MAX_FILE_BYTES` | `52428800` | Per-file upload cap |
+| `UPLOAD_MAX_BATCH_BYTES` | `209715200` | Total multipart batch cap |
+| `UPLOAD_MAX_PDF_PAGES` | `500` | Reject confirmed PDFs above this page count |
+| `UPLOAD_MAX_IMAGE_PIXELS` | `50000000` | Reject images above this pixel count |
+| `UPLOAD_SLUG_MAX_LEN` | `80` | Maximum readable title slug length used in asset file names |
+
+## Upload auto-metadata
+
+The upload preview pipeline can call a VLM once per file to extract title / description / tags as JSON. If the VLM is unconfigured or fails, preview falls back to local sniffing. PDF metadata extraction only renders the first page and has its own guardrails.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `AUTO_META_ENABLED` | `true` | Enable VLM metadata extraction in `/upload/preview` |
+| `AUTO_META_TIMEOUT` | `30.0` | Per-file VLM timeout |
+| `AUTO_META_MAX_TOKENS` | `800` | JSON response budget |
+| `AUTO_META_IMAGE_PROMPT` | unset | Override image prompt |
+| `AUTO_META_PDF_PROMPT` | unset | Override PDF-first-page prompt |
+| `AUTO_META_PDF_MAX_PAGES` | `100` | Skip PDF VLM preview above this page count |
+| `AUTO_META_PDF_RENDER_DPI` | `120` | DPI used for the first-page render |
+| `AUTO_META_PDF_MAX_RENDER_PIXELS` | `8000000` | Skip VLM when the rendered first page is too large |
+
+## OCR / VLM backends
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `OCR_HTTP_URL` | unset | Optional local OCR service for image text extraction |
+| `OCR_HTTP_TIMEOUT` | `60.0` | OCR timeout |
+| `VLM_BASE_URL` | `OPENAI_BASE_URL` fallback | VLM endpoint for image captions / auto metadata |
+| `VLM_API_KEY` | `OPENAI_API_KEY` fallback | VLM API key |
+| `VLM_MODEL` | `OPENAI_MODEL` fallback | VLM model |
+| `VLM_TEMPERATURE` | `0.1` | Caption temperature |
+| `VLM_MAX_TOKENS` | `2000` | Caption token budget |
+| `VLM_TIMEOUT` | `120.0` | Caption timeout |
 
 ## PaddleOCR-VL
 
-Required only when `PDF_PARSER=paddleocr_vl` (or `auto` with the
-token set). Use this parser for **scanned PDFs** (no embedded text
-layer): `parse_with_paddleocr_vl` submits the document to the
-PaddleOCR-VL API and writes one markdown page per response row to
-`$MM_ASSET_RAG_HOME/parsed/<asset_id>/page_N.md`. With
-`PADDLEOCR_VL_USE_CHART_RECOGNITION=true` it also extracts charts and
-tables; with `PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY=true` it
-auto-rotates mis-oriented scans.
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `PADDLEOCR_VL_API_TOKEN` | unset | Enables PaddleOCR-VL PDF parsing when `pdf_parser=auto` |
+| `PADDLEOCR_VL_JOB_URL` | Paddle API URL | Job endpoint |
+| `PADDLEOCR_VL_MODEL` | `PaddleOCR-VL-1.6` | Model name |
+| `PADDLEOCR_VL_TIMEOUT` | `900.0` | Job timeout |
+| `PADDLEOCR_VL_POLL_INTERVAL` | `5.0` | Poll interval |
+| `PADDLEOCR_VL_POLL_RETRY` | `5` | Poll retry count |
+| `PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY` | `false` | Paddle option |
+| `PADDLEOCR_VL_USE_DOC_UNWARPING` | `false` | Paddle option |
+| `PADDLEOCR_VL_USE_CHART_RECOGNITION` | `false` | Paddle option |
 
-| Field | Env | Default |
-| --- | --- | --- |
-| `paddleocr_vl_api_token` | `PADDLEOCR_VL_API_TOKEN` | — |
-| `paddleocr_vl_job_url` | `PADDLEOCR_VL_JOB_URL` | `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs` |
-| `paddleocr_vl_model` | `PADDLEOCR_VL_MODEL` | `PaddleOCR-VL-1.6` |
-| `paddleocr_vl_timeout` | `PADDLEOCR_VL_TIMEOUT` | `900` |
-| `paddleocr_vl_poll_interval` | `PADDLEOCR_VL_POLL_INTERVAL` | `5` |
-| `paddleocr_vl_poll_retry` | `PADDLEOCR_VL_POLL_RETRY` | `5` |
-| `paddleocr_vl_use_doc_orientation_classify` | `PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY` | `false` |
-| `paddleocr_vl_use_doc_unwarping` | `PADDLEOCR_VL_USE_DOC_UNWARPING` | `false` |
-| `paddleocr_vl_use_chart_recognition` | `PADDLEOCR_VL_USE_CHART_RECOGNITION` | `false` |
+## Example `.env`
 
-## OCR HTTP (image assets)
+```dotenv
+MM_ASSET_RAG_HOME=~/.mm_asset_rag
 
-| Field | Env | Default |
-| --- | --- | --- |
-| `ocr_http_url` | `OCR_HTTP_URL` | — |
-| `ocr_http_timeout` | `OCR_HTTP_TIMEOUT` | `60` |
+OPENAI_BASE_URL=http://127.0.0.1:11434/v1
+OPENAI_API_KEY=ollama
+OPENAI_MODEL=gemma4:latest
 
-Image OCR is enabled per-upload via `ENABLE_OCR=true` (or the
-`enable_ocr` flag on `/upload`). When the env var is set, every
-parsed image is POSTed to the local OCR service with a base64 payload
-and the structured `blocks` response is normalised and stored under
-`$MM_ASSET_RAG_HOME/parsed/<asset_id>/ocr.json`. See
-`scripts/expand_corpus.py` for an example pipeline that exercises this
-code path.
+EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
+EMBEDDING_API_KEY=ollama
+EMBEDDING_MODEL=qwen3-embedding:4b
 
-For **PDFs** (including scanned PDFs without an embedded text layer)
-use `PDF_PARSER=paddleocr_vl` — see the PaddleOCR-VL section below.
-The CLI flag is `mmrag parse --pdf-parser paddleocr_vl`.
+AUTO_META_ENABLED=true
+VLM_BASE_URL=http://127.0.0.1:11434/v1
+VLM_API_KEY=ollama
+VLM_MODEL=gemma4:latest
 
-## VLM (image captioning)
-
-| Field | Env | Default |
-| --- | --- | --- |
-| `vlm_base_url` | `VLM_BASE_URL` | falls back to `OPENAI_BASE_URL` |
-| `vlm_api_key` | `VLM_API_KEY` | falls back to `OPENAI_API_KEY` |
-| `vlm_model` | `VLM_MODEL` | falls back to `OPENAI_MODEL` |
-| `vlm_temperature` | `VLM_TEMPERATURE` | `0.1` |
-| `vlm_timeout` | `VLM_TIMEOUT` | `120` |
-
-## See also
-
-- [`.env.example`](../.env.example) — copy to `.env` and fill in.
-- [`Settings` source](../mm_asset_rag/settings.py) — canonical field list with types.
-- [HTTP API](api.md) — request / response shapes and example payloads.
+# Use Qdrant server mode if you want concurrent API + CLI access
+# QDRANT_URL=http://127.0.0.1:6333
+```
