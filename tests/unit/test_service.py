@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import time
+from dataclasses import asdict
 from pathlib import Path
 from unittest.mock import patch
 
@@ -610,6 +612,41 @@ def test_dispatch_search_rejects_symlink_escape(tmp_home: Path) -> None:
 
     with pytest.raises(ValueError, match="outside assets"):
         _resolve_sandboxed_image_path("images/leak.png")
+
+
+def test_list_tasks_orders_by_updated_at_desc(tmp_home: Path) -> None:
+    """``list_tasks`` reads SQLite directly and returns rows ordered by
+    most recent ``updated_at`` (not by insertion order, which is what
+    the in-memory dict gave us). Useful because a worker that crashes
+    before the next ``_patch`` lands still surfaces in the correct
+    place after recovery.
+    """
+    import sqlite3
+
+    from mm_asset_rag.service import IngestService, TaskRecord
+
+    service = IngestService()
+    base = time.time()
+    a = TaskRecord(task_id="alpha01", kind="parse")
+    b = TaskRecord(task_id="beta02", kind="parse")
+    c = TaskRecord(task_id="gamma03", kind="ingest")
+
+    db_path = service._tasks_db_path()
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tasks ("
+            "task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL)"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS tasks_updated_at_idx ON tasks (updated_at DESC)")
+        for rec, ts in ((a, base), (b, base + 1.0), (c, base + 2.0)):
+            conn.execute(
+                "INSERT OR REPLACE INTO tasks (task_id, payload, updated_at) VALUES (?, ?, ?)",
+                (rec.task_id, json.dumps(asdict(rec)), ts),
+            )
+
+    fresh = IngestService()
+    tasks = fresh.list_tasks()
+    assert [t.task_id for t in tasks] == ["gamma03", "beta02", "alpha01"]
 
 
 def test_legacy_jsonl_migrates_to_sqlite(tmp_home: Path) -> None:

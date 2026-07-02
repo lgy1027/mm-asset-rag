@@ -407,8 +407,37 @@ class IngestService:
         return tuple(results)
 
     def list_tasks(self) -> list[TaskRecord]:
-        with self._TASKS_LOCK:
-            return list(self._tasks.values())
+        """Return the task history ordered by most recent ``updated_at``.
+
+        Reads directly from ``tasks.db`` (with the ``updated_at``
+        index) instead of the in-memory dict. This means a process
+        that never called ``load_history`` still sees the persisted
+        history, and the SQL ``ORDER BY updated_at DESC`` gives a
+        deterministic, time-ordered view rather than the dict's
+        insertion order.
+        """
+        import sqlite3
+
+        db_path = self._tasks_db_path()
+        if not db_path.exists():
+            return []
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                rows = conn.execute("SELECT payload FROM tasks ORDER BY updated_at DESC").fetchall()
+        except sqlite3.DatabaseError as exc:
+            print(f"[tasks] warning: list_tasks db read failed: {exc}")
+            # Fall through to the in-memory cache so a transient DB
+            # failure doesn't blank the UI.
+            with self._TASKS_LOCK:
+                return list(self._tasks.values())
+        out: list[TaskRecord] = []
+        for (payload,) in rows:
+            try:
+                obj = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            out.append(self._task_from_dict(obj))
+        return out
 
     def get_task(self, task_id: str) -> TaskRecord | None:
         with self._TASKS_LOCK:
@@ -909,6 +938,14 @@ class IngestService:
                     "payload TEXT NOT NULL, "
                     "updated_at REAL NOT NULL"
                     ")"
+                )
+                # WAL gives concurrent readers + one writer without
+                # the legacy rollback-journal serialisation, and the
+                # descending index makes ``list_tasks`` use the
+                # index instead of a tablescan even at >100k rows.
+                conn.execute("PRAGMA journal_mode = WAL")
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS tasks_updated_at_idx ON tasks (updated_at DESC)"
                 )
                 conn.execute(
                     "INSERT OR REPLACE INTO tasks (task_id, payload, updated_at) VALUES (?, ?, ?)",
