@@ -41,9 +41,7 @@ class Registry(Generic[T]):
     def get(self, key: tuple[str, str] | str) -> T:
         if key not in self._items:
             available = sorted(str(k) for k in self._items)
-            raise KeyError(
-                f"{self.label} {key!r} not registered; available: {available}"
-            )
+            raise KeyError(f"{self.label} {key!r} not registered; available: {available}")
         return self._items[key]
 
     def all(self) -> dict[tuple[str, str] | str, T]:

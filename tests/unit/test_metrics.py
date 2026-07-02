@@ -20,12 +20,12 @@ from mm_asset_rag.metrics import (
     reciprocal_rank,
 )
 
-
 # ─── _log2 helper ────────────────────────────────────────────────────────
 
 
 def test_log2_matches_math_log2() -> None:
     import math
+
     for x in (1, 2, 3, 4, 5, 10, 100):
         assert _log2(x) == pytest.approx(math.log2(x))
 
@@ -190,4 +190,4 @@ def test_aggregate_averages_across_results() -> None:
     assert out["recall"][2] == pytest.approx(0.5)
     assert out["f1"][2] == pytest.approx(1 / 3)
     assert out["mrr"] == pytest.approx(0.5)  # first case hit at rank 1
-    assert out["map"] == pytest.approx(0.5)   # AP = 1/1 for case 1
+    assert out["map"] == pytest.approx(0.5)  # AP = 1/1 for case 1

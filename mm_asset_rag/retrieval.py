@@ -84,9 +84,7 @@ def merge_hits(groups: list[list[SearchHit]], weights: list[float], top_k: int) 
                     ),
                     metadata={
                         **current.metadata,
-                        "routes": _merge_routes(
-                            current.metadata.get("routes"), hit.route
-                        ),
+                        "routes": _merge_routes(current.metadata.get("routes"), hit.route),
                     },
                 )
     return sorted(merged.values(), key=lambda hit: hit.score, reverse=True)[:top_k]

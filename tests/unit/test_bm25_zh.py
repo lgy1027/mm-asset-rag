@@ -13,7 +13,6 @@ from qdrant_client import models
 from mm_asset_rag import bm25_zh
 from mm_asset_rag.schema import ParsedDocument
 
-
 # ─── tokenize_zh ─────────────────────────────────────────────────────────
 
 
@@ -70,9 +69,7 @@ def test_compute_idf_includes_metadata_keys() -> None:
 
 def test_compute_idf_common_term_lower_idf_than_rare() -> None:
     # "the" appears in all docs, "widget" appears in 1.
-    idf = bm25_zh.compute_idf(
-        [["the", "cat"], ["the", "dog"], ["the", "widget"]]
-    )
+    idf = bm25_zh.compute_idf([["the", "cat"], ["the", "dog"], ["the", "widget"]])
     assert idf["widget"] > idf["the"]
 
 

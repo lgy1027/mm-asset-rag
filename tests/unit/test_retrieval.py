@@ -112,9 +112,7 @@ def test_hybrid_search_uses_settings_weights(monkeypatch, fixed_vector) -> None:
     assert captured["weights"] == [0.70, 0.30]
 
 
-def test_hybrid_search_skips_image_route_when_weight_zero(
-    monkeypatch, fixed_vector
-) -> None:
+def test_hybrid_search_skips_image_route_when_weight_zero(monkeypatch, fixed_vector) -> None:
     """Image-to-image route must not be called when its weight is <= 0."""
     text_hits = [_make_hit("a", "qdrant_text", 1.0)]
     text_to_image_hits = [_make_hit("b", "qdrant_text_to_image", 1.0)]
@@ -134,9 +132,7 @@ def test_hybrid_search_skips_image_route_when_weight_zero(
         called["i2i"] += 1
         return []
 
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_image_to_image_search", _track
-    )
+    monkeypatch.setattr("mm_asset_rag.retrieval.qdrant_image_to_image_search", _track)
 
     from pathlib import Path
 
@@ -150,9 +146,7 @@ def test_hybrid_search_skips_image_route_when_weight_zero(
     assert called["i2i"] == 0
 
 
-def test_hybrid_search_calls_image_route_when_weight_positive(
-    monkeypatch, fixed_vector
-) -> None:
+def test_hybrid_search_calls_image_route_when_weight_positive(monkeypatch, fixed_vector) -> None:
     """Image-to-image route is consulted when its weight is > 0 and an image_path is given."""
     monkeypatch.setattr(
         "mm_asset_rag.retrieval.qdrant_text_search",
@@ -169,9 +163,7 @@ def test_hybrid_search_calls_image_route_when_weight_positive(
         called["i2i"] += 1
         return [_make_hit("c", "qdrant_image_to_image", 1.0)]
 
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_image_to_image_search", _track
-    )
+    monkeypatch.setattr("mm_asset_rag.retrieval.qdrant_image_to_image_search", _track)
 
     from pathlib import Path
 

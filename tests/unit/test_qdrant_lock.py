@@ -20,7 +20,6 @@ from mm_asset_rag.backends.qdrant_backend import (
     _pid_alive,
 )
 
-
 # ─── Unit tests for the helper primitives ───────────────────────────────
 
 
@@ -85,15 +84,13 @@ def test_clean_stale_lock_raises_when_held_by_live_process(tmp_path: Path):
     lock = qdrant_path / ".lock"
     # Keep the file open in this process so ``lsof`` sees our PID holding
     # the descriptor. Closing it inside the test would defeat the check.
-    fp = open(lock, "w")
+    fp = open(lock, "w")  # noqa: SIM115
     try:
         with pytest.raises(QdrantLockHeldError) as excinfo:
             _clean_stale_lock(qdrant_path)
         # The error message should mention the holder PID and a hint about
         # stopping the process / switching to server mode.
-        assert str(excinfo.value).startswith(
-            "Qdrant local storage at"
-        )
+        assert str(excinfo.value).startswith("Qdrant local storage at")
         assert "Stop that process first" in str(excinfo.value)
     finally:
         fp.close()

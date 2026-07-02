@@ -10,7 +10,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from qdrant_client import models
 
 from mm_asset_rag.backends import qdrant_backend as qb
 from mm_asset_rag.settings import Settings
@@ -26,9 +25,7 @@ def _make_client(
     client.collection_exists.return_value = exists
     if exists and existing_sparse_names is not None:
         info = MagicMock()
-        info.config.params.sparse_vectors = {
-            name: MagicMock() for name in existing_sparse_names
-        }
+        info.config.params.sparse_vectors = {name: MagicMock() for name in existing_sparse_names}
         client.get_collection.return_value = info
     return client
 
@@ -47,7 +44,8 @@ def test_create_collection_matches_existing_schema(monkeypatch) -> None:
     client = _make_client(
         exists=True,
         existing_sparse_names=[qb.SPARSE_VECTOR_NAME, qb._settings().bm25_zh_vector_name]
-        if False else [qb.SPARSE_VECTOR_NAME, "bm25_zh"],
+        if False
+        else [qb.SPARSE_VECTOR_NAME, "bm25_zh"],
     )
     # No raise.
     qb._create_collection(client, "text", vector_size=2560, sparse=True)

@@ -34,6 +34,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import statistics
@@ -52,7 +53,15 @@ def _pct(samples: list[float], q: float) -> float:
 
 def _stat_block(samples: list[float]) -> dict:
     if not samples:
-        return {"n": 0, "mean_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0, "min_ms": 0.0, "max_ms": 0.0}
+        return {
+            "n": 0,
+            "mean_ms": 0.0,
+            "p50_ms": 0.0,
+            "p95_ms": 0.0,
+            "p99_ms": 0.0,
+            "min_ms": 0.0,
+            "max_ms": 0.0,
+        }
     return {
         "n": len(samples),
         "mean_ms": statistics.mean(samples),
@@ -66,6 +75,7 @@ def _stat_block(samples: list[float]) -> dict:
 
 def _peak_rss_mb() -> float:
     import resource
+
     # ru_maxrss is KB on Linux, bytes on macOS.
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     if rss > 10 * 1024 * 1024:
@@ -79,7 +89,9 @@ def _index_size_mb(indexes_dir: Path) -> float:
     try:
         out = subprocess.run(
             ["du", "-sm", str(indexes_dir / "qdrant")],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         return float(out.stdout.split()[0])
     except Exception:
@@ -120,7 +132,11 @@ def phase1_per_component_latency(n_runs: int) -> list[dict]:
 
     client = get_qdrant_client()
     try:
-        coll = next(c.name for c in client.get_collections().collections if c.name.startswith("multimodal_text"))
+        coll = next(
+            c.name
+            for c in client.get_collections().collections
+            if c.name.startswith("multimodal_text")
+        )
 
         queries = ["BERT", "Mona Lisa painting", "深度学习", "transformer attention"]
         bench_queries = queries * (max(1, n_runs // len(queries) + 1))
@@ -145,17 +161,15 @@ def phase1_per_component_latency(n_runs: int) -> list[dict]:
         for name, fn in [
             ("dense_embed (ollama HTTP)", lambda: dense(bench_queries[0])),
             ("bm25_en (fastembed local)", lambda: bm25(bench_queries[1])),
-            ("bm25_zh (jieba + Okapi)",   lambda: bm25_zh(bench_queries[2])),
+            ("bm25_zh (jieba + Okapi)", lambda: bm25_zh(bench_queries[2])),
             ("qdrant_text_search (3-way RRF)", lambda: qdrant_one(bench_queries[3])),
         ]:
             block = _bench_component(name, fn, n_runs)
             results.append(block)
     finally:
         # Explicit close so phase 2 (drop+rebuild) doesn't see a held .lock.
-        try:
+        with contextlib.suppress(Exception):
             client.close()
-        except Exception:
-            pass
     return results
 
 
@@ -211,9 +225,18 @@ def phase2_embed_throughput(batch_size: int = 16) -> dict:
         "batch_size": batch_size,
         "total_chunks": total_chunks,
         "channels": {
-            "dense_embed (ollama)":   {"ms_per_batch": round(dense_elapsed * 1000, 1), "chunks_per_sec": round(dense_chunks_per_sec, 1)},
-            "bm25 (fastembed)":        {"ms_per_batch": round(bm25_elapsed * 1000, 1), "chunks_per_sec": round(bm25_chunks_per_sec, 1)},
-            "bm25_zh (jieba + Okapi)": {"ms_per_batch": round(bzh_elapsed * 1000, 1), "chunks_per_sec": round(bzh_chunks_per_sec, 1)},
+            "dense_embed (ollama)": {
+                "ms_per_batch": round(dense_elapsed * 1000, 1),
+                "chunks_per_sec": round(dense_chunks_per_sec, 1),
+            },
+            "bm25 (fastembed)": {
+                "ms_per_batch": round(bm25_elapsed * 1000, 1),
+                "chunks_per_sec": round(bm25_chunks_per_sec, 1),
+            },
+            "bm25_zh (jieba + Okapi)": {
+                "ms_per_batch": round(bzh_elapsed * 1000, 1),
+                "chunks_per_sec": round(bzh_chunks_per_sec, 1),
+            },
         },
         "projected_full_rebuild_seconds": round(projection_seconds, 1),
     }
@@ -232,8 +255,13 @@ def phase3_concurrent_qps(n_concurrent: int, top_k: int, n_requests: int) -> dic
     from mm_asset_rag.retrieval import hybrid_search
 
     queries = [
-        "BERT", "transformer attention", "Mona Lisa",
-        "深度学习入门", "fish", "butterfly", "stable diffusion",
+        "BERT",
+        "transformer attention",
+        "Mona Lisa",
+        "深度学习入门",
+        "fish",
+        "butterfly",
+        "stable diffusion",
     ]
     bench_queries = [queries[i % len(queries)] for i in range(n_requests)]
 
@@ -292,7 +320,9 @@ def render_report(report: dict) -> str:
     if p2.get("skipped"):
         lines.append(f"  skipped: {p2.get('reason')}")
     else:
-        lines.append(f"  total_chunks in corpus: {p2['total_chunks']}  batch_size: {p2['batch_size']}")
+        lines.append(
+            f"  total_chunks in corpus: {p2['total_chunks']}  batch_size: {p2['batch_size']}"
+        )
         for ch, m in p2["channels"].items():
             lines.append(
                 f"    {ch:32s} {m['ms_per_batch']:>7.1f}ms/batch  {m['chunks_per_sec']:>6.1f} chunks/s"
@@ -303,8 +333,10 @@ def render_report(report: dict) -> str:
     lines.append("")
     lines.append("QPS (sequential, Qdrant local-mode baseline):")
     p3 = report["phase3_concurrent"]
-    lines.append(f"  workers={p3['n_concurrent_actual']}  requests={p3['n_requests']}  wall={p3['wall_seconds']}s  "
-                 f"qps={p3['qps']}")
+    lines.append(
+        f"  workers={p3['n_concurrent_actual']}  requests={p3['n_requests']}  wall={p3['wall_seconds']}s  "
+        f"qps={p3['qps']}"
+    )
     lines.append(
         f"  latency: mean={p3['latency']['mean_ms']:.1f}ms "
         f"p50={p3['latency']['p50_ms']:.1f}ms "
@@ -329,22 +361,31 @@ def render_report(report: dict) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--n-runs", type=int, default=20,
-                        help="Repetitions per component in phase 1 (default 20).")
-    parser.add_argument("--n-concurrent", type=int, default=4,
-                        help="Worker count for phase 3 (default 4).")
-    parser.add_argument("--n-requests", type=int, default=10,
-                        help="Total requests fired in phase 3 (default 10).")
-    parser.add_argument("--top-k", type=int, default=5,
-                        help="top_k for hybrid_search in phase 3 (default 5).")
-    parser.add_argument("--skip-phase2", action="store_true",
-                        help="Skip the indexing-throughput rebuild (saves the full embed pass).")
+    parser.add_argument(
+        "--n-runs", type=int, default=20, help="Repetitions per component in phase 1 (default 20)."
+    )
+    parser.add_argument(
+        "--n-concurrent", type=int, default=4, help="Worker count for phase 3 (default 4)."
+    )
+    parser.add_argument(
+        "--n-requests", type=int, default=10, help="Total requests fired in phase 3 (default 10)."
+    )
+    parser.add_argument(
+        "--top-k", type=int, default=5, help="top_k for hybrid_search in phase 3 (default 5)."
+    )
+    parser.add_argument(
+        "--skip-phase2",
+        action="store_true",
+        help="Skip the indexing-throughput rebuild (saves the full embed pass).",
+    )
     args = parser.parse_args()
 
     home = Path(os.environ.get("MM_ASSET_RAG_HOME", str(Path.home() / ".mm_asset_rag")))
 
-    print(f"Running benchmark (n_runs={args.n_runs}, "
-          f"n_concurrent={args.n_concurrent}, n_requests={args.n_requests}, top_k={args.top_k})...")
+    print(
+        f"Running benchmark (n_runs={args.n_runs}, "
+        f"n_concurrent={args.n_concurrent}, n_requests={args.n_requests}, top_k={args.top_k})..."
+    )
 
     print("\n[phase 1] per-component latency...")
     phase1 = phase1_per_component_latency(args.n_runs)

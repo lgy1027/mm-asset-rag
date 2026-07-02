@@ -97,6 +97,7 @@ def average_precision(actual_ids: list[str], expected_ids: list[str]) -> float:
 
 def _log2(x: int) -> float:
     import math
+
     return math.log2(x)
 
 
@@ -153,11 +154,25 @@ def aggregate_metrics(
         "ndcg": {},
     }
     for k in ks:
-        out["hit_rate"][k] = sum(hit_rate_at_k(r["actual_ids"], r["expected_ids"], k) for r in results) / max(len(results), 1)
-        out["precision"][k] = sum(precision_at_k(r["actual_ids"], r["expected_ids"], k) for r in results) / max(len(results), 1)
-        out["recall"][k] = sum(recall_at_k(r["actual_ids"], r["expected_ids"], k) for r in results) / max(len(results), 1)
-        out["f1"][k] = sum(f1_at_k(r["actual_ids"], r["expected_ids"], k) for r in results) / max(len(results), 1)
-        out["ndcg"][k] = sum(ndcg_at_k(r["actual_ids"], r["expected_ids"], k) for r in results) / max(len(results), 1)
-    out["mrr"] = sum(reciprocal_rank(r["actual_ids"], r["expected_ids"]) for r in results) / max(len(results), 1)
-    out["map"] = sum(average_precision(r["actual_ids"], r["expected_ids"]) for r in results) / max(len(results), 1)
+        out["hit_rate"][k] = sum(
+            hit_rate_at_k(r["actual_ids"], r["expected_ids"], k) for r in results
+        ) / max(len(results), 1)
+        out["precision"][k] = sum(
+            precision_at_k(r["actual_ids"], r["expected_ids"], k) for r in results
+        ) / max(len(results), 1)
+        out["recall"][k] = sum(
+            recall_at_k(r["actual_ids"], r["expected_ids"], k) for r in results
+        ) / max(len(results), 1)
+        out["f1"][k] = sum(f1_at_k(r["actual_ids"], r["expected_ids"], k) for r in results) / max(
+            len(results), 1
+        )
+        out["ndcg"][k] = sum(
+            ndcg_at_k(r["actual_ids"], r["expected_ids"], k) for r in results
+        ) / max(len(results), 1)
+    out["mrr"] = sum(reciprocal_rank(r["actual_ids"], r["expected_ids"]) for r in results) / max(
+        len(results), 1
+    )
+    out["map"] = sum(average_precision(r["actual_ids"], r["expected_ids"]) for r in results) / max(
+        len(results), 1
+    )
     return out

@@ -32,42 +32,115 @@ from pathlib import Path
 # Eval set: covers 5 query categories over the 30-PDF + 184-photo set.
 EVAL_CASES: list[dict] = [
     # ── Exact keyword (BM25 strength) ─────────────────────────────────
-    {"query": "BERT",                     "expected_ids": ["bert"],                   "category": "keyword",      "mode": "text"},
-    {"query": "LoRA",                     "expected_ids": ["lora"],                   "category": "keyword",      "mode": "text"},
-    {"query": "ViT",                      "expected_ids": ["vit"],                    "category": "keyword",      "mode": "text"},
-    {"query": "DETR",                     "expected_ids": ["detr"],                   "category": "keyword",      "mode": "text"},
-    {"query": "LayoutLM",                 "expected_ids": ["layoutlm"],               "category": "keyword",      "mode": "text"},
-    {"query": "AlexNet",                  "expected_ids": ["alexnet"],                "category": "keyword",      "mode": "text"},
-    {"query": "ResNet",                   "expected_ids": ["resnet"],                 "category": "keyword",      "mode": "text"},
-    {"query": "DDPM",                     "expected_ids": ["ddpm"],                   "category": "keyword",      "mode": "text"},
-    {"query": "Word2Vec",                 "expected_ids": ["word2vec"],               "category": "keyword",      "mode": "text"},
-    {"query": "U-Net",                    "expected_ids": ["unet"],                   "category": "keyword",      "mode": "text"},
-
+    {"query": "BERT", "expected_ids": ["bert"], "category": "keyword", "mode": "text"},
+    {"query": "LoRA", "expected_ids": ["lora"], "category": "keyword", "mode": "text"},
+    {"query": "ViT", "expected_ids": ["vit"], "category": "keyword", "mode": "text"},
+    {"query": "DETR", "expected_ids": ["detr"], "category": "keyword", "mode": "text"},
+    {"query": "LayoutLM", "expected_ids": ["layoutlm"], "category": "keyword", "mode": "text"},
+    {"query": "AlexNet", "expected_ids": ["alexnet"], "category": "keyword", "mode": "text"},
+    {"query": "ResNet", "expected_ids": ["resnet"], "category": "keyword", "mode": "text"},
+    {"query": "DDPM", "expected_ids": ["ddpm"], "category": "keyword", "mode": "text"},
+    {"query": "Word2Vec", "expected_ids": ["word2vec"], "category": "keyword", "mode": "text"},
+    {"query": "U-Net", "expected_ids": ["unet"], "category": "keyword", "mode": "text"},
     # ── Exact phrase (BM25 + dense) ────────────────────────────────────
-    {"query": "retrieval augmented generation", "expected_ids": ["retrieval_augmented_generation"], "category": "phrase", "mode": "text"},
-    {"query": "stable diffusion",          "expected_ids": ["stable_diffusion"],       "category": "phrase",       "mode": "text"},
-    {"query": "segment anything",          "expected_ids": ["segment_anything"],       "category": "phrase",       "mode": "text"},
-    {"query": "generative adversarial",    "expected_ids": ["gan"],                     "category": "phrase",       "mode": "text"},
-
+    {
+        "query": "retrieval augmented generation",
+        "expected_ids": ["retrieval_augmented_generation"],
+        "category": "phrase",
+        "mode": "text",
+    },
+    {
+        "query": "stable diffusion",
+        "expected_ids": ["stable_diffusion"],
+        "category": "phrase",
+        "mode": "text",
+    },
+    {
+        "query": "segment anything",
+        "expected_ids": ["segment_anything"],
+        "category": "phrase",
+        "mode": "text",
+    },
+    {
+        "query": "generative adversarial",
+        "expected_ids": ["gan"],
+        "category": "phrase",
+        "mode": "text",
+    },
     # ── Semantic Chinese query (dense strength) ───────────────────────
-    {"query": "讲 transformer 的论文",            "expected_ids": ["attention_is_all_you_need"], "category": "semantic_zh", "mode": "text"},
-    {"query": "图像生成扩散模型",                  "expected_ids": ["ddpm", "stable_diffusion", "pix2pix"], "category": "semantic_zh", "mode": "text"},
-    {"query": "小模型移动端推理",                  "expected_ids": ["mobilenet", "mobilenetv2", "efficientnet"], "category": "semantic_zh", "mode": "text"},
-    {"query": "CLIP 图文对齐",                     "expected_ids": ["clip"],                   "category": "semantic_zh", "mode": "text"},
-    {"query": "文档版面理解 OCR",                  "expected_ids": ["layoutlm"],               "category": "semantic_zh", "mode": "text"},
-
+    {
+        "query": "讲 transformer 的论文",
+        "expected_ids": ["attention_is_all_you_need"],
+        "category": "semantic_zh",
+        "mode": "text",
+    },
+    {
+        "query": "图像生成扩散模型",
+        "expected_ids": ["ddpm", "stable_diffusion", "pix2pix"],
+        "category": "semantic_zh",
+        "mode": "text",
+    },
+    {
+        "query": "小模型移动端推理",
+        "expected_ids": ["mobilenet", "mobilenetv2", "efficientnet"],
+        "category": "semantic_zh",
+        "mode": "text",
+    },
+    {"query": "CLIP 图文对齐", "expected_ids": ["clip"], "category": "semantic_zh", "mode": "text"},
+    {
+        "query": "文档版面理解 OCR",
+        "expected_ids": ["layoutlm"],
+        "category": "semantic_zh",
+        "mode": "text",
+    },
     # ── Semantic English query (dense) ─────────────────────────────────
-    {"query": "text to image generative model",    "expected_ids": ["stable_diffusion", "pix2pix"], "category": "semantic_en", "mode": "text"},
-    {"query": "few-shot language model",          "expected_ids": ["gpt3", "llama"],       "category": "semantic_en", "mode": "text"},
-    {"query": "real time object detection",       "expected_ids": ["yolo", "ssd"],          "category": "semantic_en", "mode": "text"},
-
+    {
+        "query": "text to image generative model",
+        "expected_ids": ["stable_diffusion", "pix2pix"],
+        "category": "semantic_en",
+        "mode": "text",
+    },
+    {
+        "query": "few-shot language model",
+        "expected_ids": ["gpt3", "llama"],
+        "category": "semantic_en",
+        "mode": "text",
+    },
+    {
+        "query": "real time object detection",
+        "expected_ids": ["yolo", "ssd"],
+        "category": "semantic_en",
+        "mode": "text",
+    },
     # ── Image search (CLIP) ────────────────────────────────────────────
-    {"query": "fish",          "expected_ids": ["picsum_1018", "img_03_opencv_sample_data_happyfish_jpg"], "category": "image_search", "mode": "text-to-image"},
-    {"query": "logo",          "expected_ids": ["img_04_opencv_sample_data_linuxlogo_jpg", "img_05_opencv_sample_data_windowslogo_jpg"], "category": "image_search", "mode": "text-to-image"},
-    {"query": "butterfly",     "expected_ids": ["img_20_opencv_sample_data_butterfly_jpg"], "category": "image_search", "mode": "text-to-image"},
-
+    {
+        "query": "fish",
+        "expected_ids": ["picsum_1018", "img_03_opencv_sample_data_happyfish_jpg"],
+        "category": "image_search",
+        "mode": "text-to-image",
+    },
+    {
+        "query": "logo",
+        "expected_ids": [
+            "img_04_opencv_sample_data_linuxlogo_jpg",
+            "img_05_opencv_sample_data_windowslogo_jpg",
+        ],
+        "category": "image_search",
+        "mode": "text-to-image",
+    },
+    {
+        "query": "butterfly",
+        "expected_ids": ["img_20_opencv_sample_data_butterfly_jpg"],
+        "category": "image_search",
+        "mode": "text-to-image",
+    },
     # ── Mixed (text + image in same query) ──────────────────────────────
-    {"query": "butterfly", "expected_ids": ["img_20_opencv_sample_data_butterfly_jpg"], "category": "mixed", "mode": "hybrid"},
+    {
+        "query": "butterfly",
+        "expected_ids": ["img_20_opencv_sample_data_butterfly_jpg"],
+        "category": "mixed",
+        "mode": "hybrid",
+    },
 ]
 
 
@@ -115,11 +188,13 @@ def evaluate_case(case: dict, top_k: int) -> dict:
 # Qdrant collection.
 def _hybrid_search(query: str, top_k: int):
     from mm_asset_rag.retrieval import hybrid_search as _hs
+
     return _hs(query, top_k=top_k)
 
 
 def _text_to_image_search(query: str, top_k: int):
     from mm_asset_rag.backends.qdrant_backend import qdrant_text_to_image_search
+
     return qdrant_text_to_image_search(query, top_k=top_k)
 
 
@@ -145,14 +220,20 @@ def aggregate(results: list[dict], top_k: int) -> dict:
 def render_report(report: dict, results: list[dict]) -> str:
     lines: list[str] = []
     lines.append("=" * 78)
-    lines.append(f"RAG evaluation  ·  top_k={report['top_k']}  ·  cases={sum(c['n'] for c in report['per_category'].values())}")
+    lines.append(
+        f"RAG evaluation  ·  top_k={report['top_k']}  ·  cases={sum(c['n'] for c in report['per_category'].values())}"
+    )
     lines.append("=" * 78)
     lines.append("")
-    lines.append(f"  overall      hit_rate={report['overall']['hit_rate']:.3f}   MRR={report['overall']['mrr']:.3f}   n={report['overall']['n']}")
+    lines.append(
+        f"  overall      hit_rate={report['overall']['hit_rate']:.3f}   MRR={report['overall']['mrr']:.3f}   n={report['overall']['n']}"
+    )
     lines.append("")
     lines.append("  per category:")
     for cat, m in report["per_category"].items():
-        lines.append(f"    {cat:18s}  hit_rate={m['hit_rate']:.3f}   MRR={m['mrr']:.3f}   n={m['n']}")
+        lines.append(
+            f"    {cat:18s}  hit_rate={m['hit_rate']:.3f}   MRR={m['mrr']:.3f}   n={m['n']}"
+        )
     lines.append("")
     lines.append("-" * 78)
     lines.append("per-case details:")
@@ -178,6 +259,7 @@ def main() -> None:
 
     if args.home:
         import os
+
         os.environ["MM_ASSET_RAG_HOME"] = args.home
 
     results = [evaluate_case(case, args.top_k) for case in EVAL_CASES]
@@ -185,8 +267,7 @@ def main() -> None:
     print(render_report(report, results))
 
     output_path = Path(
-        args.output
-        or f"{__import__('os').environ['MM_ASSET_RAG_HOME']}/eval_report_full.json"
+        args.output or f"{__import__('os').environ['MM_ASSET_RAG_HOME']}/eval_report_full.json"
     )
     output_path.write_text(
         json.dumps({"summary": report, "results": results}, ensure_ascii=False, indent=2),

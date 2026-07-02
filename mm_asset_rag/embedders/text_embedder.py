@@ -90,7 +90,9 @@ class TextEmbedder:
 
     def embed_batch(self, contents: list[Any]) -> list[list[float]]:
         texts = [str(c) for c in contents]
-        truncated = [t if len(t) <= self.max_input_chars else t[: self.max_input_chars] for t in texts]
+        truncated = [
+            t if len(t) <= self.max_input_chars else t[: self.max_input_chars] for t in texts
+        ]
         vectors: list[list[float]] = []
         for offset in range(0, len(truncated), self.batch_size):
             vectors.extend(self._remote_batch(truncated[offset : offset + self.batch_size]))

@@ -43,6 +43,16 @@ def test_defaults_applied_when_no_env(monkeypatch):
     assert s.qdrant_upsert_batch_size == 16
     assert s.llm_timeout == 120.0
     assert s.clip_model == "clip-ViT-B-32"
+    assert s.upload_max_file_bytes == 50 * 1024 * 1024
+    assert s.upload_max_batch_bytes == 200 * 1024 * 1024
+    assert s.upload_max_pdf_pages == 500
+    assert s.upload_max_image_pixels == 50_000_000
+    assert s.upload_slug_max_len == 80
+    assert s.auto_meta_pdf_max_pages == 100
+    assert s.auto_meta_pdf_render_dpi == 120
+    assert s.auto_meta_pdf_max_render_pixels == 8_000_000
+    assert s.preview_cache_ttl_seconds == 24 * 60 * 60
+    assert s.auto_meta_max_concurrency == 3
 
 
 def test_data_dir_falls_back_to_home(monkeypatch):

@@ -13,7 +13,7 @@ Design notes:
   unique placeholder tokens, jieba runs on the masked text, then
   placeholders are substituted back. This keeps multi-script documents
   (English code-switching in Chinese text) clean.
-- **BM25 math**: Robertson–Walker IDF + Okapi BM25, same shape as the
+- **BM25 math**: Robertson-Walker IDF + Okapi BM25, same shape as the
   in-tree ``_bm25_okapi_scores`` helper used by the per-asset chunk
   selector. ``k1=1.5`` and ``b=0.75`` are the standard defaults.
 - **Hash-to-int mapping**: a term's sparse-vector index is
@@ -34,10 +34,23 @@ import math
 import re
 import threading
 from collections import Counter
-from typing import Iterable
+from collections.abc import Iterable
 
 import jieba
 from qdrant_client import models
+
+_JIEBA_LOCK = threading.Lock()
+_JIEBA_INITIALISED = False
+
+
+def _ensure_jieba() -> None:
+    """Trigger jieba's first-time dict load exactly once per process."""
+    global _JIEBA_INITIALISED
+    with _JIEBA_LOCK:
+        if not _JIEBA_INITIALISED:
+            jieba.initialize()
+            _JIEBA_INITIALISED = True
+
 
 _LATIN_RE = re.compile(r"[A-Za-z][A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*")
 _NUM_RE = re.compile(r"\d+")
@@ -53,63 +66,6 @@ _PUA_NUMBER_BASE = 0xF000
 def _placeholder(index: int, base: int) -> str:
     """Build a single-codepoint PUA placeholder."""
     return chr(base + index)
-
-
-def tokenize_zh(text: str | None) -> list[str]:
-    """Tokenise ``text`` for the Chinese BM25 sparse vector.
-
-    CJK text goes through ``jieba.cut``; Latin words and numbers are
-    captured before jieba runs and re-inserted as their original form
-    (lowercased) after segmentation. Whitespace-only and ``None``
-    inputs return an empty list.
-    """
-    if not text:
-        return []
-    _ensure_jieba()
-    text = str(text)
-
-    # Mask Latin tokens and numbers so jieba doesn't break them apart.
-    latin_placeholders: dict[str, str] = {}
-    num_placeholders: dict[str, str] = {}
-
-    def _latin_sub(match: re.Match[str]) -> str:
-        placeholder = _placeholder(len(latin_placeholders), _PUA_LATIN_BASE)
-        latin_placeholders[placeholder] = match.group(0).lower()
-        return placeholder
-
-    def _num_sub(match: re.Match[str]) -> str:
-        placeholder = _placeholder(len(num_placeholders), _PUA_NUMBER_BASE)
-        num_placeholders[placeholder] = match.group(0)
-        return placeholder
-
-    masked = _LATIN_RE.sub(_latin_sub, text)
-    masked = _NUM_RE.sub(_num_sub, masked)
-
-    out: list[str] = []
-    for tok in jieba.cut(masked):
-        if not tok or tok.isspace():
-            continue
-        if tok in latin_placeholders:
-            out.append(latin_placeholders[tok])
-        elif tok in num_placeholders:
-            out.append(num_placeholders[tok])
-        else:
-            out.append(tok)
-    return out
-
-_JIEBA_LOCK = threading.Lock()
-_JIEBA_INITIALISED = False
-
-
-def _ensure_jieba() -> None:
-    """Trigger jieba's first-time dict load exactly once per process."""
-    global _JIEBA_INITIALISED
-    with _JIEBA_LOCK:
-        if not _JIEBA_INITIALISED:
-            # ``initialize`` is a no-op after the first call but cheap to
-            # call again — keeps the flag-based single-init logic simple.
-            jieba.initialize()
-            _JIEBA_INITIALISED = True
 
 
 def tokenize_zh(text: str | None) -> list[str]:
@@ -172,16 +128,14 @@ def compute_idf(
     score function can reconstruct everything from a single map.
     """
     n = len(documents_tokens)
-    avgdl = (
-        sum(len(d) for d in documents_tokens) / n if n else 0.0
-    )
+    avgdl = sum(len(d) for d in documents_tokens) / n if n else 0.0
     df: Counter[str] = Counter()
     for d in documents_tokens:
         for term in set(d):
             df[term] += 1
     idf: dict[str, float] = {"_avgdl": avgdl, "_k1": k1, "_b": b}
     for term, freq in df.items():
-        # Robertson–Walker IDF, smoothed so very common terms still score.
+        # Robertson-Walker IDF, smoothed so very common terms still score.
         idf[term] = math.log(1 + (n - freq + 0.5) / (freq + 0.5))
     return idf
 

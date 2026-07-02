@@ -163,7 +163,7 @@ def stream_answer_chunks(question: str, hits: list[SearchHit]) -> Iterator[str]:
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r")
             if not line or not line.startswith("data: "):
                 continue
-            data = line[len("data: "):]
+            data = line[len("data: ") :]
             if data == "[DONE]":
                 break
             try:
@@ -177,7 +177,7 @@ def stream_answer_chunks(question: str, hits: list[SearchHit]) -> Iterator[str]:
             if not think_done:
                 end = buffer.find("</think>")
                 if end != -1:
-                    buffer = buffer[end + len("</think>"):]
+                    buffer = buffer[end + len("</think>") :]
                     think_done = True
                 elif "<think>" in buffer:
                     # Still inside a <think> block; keep buffering until </think>.

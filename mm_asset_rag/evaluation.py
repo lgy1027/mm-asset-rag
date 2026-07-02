@@ -43,11 +43,7 @@ def run_eval(top_k: int = 5) -> list[EvalResult]:
         # A case 'hits' if any expected id is a substring of any actual id
         # OR vice versa, so 'pdf_rag' still matches 'retrieval_augmented_generation'
         # when only the latter exists, and 'pdf_clip' still matches 'clip'.
-        hit = any(
-            exp in act or act in exp
-            for exp in expected
-            for act in actual
-        )
+        hit = any(exp in act or act in exp for exp in expected for act in actual)
         results.append(
             EvalResult(
                 query=str(case["query"]),
