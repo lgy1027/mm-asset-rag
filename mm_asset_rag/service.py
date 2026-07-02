@@ -415,25 +415,39 @@ class IngestService:
             return self._tasks.get(task_id)
 
     def load_history(self) -> None:
-        """Restore tasks from ``tasks.jsonl``. Tasks still in ``running``
-        state when the previous process exited are marked ``interrupted``.
+        """Restore tasks from SQLite (auto-migrate from legacy ``tasks.jsonl``).
+
+        Tasks still in ``running`` state when the previous process
+        exited are marked ``interrupted``. If a legacy ``tasks.jsonl``
+        is found alongside (no ``tasks.db`` yet), we migrate every
+        line into SQLite once and rename the source file to
+        ``tasks.jsonl.migrated`` so we don't redo the migration on the
+        next boot.
         """
-        path = self._tasks_log_path()
-        if not path.exists():
+        import sqlite3
+
+        db_path = self._tasks_db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self._maybe_legacy_migrate(db_path)
+
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = list(conn.execute("SELECT payload FROM tasks"))
+        except sqlite3.DatabaseError as exc:
+            print(f"[tasks] warning: could not open history db: {exc}")
             return
+
         latest: dict[str, dict[str, object]] = {}
-        with path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                task_id = obj.get("task_id")
-                if isinstance(task_id, str) and task_id:
-                    latest[task_id] = obj
+        for row in rows:
+            try:
+                obj = json.loads(row["payload"])
+            except json.JSONDecodeError:
+                continue
+            task_id = obj.get("task_id") if isinstance(obj, dict) else None
+            if isinstance(task_id, str) and task_id:
+                latest[task_id] = obj
 
         interrupted = 0
         with self._TASKS_LOCK:
@@ -452,6 +466,69 @@ class IngestService:
             print(
                 f"[tasks] loaded {len(latest)} task(s) from disk; {interrupted} marked interrupted"
             )
+
+    def _maybe_legacy_migrate(self, db_path: Path) -> None:
+        """One-shot migration: if ``tasks.db`` is missing but a legacy
+        ``tasks.jsonl`` exists, import every line into SQLite and
+        rename the source file to ``tasks.jsonl.migrated`` so we never
+        redo it.
+
+        A pre-existing ``tasks.db`` short-circuits the migration so we
+        do not clobber the new store on a partial-boot upgrade.
+        """
+        import sqlite3
+
+        if db_path.exists():
+            return
+        legacy = self._tasks_log_path_legacy()
+        if not legacy.exists():
+            return
+        with self._PERSIST_LOCK, sqlite3.connect(str(db_path)) as conn:
+            conn.isolation_level = None
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS tasks ("
+                "task_id TEXT PRIMARY KEY, "
+                "payload TEXT NOT NULL, "
+                "updated_at REAL NOT NULL"
+                ")"
+            )
+            imported = 0
+            with legacy.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    task_id = obj.get("task_id") if isinstance(obj, dict) else None
+                    if not isinstance(task_id, str) or not task_id:
+                        continue
+                    # On conflict, prefer the later row (which
+                    # is what the legacy ``reversed(load_entries)``
+                    # semantics gave us). SQLite insertion order
+                    # is preserved, but with ``INSERT OR IGNORE``
+                    # a later existing wins — so we just import
+                    # in file order and the *last* row wins by
+                    # virtue of being the last INSERT we attempt.
+                    conn.execute(
+                        "INSERT OR REPLACE INTO tasks (task_id, payload, updated_at)"
+                        " VALUES (?, ?, ?)",
+                        (task_id, json.dumps(obj, ensure_ascii=False), time.time()),
+                    )
+                    imported += 1
+        legacy.rename(legacy.with_name(legacy.name + ".migrated"))
+        print(f"[tasks] migrated {imported} record(s) from legacy {legacy}")
+
+    def _tasks_log_path_legacy(self) -> Path:
+        """Return the *legacy* ``tasks.jsonl`` location.
+
+        Retained so the migration in :meth:`_maybe_legacy_migrate`
+        can find the pre-SQLite history file. New writes go to
+        :meth:`_tasks_db_path` / :meth:`_tasks_jsonl_path`.
+        """
+        return get_data_dir() / "tasks.jsonl"
 
     @staticmethod
     def _task_from_dict(obj: dict[str, object]) -> TaskRecord:
@@ -796,26 +873,82 @@ class IngestService:
                         self._stream_events.pop(task_id, None)
 
     def _persist(self, rec: TaskRecord) -> None:
-        path = self._tasks_log_path()
+        """Persist ``rec`` to SQLite (with a tail-append JSONL backup).
+
+        SQLite is the source of truth: a single ``INSERT OR REPLACE``
+        inside an autocommit transaction gives us atomic durability
+        without the hand-rolled ``open(a) + flush + fsync`` dance.
+        We also keep appending one line to ``tasks.jsonl.last`` so an
+        external ``jq``/``grep`` over the file still works and so any
+        future migration to a different store can read both formats.
+        The SQLite write is authoritative; the JSONL line is best-
+        effort and a failed JSONL append is logged but does not mark
+        the task as failed.
+        """
+        import sqlite3
+
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
+            db_path = self._tasks_db_path()
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(asdict(rec), ensure_ascii=False)
+            with self._PERSIST_LOCK, sqlite3.connect(str(db_path)) as conn:
+                # ``isolation_level=None`` + explicit ``commit``
+                # gives us synchronous fsync-on-commit semantics
+                # with no implicit transaction wrapping, which is
+                # important for ``INSERT OR REPLACE`` to behave as
+                # an atomic single-step write.
+                conn.isolation_level = None
+                # ``CREATE TABLE IF NOT EXISTS`` keeps the first
+                # write cheap and idempotent — the table is owned
+                # by this file only, so it is safe to ensure on
+                # every connect rather than in a separate
+                # migration step.
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS tasks ("
+                    "task_id TEXT PRIMARY KEY, "
+                    "payload TEXT NOT NULL, "
+                    "updated_at REAL NOT NULL"
+                    ")"
+                )
+                conn.execute(
+                    "INSERT OR REPLACE INTO tasks (task_id, payload, updated_at) VALUES (?, ?, ?)",
+                    (rec.task_id, payload, time.time()),
+                )
+        except (sqlite3.DatabaseError, OSError) as exc:
+            # SQLite error or filesystem error: cannot recover
+            # in-memory state. Surface on the record so the next
+            # ``/tasks/{id}`` snapshot shows it.
+            rec.error = (rec.error or "") + f"; persist failed: {exc}"
+            print(f"[tasks] warning: could not persist {rec.task_id}: {exc}")
+            return
+
+        # Tail-append JSONL snapshot, best-effort only. This is the
+        # only path that touches the *JSONL* format any more — the
+        # canonical store is SQLite. Keep one line per ``_patch`` so
+        # ``cat tasks.jsonl.last | tail -1`` always has the latest.
+        try:
+            jsonl_path = self._tasks_jsonl_path()
+            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(asdict(rec), ensure_ascii=False) + "\n"
-            with self._PERSIST_LOCK, path.open("a", encoding="utf-8") as fh:
+            with self._PERSIST_LOCK, jsonl_path.open("a", encoding="utf-8") as fh:
                 fh.write(line)
                 fh.flush()
                 os.fsync(fh.fileno())
         except OSError as exc:
-            # Surface the failure on the record itself so the next
-            # ``/tasks/{id}`` poll or stream snapshot can show it.
-            # We do not raise because the in-memory task can still
-            # finish; the next process restart loses this task's
-            # history, but the user at least sees a status warning
-            # instead of an apparent success.
-            rec.error = (rec.error or "") + f"; persist failed: {exc}"
-            print(f"[tasks] warning: could not persist {rec.task_id}: {exc}")
+            # JSONL is a debug tail — losing it does not invalidate
+            # the SQLite write. We do not raise because the task
+            # itself is fine.
+            print(f"[tasks] warning: jsonl tail append failed for {rec.task_id}: {exc}")
 
-    def _tasks_log_path(self) -> Path:
-        return get_data_dir() / "tasks.jsonl"
+    def _tasks_db_path(self) -> Path:
+        return get_data_dir() / "tasks.db"
+
+    def _tasks_jsonl_path(self) -> Path:
+        # Keep the same filename users may already be scripting
+        # against; append-only .jsonl.last replaces the legacy
+        # ``tasks.jsonl`` (which was an append of every patch) so the
+        # history-by-tail-streaming workflow stays valid.
+        return get_data_dir() / "tasks.jsonl.last"
 
     @staticmethod
     def _serialise_options(options: ParseOptions) -> dict[str, object]:

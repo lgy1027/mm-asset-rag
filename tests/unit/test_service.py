@@ -584,6 +584,146 @@ def test_dispatch_search_accepts_file_inside_assets(tmp_home: Path) -> None:
     assert resolved.name == "ok.png"
 
 
+def test_dispatch_search_rejects_symlink_escape(tmp_home: Path) -> None:
+    """A symlink inside ``assets/`` that points outside must be rejected.
+
+    Without symlink-aware resolution the user could plant
+    ``assets/images/leak.png -> /etc/passwd`` during a write window
+    (or another local user could do it on a shared server) and the
+    CLIP encoder would happily follow the link. ``resolve(strict=False)``
+    followed by ``is_relative_to(assets_dir)`` catches this case.
+    """
+    from mm_asset_rag.service import _resolve_sandboxed_image_path
+
+    assets_dir = tmp_home / "assets"
+    images_dir = assets_dir / "images"
+    images_dir.mkdir(parents=True)
+    # Sensitive target outside ``assets_dir``.
+    sensitive = tmp_home / "sibling" / "sensitive.png"
+    sensitive.parent.mkdir(parents=True)
+    sensitive.write_bytes(b"\x89PNG\r\n\x1a\n")
+    link_path = images_dir / "leak.png"
+    try:
+        link_path.symlink_to(sensitive)
+    except (OSError, NotImplementedError) as exc:  # pragma: no cover - platform specific
+        pytest.skip(f"symlink unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="outside assets"):
+        _resolve_sandboxed_image_path("images/leak.png")
+
+
+def test_legacy_jsonl_migrates_to_sqlite(tmp_home: Path) -> None:
+    """A pre-existing ``tasks.jsonl`` is imported into SQLite on first
+    load (one-shot) and renamed so the next boot doesn't redo the
+    import.
+    """
+    import sqlite3
+
+    from mm_asset_rag.service import IngestService
+
+    # Pre-populate legacy store with two tasks (last write of "same01"
+    # wins, like the previous ``reversed(load_entries)`` semantics).
+    legacy = tmp_home / "tasks.jsonl"
+    legacy.write_text(
+        json.dumps({"task_id": "same01", "kind": "parse", "status": "running"})
+        + "\n"
+        + json.dumps({"task_id": "same01", "kind": "parse", "status": "done", "current": "ok"})
+        + "\n"
+        + json.dumps({"task_id": "two01", "kind": "ingest", "status": "partial"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    service = IngestService()
+    service.load_history()
+
+    db_path = tmp_home / "tasks.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        rows = list(conn.execute("SELECT task_id, payload FROM tasks ORDER BY task_id"))
+
+    assert {r[0] for r in rows} == {"same01", "two01"}
+    same01_payload = json.loads(next(r[1] for r in rows if r[0] == "same01"))
+    assert same01_payload["status"] == "done"
+    assert same01_payload["current"] == "ok"
+    # Legacy file renamed so a second boot does not redo the work.
+    assert not legacy.exists()
+    assert (tmp_home / "tasks.jsonl.migrated").exists()
+
+    # The previously-"running" row was marked interrupted + re-persisted
+    # via SQLite, so reopening should be a no-op.
+    service2 = IngestService()
+    service2.load_history()
+    interrupted = service2.get_task("same01")
+    assert interrupted is not None
+    # "same01" status was overridden to "done" by the later row of
+    # the legacy import; the interrupted-flag below therefore
+    # applies to records that are *still* running when the boot
+    # happens, not to records whose last write was already done.
+    assert interrupted.status in {"done", "interrupted"}
+
+
+def test_load_history_round_trip(tmp_home: Path) -> None:
+    """Persist a record, instantiate a fresh service, and confirm
+    load_history sees it in ``self._tasks``.
+    """
+    from mm_asset_rag.service import IngestService, TaskRecord
+
+    service = IngestService()
+    rec = TaskRecord(task_id="round01", kind="parse", status="done")
+    service._persist(rec)
+
+    fresh = IngestService()
+    fresh.load_history()
+    loaded = fresh.get_task("round01")
+    assert loaded is not None
+    assert loaded.task_id == "round01"
+    assert loaded.status == "done"
+
+
+def test_persist_surfaces_oserror_on_rec(tmp_home: Path, monkeypatch) -> None:
+    """When the SQLite store cannot be written (disk full, EROFS, …) the
+    service must surface the failure on the record itself so a
+    subsequent ``/tasks/{id}`` poll sees it instead of a misleading
+    success.
+
+    The old service appended to ``tasks.jsonl``; the new one stores in
+    ``tasks.db``. Patch ``sqlite3.connect`` to raise before any real DB
+    work happens so we exercise the failure path under the current
+    write strategy.
+    """
+
+    from mm_asset_rag.service import IngestService, TaskRecord
+
+    service = IngestService()
+    rec = TaskRecord(task_id="persist_test", kind="parse")
+
+    def boom(*args, **kwargs):
+        # Return a context manager that raises on ``__enter__``,
+        # matching the ``with sqlite3.connect(...) as conn:`` shape
+        # production uses — without raising from ``connect()``
+        # itself (which Python would treat as a broken ctx-manager).
+        class _RaiseOnEnter:
+            def __enter__(self):
+                raise OSError("EROFS: read-only filesystem (test stub)")
+
+            def __exit__(self, *args):
+                return False
+
+        return _RaiseOnEnter()
+
+    # Stub ``sqlite3.connect`` — production code imports sqlite3
+    # locally, so patching the stdlib namespace once covers every
+    # ``import sqlite3`` regardless of which call site resolves it.
+    monkeypatch.setattr("sqlite3.connect", boom)
+    service._persist(rec)
+
+    assert rec.error is not None
+    assert "persist failed" in rec.error
+    assert "EROFS" in rec.error
+    # In-memory rec is still usable; we did not raise.
+    assert rec.task_id == "persist_test"
+
+
 def test_parse_assets_empty_list_returns_done_without_thread(tmp_home: Path) -> None:
     """``parse_assets([])`` records a completed task synchronously instead of
     spawning a daemon thread that just immediately exits — keeps the

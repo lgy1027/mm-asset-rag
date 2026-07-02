@@ -152,6 +152,38 @@ class UploadEdit(BaseModel):
     rejected: bool = False
 
 
+def _main_text(request: _RouteRequest) -> str:
+    """Return the main text field of ``SearchRequest`` / ``ChatRequest``.
+
+    ``SearchRequest.query`` and ``ChatRequest.question`` are the only
+    field-name differences between the two; everything else (mode,
+    image_path, top_k) lives on ``_RouteRequest``. Centralising the
+    dispatch + HTTP-error translation here means a future ``QueryRequest``
+    just inherits ``_RouteRequest`` and adds its own text field.
+    """
+    # Pydantic's ``__getattribute__`` makes ``getattr(..., default)``
+    # itself raise (it bypasses ``__pydantic_extra__`` lookup), so we
+    # branch on declared fields instead.
+    if "query" in type(request).model_fields:
+        return request.query
+    return request.question
+
+
+def _run_search(request: _RouteRequest) -> list[object]:
+    """Run ``dispatch_search`` for either endpoint with a single
+    ``ValueError → HTTPException(400)`` translation.
+    """
+    try:
+        return dispatch_search(
+            query=_main_text(request),
+            mode=request.mode,
+            image_path=request.image_path,
+            top_k=request.top_k,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 class UploadConfirmRequest(BaseModel):
     cache_id: str
     edits: list[UploadEdit] = Field(default_factory=list)
@@ -179,15 +211,7 @@ def health() -> dict[str, object]:
 
 @app.post("/search")
 def search(request: SearchRequest) -> dict[str, object]:
-    try:
-        hits = dispatch_search(
-            query=request.query,
-            mode=request.mode,
-            image_path=request.image_path,
-            top_k=request.top_k,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    hits = _run_search(request)
     return {"query": request.query, "mode": request.mode, "hits": [h.__dict__ for h in hits]}
 
 
@@ -204,15 +228,7 @@ def eval_endpoint(request: EvalRequest) -> dict[str, object]:
 @app.post("/chat")
 def chat(request: ChatRequest) -> dict[str, object]:
     """One-call: retrieve + grounded LLM answer in a single response."""
-    try:
-        hits = dispatch_search(
-            query=request.question,
-            mode=request.mode,
-            image_path=request.image_path,
-            top_k=request.top_k,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    hits = _run_search(request)
     answer = answer_question(request.question, top_k=request.top_k, hits=hits)
     return {
         "question": request.question,
