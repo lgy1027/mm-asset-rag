@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 import urllib.parse
 from pathlib import Path
@@ -26,6 +25,7 @@ import requests
 from ..assets import Asset
 from ..paths import get_parsed_dir
 from ..schema import ParsedDocument
+from ..settings import get_settings
 
 # ─── PyMuPDF ──────────────────────────────────────────────────────────────
 
@@ -71,19 +71,15 @@ def _is_url(value: Path | str) -> bool:
 
 def submit_paddleocr_vl_job(file_path: Path | str) -> str:
     """Submit a PaddleOCR-VL job. Accepts a local Path or an http(s) URL string."""
-    token = os.environ.get("PADDLEOCR_VL_API_TOKEN")
+    settings = get_settings()
+    token = settings.paddleocr_vl_api_token
     if not token:
         raise RuntimeError("PADDLEOCR_VL_API_TOKEN is required for PaddleOCR-VL parsing")
 
-    job_url = os.environ.get(
-        "PADDLEOCR_VL_JOB_URL", "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-    )
-    model = os.environ.get("PADDLEOCR_VL_MODEL", "PaddleOCR-VL-1.6")
-    timeout = float(os.environ.get("PADDLEOCR_VL_TIMEOUT", "900"))
+    job_url = settings.paddleocr_vl_job_url
+    model = settings.paddleocr_vl_model
+    timeout = settings.paddleocr_vl_timeout
 
-    from ..settings import get_settings
-
-    settings = get_settings()
     optional_payload = {
         "useDocOrientationClassify": settings.paddleocr_vl_use_doc_orientation_classify,
         "useDocUnwarping": settings.paddleocr_vl_use_doc_unwarping,
@@ -119,9 +115,7 @@ def submit_paddleocr_vl_job(file_path: Path | str) -> str:
             )
 
     if response.status_code != 200:
-        raise RuntimeError(
-            f"PaddleOCR-VL submit failed: {response.status_code} {response.text}"
-        )
+        raise RuntimeError(f"PaddleOCR-VL submit failed: {response.status_code} {response.text}")
     return str(response.json()["data"]["jobId"])
 
 
@@ -130,22 +124,19 @@ def poll_paddleocr_vl_job(job_id: str) -> str:
 
     Returns the URL of the JSONL result document.
     """
-    token = os.environ.get("PADDLEOCR_VL_API_TOKEN")
-    job_url = os.environ.get(
-        "PADDLEOCR_VL_JOB_URL", "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
-    )
-    timeout = float(os.environ.get("PADDLEOCR_VL_TIMEOUT", "900"))
-    poll_interval = float(os.environ.get("PADDLEOCR_VL_POLL_INTERVAL", "5"))
+    settings = get_settings()
+    token = settings.paddleocr_vl_api_token
+    job_url = settings.paddleocr_vl_job_url
+    timeout = settings.paddleocr_vl_timeout
+    poll_interval = settings.paddleocr_vl_poll_interval
     headers = {"Authorization": f"bearer {token}"}
     deadline = time.time() + timeout
-    retry_attempts = int(os.environ.get("PADDLEOCR_VL_POLL_RETRY", "5"))
+    retry_attempts = settings.paddleocr_vl_poll_retry
 
     attempt = 0
     while time.time() < deadline:
         try:
-            response = requests.get(
-                f"{job_url}/{job_id}", headers=headers, timeout=timeout
-            )
+            response = requests.get(f"{job_url}/{job_id}", headers=headers, timeout=timeout)
         except requests.exceptions.RequestException as exc:
             attempt += 1
             if attempt >= retry_attempts:
@@ -158,9 +149,7 @@ def poll_paddleocr_vl_job(job_id: str) -> str:
 
         attempt = 0  # reset on success
         if response.status_code != 200:
-            raise RuntimeError(
-                f"PaddleOCR-VL poll failed: {response.status_code} {response.text}"
-            )
+            raise RuntimeError(f"PaddleOCR-VL poll failed: {response.status_code} {response.text}")
         payload = response.json()["data"]
         state = payload["state"]
         if state == "done":
@@ -182,9 +171,7 @@ def poll_paddleocr_vl_job(job_id: str) -> str:
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
-def _download_ocr_images(
-    page_result: dict, images_dir: Path
-) -> dict[str, str]:
+def _download_ocr_images(page_result: dict, images_dir: Path) -> dict[str, str]:
     """Download images referenced by the OCR page result.
 
     Returns a mapping ``remote_url -> "images/xxxx.png"`` (relative path
@@ -221,9 +208,8 @@ def _download_ocr_images(
 def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
     """Real PaddleOCR-VL OCR via the online API.
 
-    The asset's ``source_url`` (from ``asset_manifest.json``) is preferred
-    when set, so the file is uploaded once to PaddleOCR's storage instead
-    of streamed through us.
+    The asset's ``source_url`` is preferred when set, so the file is
+    uploaded once to PaddleOCR's storage instead of streamed through us.
     """
     output_dir = get_parsed_dir() / asset.asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -244,10 +230,7 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
             try:
                 job_id = submit_paddleocr_vl_job(asset.source_url)
             except RuntimeError as exc:
-                print(
-                    f"PaddleOCR-VL URL submit failed ({exc}); "
-                    f"falling back to local-file upload"
-                )
+                print(f"PaddleOCR-VL URL submit failed ({exc}); falling back to local-file upload")
                 job_id = None
         if job_id is None:
             job_id = submit_paddleocr_vl_job(asset.file_path)
@@ -255,7 +238,7 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
         jsonl_url = poll_paddleocr_vl_job(job_id)
         response = requests.get(
             jsonl_url,
-            timeout=float(os.environ.get("PADDLEOCR_VL_TIMEOUT", "300")),
+            timeout=get_settings().paddleocr_vl_timeout,
         )
         response.raise_for_status()
         jsonl_text = response.text
@@ -310,7 +293,7 @@ def parse_pdf(asset: Asset, parser: str) -> list[ParsedDocument]:
     if parser == "pymupdf":
         return parse_pdf_with_pymupdf(asset)
     if parser == "auto":
-        if os.environ.get("PADDLEOCR_VL_API_TOKEN"):
+        if get_settings().paddleocr_vl_api_token:
             return parse_with_paddleocr_vl(asset)
         return parse_pdf_with_pymupdf(asset)
     raise ValueError(f"Unsupported PDF parser: {parser}")

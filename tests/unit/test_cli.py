@@ -16,12 +16,12 @@ def test_cli_help_lists_all_subcommands(capsys) -> None:
 
 def test_cli_parse_subcommand_defaults() -> None:
     parser = build_parser()
-    args = parser.parse_args(["parse"])
+    args = parser.parse_args(["parse", "paper.pdf", "image.png"])
     assert args.command == "parse"
+    assert args.files == ["paper.pdf", "image.png"]
     assert args.pdf_parser == "auto"
     assert args.ocr is False
     assert args.vlm is False
-    assert args.limit == 0
 
 
 def test_cli_index_subcommand_removed() -> None:
@@ -58,3 +58,44 @@ def test_cli_eval_subcommand() -> None:
     parser = build_parser()
     args = parser.parse_args(["eval", "--top-k", "10"])
     assert args.top_k == 10
+
+
+def test_cli_retry_subcommand_parses() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["retry", "abc123def456"])
+    assert args.command == "retry"
+    assert args.task_id == "abc123def456"
+    assert args.force is False
+    assert args.failed_only is False
+
+
+def test_cli_retry_subcommand_force_flag() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["retry", "abc123def456", "--force"])
+    assert args.force is True
+    assert args.failed_only is False
+
+
+def test_cli_retry_subcommand_failed_only_flag() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["retry", "abc123def456", "--failed-only"])
+    assert args.failed_only is True
+
+
+def test_cli_retry_subcommand_force_and_failed_only_compose() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["retry", "abc123def456", "--force", "--failed-only"])
+    assert args.force is True
+    assert args.failed_only is True
+
+
+def test_cli_delete_subcommand_parses() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["delete", "abc123def456"])
+    assert args.command == "delete"
+    assert args.asset_id == "abc123def456"
+    assert args.yes is False
+    assert args.dry_run is False
+    args = parser.parse_args(["delete", "abc123def456", "--yes", "--dry-run"])
+    assert args.yes is True
+    assert args.dry_run is True

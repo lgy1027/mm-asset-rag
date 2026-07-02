@@ -16,13 +16,9 @@ from pathlib import Path
 from .answer import answer_json
 from .config import load_env
 from .evaluation import run_eval, write_eval_report
-from .paths import get_data_dir, get_documents_jsonl, get_text_index_dir
-from .backends.qdrant_backend import (
-    QdrantLockHeldError,
-    build_qdrant_image_index,
-    build_qdrant_text_index,
-)
+from .paths import get_documents_jsonl
 from .service import ParseOptions, dispatch_search, get_service
+from .upload_pipeline import UserEdits, get_pipeline
 
 
 def _wait_for_task(task_id: str, poll_interval: float = 1.0) -> None:
@@ -44,20 +40,33 @@ def _wait_for_task(task_id: str, poll_interval: float = 1.0) -> None:
 
 
 def command_parse(args: argparse.Namespace) -> None:
-    """Parse every asset in the manifest, synchronously.
+    """Sniff, parse and index files passed on the CLI.
 
-    Delegates to :class:`IngestService.parse_manifest` (which uses the same
-    worker-thread scaffold the API uses) and waits for the background
-    thread to finish so the CLI exit code reflects parse failures.
+    The CLI mirrors the web upload flow without the editable preview UI:
+    it previews each file, accepts every supported preview as-is, then
+    schedules parse + index through ``IngestService``.
     """
     load_env()
+    file_paths = [Path(p).expanduser() for p in args.files]
+    missing = [str(p) for p in file_paths if not p.exists()]
+    if missing:
+        raise SystemExit(f"missing file(s): {', '.join(missing)}")
+
+    pipeline = get_pipeline()
+    previews = pipeline.preview([(p.name, p) for p in file_paths])
+    if not previews:
+        raise SystemExit("no files to parse")
+    cache_id = previews[0].cache_id
+    edits = [UserEdits(preview_id=p.preview_id, rejected=not p.is_supported) for p in previews]
+    assets = pipeline.confirm(cache_id, edits)
+    if not assets:
+        raise SystemExit("no supported files to parse")
+
     options = ParseOptions(
-        pdf_parser=args.pdf_parser,
-        enable_ocr=args.ocr,
-        enable_vlm=args.vlm,
+        assets=assets, pdf_parser=args.pdf_parser, enable_ocr=args.ocr, enable_vlm=args.vlm
     )
-    rec = get_service().parse_manifest(limit=args.limit, options=options)
-    print(f"started task {rec.task_id} (parse only)")
+    rec = get_service().ingest_assets(assets, options)
+    print(f"started task {rec.task_id} (parse + index)")
     _wait_for_task(rec.task_id)
     print(f"documents_jsonl={get_documents_jsonl()}")
 
@@ -65,9 +74,12 @@ def command_parse(args: argparse.Namespace) -> None:
 def command_reindex(args: argparse.Namespace) -> None:
     """Drop and rebuild the qdrant collections from documents.jsonl.
 
-    The default ``index`` command is incremental (skips already-indexed docs);
-    use ``reindex`` when you want a clean slate — e.g. after changing the
-    embedding model or fixing a corrupted collection.
+    Routes through :meth:`IngestService.reindex` so the CLI and any
+    other caller share one implementation — and one lock-detection
+    path. The default ``index`` command is incremental (skips
+    already-indexed docs); use ``reindex`` when you want a clean slate
+    — e.g. after changing the embedding model or fixing a corrupted
+    collection.
 
     qdrant local mode is single-process: stop the API server (or any other
     mm-asset-rag process) before running this command, otherwise the local
@@ -75,16 +87,18 @@ def command_reindex(args: argparse.Namespace) -> None:
     concurrent access.
     """
     load_env()
+    from .backends.qdrant_backend import QdrantLockHeldError
+    from .service import get_service
+
     try:
-        only = "text" if args.text_only else "image" if args.image_only else "both"
-        if only in ("text", "both"):
-            n, name = build_qdrant_text_index(force_recreate=True)
-            print(f"[reindex] text: {name}")
-        if only in ("image", "both"):
-            ni, ni_name = build_qdrant_image_index(force_recreate=True)
-            print(f"[reindex] image: {ni_name}")
+        names = get_service().reindex(
+            text_only=args.text_only,
+            image_only=args.image_only,
+        )
     except QdrantLockHeldError as exc:
-        raise SystemExit(f"error: {exc}")
+        raise SystemExit(f"error: {exc}") from exc
+    for name in names:
+        print(f"[reindex] {name}")
 
 
 def print_hits(hits) -> None:
@@ -131,6 +145,46 @@ def command_answer(args: argparse.Namespace) -> None:
     safe_print(answer_json(args.question, top_k=args.top_k))
 
 
+def command_retry(args: argparse.Namespace) -> None:
+    """Re-run a previously failed / partial / interrupted task."""
+    load_env()
+    service = get_service()
+    service.load_history()
+    try:
+        rec = service.retry_task(args.task_id, force=args.force, failed_only=args.failed_only)
+    except KeyError as exc:
+        raise SystemExit(f"unknown task: {exc}") from exc
+    except (FileNotFoundError, ValueError) as exc:
+        raise SystemExit(f"cannot retry task: {exc}") from exc
+    flags = []
+    if rec.force:
+        flags.append("force")
+    if rec.failed_only:
+        flags.append("failed-only")
+    flag_str = f" [{', '.join(flags)}]" if flags else ""
+    print(
+        f"started retry task {rec.task_id} (origin {rec.origin_task_id}, kind={rec.kind}){flag_str}"
+    )
+    _wait_for_task(rec.task_id)
+
+
+def command_delete(args: argparse.Namespace) -> None:
+    """Delete an asset (best-effort across disk, parsed, captions, Qdrant, index)."""
+    load_env()
+    if not args.dry_run and not args.yes:
+        confirm = input(
+            f"Delete asset {args.asset_id}? This will remove its file, parsed/, "
+            "captions/, Qdrant points and asset index entry. [y/N] "
+        )
+        if confirm.strip().lower() not in {"y", "yes"}:
+            print("aborted")
+            return
+    report = get_service().delete_asset(args.asset_id, dry_run=args.dry_run)
+    if not report.was_known:
+        raise SystemExit(f"unknown asset: {args.asset_id}")
+    safe_print(json.dumps(asdict(report), ensure_ascii=False, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="mmrag",
@@ -138,8 +192,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    parse_cmd = subparsers.add_parser("parse", help="Parse PDF and image assets")
-    parse_cmd.add_argument("--limit", type=int, default=0)
+    parse_cmd = subparsers.add_parser("parse", help="Parse and index PDF/image files")
+    parse_cmd.add_argument("files", nargs="+", help="PDF/image files to ingest")
     parse_cmd.add_argument(
         "--pdf-parser", choices=["auto", "pymupdf", "paddleocr_vl"], default="auto"
     )
@@ -178,6 +232,39 @@ def build_parser() -> argparse.ArgumentParser:
     answer_cmd.add_argument("question")
     answer_cmd.add_argument("--top-k", type=int, default=5)
     answer_cmd.set_defaults(func=command_answer)
+
+    retry_cmd = subparsers.add_parser(
+        "retry",
+        help="Re-run a previously failed / partial / interrupted task",
+    )
+    retry_cmd.add_argument("task_id", help="Task id returned by /upload/confirm or mmrag parse")
+    retry_cmd.add_argument(
+        "--force",
+        action="store_true",
+        help="Clear parsed/<id>/ cache before re-running",
+    )
+    retry_cmd.add_argument(
+        "--failed-only",
+        action="store_true",
+        help=(
+            "Only re-run assets that previously failed or were skipped. "
+            "Composable with --force: only the failed assets' cache is cleared."
+        ),
+    )
+    retry_cmd.set_defaults(func=command_retry)
+
+    delete_cmd = subparsers.add_parser(
+        "delete",
+        help="Delete an asset (file, parsed/, captions/, Qdrant points, index entry)",
+    )
+    delete_cmd.add_argument("asset_id", help="Asset id to delete")
+    delete_cmd.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
+    delete_cmd.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be removed without touching the disk or Qdrant",
+    )
+    delete_cmd.set_defaults(func=command_delete)
 
     return parser
 

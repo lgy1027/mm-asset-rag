@@ -13,13 +13,13 @@ from __future__ import annotations
 
 from ..registry import register_parser
 from .image_parser import parse_image
-from .pdf_parser import parse_pdf, parse_with_paddleocr_vl, parse_pdf_with_pymupdf
+from .pdf_parser import parse_pdf, parse_pdf_with_pymupdf, parse_with_paddleocr_vl
 
 __all__ = [
     "parse_image",
     "parse_pdf",
-    "parse_with_paddleocr_vl",
     "parse_pdf_with_pymupdf",
+    "parse_with_paddleocr_vl",
 ]
 
 
@@ -28,8 +28,13 @@ class _PyMuPdfParser:
     source_type = "pdf"
 
     def parse(self, asset, **options):
-        from ..schema import ParsedDocument  # noqa: F401  (avoid circular at import)
-
+        # PDFs carry their text natively — ``enable_ocr`` / ``enable_vlm``
+        # from the image parser don't apply here. ``paddleocr_vl`` is
+        # the OCR-equivalent path for image-only PDFs; callers choose
+        # via ``options["pdf_parser"]`` instead.
+        _ = options  # explicit discard; keep the signature so a future
+        # option (e.g. ``enable_ocr_fallback``) doesn't
+        # require a synchronous signature change here.
         return parse_pdf(asset, parser="pymupdf")
 
 
@@ -38,11 +43,24 @@ class _PaddleOcrVlParser:
     source_type = "pdf"
 
     def parse(self, asset, **options):
+        _ = options
         return parse_pdf(asset, parser="paddleocr_vl")
 
 
-# Register PDF parsers. ``parse_image`` is dispatched via the legacy
-# image_parser module path because the underlying ImageEmbeddingProvider
-# differs by source; an AudioParser would slot in here the same way.
+class _ImageParser:
+    name = "image"
+    source_type = "image"
+
+    def parse(self, asset, **options):
+        return parse_image(
+            asset,
+            enable_ocr=bool(options.get("enable_ocr", False)),
+            enable_vlm=bool(options.get("enable_vlm", False)),
+        )
+
+
+# Register all built-in parsers. Image parsing now flows through the same
+# registry contract as PDFs, so future modalities don't need special cases.
 register_parser(_PyMuPdfParser())
 register_parser(_PaddleOcrVlParser())
+register_parser(_ImageParser())

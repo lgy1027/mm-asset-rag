@@ -92,6 +92,48 @@ def call_vlm_caption(image_path: Path) -> str:
     return str(content).strip()
 
 
+def call_vlm_structured(image_path: Path, prompt: str) -> dict[str, object]:
+    """Call the VLM and require a JSON object response.
+
+    This is the parser-layer structured companion to ``call_vlm_caption``.
+    It is used by the upload preview pipeline for automatic title/tag
+    extraction and kept here so future image parsers can reuse the same
+    OpenAI-compatible JSON-mode transport.
+    """
+    from ..auto_meta import _encode_image, _parse_json_response, _vlm_creds
+    from ..settings import get_settings
+
+    creds = _vlm_creds()
+    if creds is None:
+        return {}
+    base_url, api_key, model = creds
+    data_url, _ = _encode_image(image_path)
+    payload = {
+        "model": model,
+        "temperature": 0.1,
+        "max_tokens": get_settings().auto_meta_max_tokens,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }
+        ],
+    }
+    response = requests.post(
+        base_url.rstrip("/") + "/chat/completions",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=payload,
+        timeout=get_settings().auto_meta_timeout,
+    )
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"]
+    return _parse_json_response(str(content))
+
+
 def parse_image(asset: Asset, enable_ocr: bool, enable_vlm: bool) -> list[ParsedDocument]:
     output_dir = get_parsed_dir() / asset.asset_id
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
-"""Tests for mm_asset_rag.pdf_parser and mm_asset_rag.image_parser.
+"""Tests for mm_asset_rag PDF and image parsers.
 
-Uses the real bundled sample PDFs / images from ``examples/data``.
+No bundled sample corpus is required: tests create tiny PDF/image assets
+inside ``tmp_home`` and feed them through the production parser functions.
 """
 
 from __future__ import annotations
@@ -27,38 +28,53 @@ def _make_asset(assets_dir: Path, asset_id: str, file_path: Path, source_type: s
     )
 
 
-def test_parse_pdf_pymupdf(examples_home: Path) -> None:
-    """Pick the RAG PDF — known to exist in the bundled sample data."""
-    assets_dir = examples_home / "assets"
-    src_pdf = assets_dir / "pdfs" / "retrieval-augmented-generation.pdf"
-    assert src_pdf.exists(), f"missing test asset: {src_pdf}"
-    asset = _make_asset(assets_dir, "pdf_rag", src_pdf, "pdf")
+@pytest.fixture()
+def pdf_asset(tmp_home: Path) -> Asset:
+    try:
+        import fitz
+    except ImportError:
+        pytest.skip("PyMuPDF not installed")
+    assets_dir = tmp_home / "assets"
+    pdf_dir = assets_dir / "pdfs"
+    pdf_dir.mkdir(parents=True)
+    p = pdf_dir / "rag.pdf"
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Retrieval augmented generation test document")
+    doc.save(str(p))
+    doc.close()
+    return _make_asset(assets_dir, "pdf_rag", p, "pdf")
 
-    docs = parse_pdf(asset, parser="pymupdf")
+
+@pytest.fixture()
+def image_asset(tmp_home: Path) -> Asset:
+    try:
+        from PIL import Image
+    except ImportError:
+        pytest.skip("Pillow not installed")
+    assets_dir = tmp_home / "assets"
+    img_dir = assets_dir / "images"
+    img_dir.mkdir(parents=True)
+    p = img_dir / "fish.jpg"
+    Image.new("RGB", (32, 32), color=(255, 128, 0)).save(p, "JPEG")
+    return _make_asset(assets_dir, "img_fish", p, "image")
+
+
+def test_parse_pdf_pymupdf(pdf_asset: Asset) -> None:
+    docs = parse_pdf(pdf_asset, parser="pymupdf")
     assert len(docs) >= 1
     assert any("retrieval" in doc.text.lower() for doc in docs)
     assert all(doc.metadata["parser"] == "pymupdf" for doc in docs)
     assert all(doc.metadata["asset_id"] == "pdf_rag" for doc in docs)
 
 
-def test_parse_pdf_invalid_parser_raises(examples_home: Path) -> None:
-    asset = _make_asset(
-        examples_home / "assets",
-        "pdf_rag",
-        examples_home / "assets" / "pdfs" / "retrieval-augmented-generation.pdf",
-        "pdf",
-    )
+def test_parse_pdf_invalid_parser_raises(pdf_asset: Asset) -> None:
     with pytest.raises(ValueError, match="Unsupported PDF parser"):
-        parse_pdf(asset, parser="bogus")
+        parse_pdf(pdf_asset, parser="bogus")
 
 
-def test_parse_image_via_caption_only(examples_home: Path, monkeypatch) -> None:
+def test_parse_image_via_caption_only(image_asset: Asset, monkeypatch) -> None:
     """OCR off, VLM on; one document that includes title + caption."""
-    assets_dir = examples_home / "assets"
-    src_img = assets_dir / "images" / "img_03_opencv-sample-data-happyfish-jpg.jpg"
-    assert src_img.exists(), f"missing test asset: {src_img}"
-    asset = _make_asset(assets_dir, "img_03_opencv-sample-data-happyfish-jpg", src_img, "image")
-
     monkeypatch.setenv("VLM_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("VLM_API_KEY", "k")
     monkeypatch.setenv("VLM_MODEL", "vlm")
@@ -67,26 +83,76 @@ def test_parse_image_via_caption_only(examples_home: Path, monkeypatch) -> None:
         rsps.post(
             "https://api.example.com/v1/chat/completions",
             json={
-                "choices": [
-                    {"message": {"content": "An orange-and-white striped tropical fish."}}
-                ]
+                "choices": [{"message": {"content": "An orange-and-white striped tropical fish."}}]
             },
             status=200,
         )
-        docs = parse_image(asset, enable_ocr=False, enable_vlm=True)
+        docs = parse_image(image_asset, enable_ocr=False, enable_vlm=True)
 
     assert len(docs) == 1
     text = docs[0].text
-    assert "img_03_opencv-sample-data-happyfish-jpg" in text
+    assert "img_fish" in text
     assert "tropical fish" in text
 
 
-def test_parse_image_without_vlm_or_ocr(examples_home: Path) -> None:
-    assets_dir = examples_home / "assets"
-    src_img = assets_dir / "images" / "img_03_opencv-sample-data-happyfish-jpg.jpg"
-    asset = _make_asset(assets_dir, "img_03_opencv-sample-data-happyfish-jpg", src_img, "image")
-    docs = parse_image(asset, enable_ocr=False, enable_vlm=False)
+def test_parse_image_without_vlm_or_ocr(image_asset: Asset) -> None:
+    docs = parse_image(image_asset, enable_ocr=False, enable_vlm=False)
     assert len(docs) == 1
-    # caption / ocr sections present but empty
     assert "VLM 描述：" in docs[0].text
     assert "OCR 文本：" in docs[0].text
+
+
+def test_parse_pdf_auto_uses_settings_token(
+    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
+    get_settings.cache_clear()
+    called = {}
+
+    def fake_paddle(asset: Asset):
+        called["parser"] = "paddle"
+        return []
+
+    monkeypatch.setattr(pdf_parser, "parse_with_paddleocr_vl", fake_paddle)
+    monkeypatch.setattr(pdf_parser, "parse_pdf_with_pymupdf", lambda asset: [])
+    parse_pdf(pdf_asset, parser="auto")
+    assert called == {"parser": "paddle"}
+
+
+def test_submit_paddleocr_vl_job_uses_settings(
+    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.parsers.pdf_parser import submit_paddleocr_vl_job
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
+    monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example/jobs")
+    monkeypatch.setenv("PADDLEOCR_VL_MODEL", "custom-model")
+    monkeypatch.setenv("PADDLEOCR_VL_TIMEOUT", "12")
+    get_settings.cache_clear()
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = "ok"
+
+        def json(self):
+            return {"data": {"jobId": "job-1"}}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return FakeResponse()
+
+    monkeypatch.setattr(pdf_parser.requests, "post", fake_post)
+    job_id = submit_paddleocr_vl_job(pdf_asset.file_path)
+
+    assert job_id == "job-1"
+    assert captured["url"] == "https://ocr.example/jobs"
+    assert captured["headers"]["Authorization"] == "bearer token"
+    assert captured["data"]["model"] == "custom-model"
+    assert captured["timeout"] == 12.0
