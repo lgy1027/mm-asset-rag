@@ -29,6 +29,7 @@ are dumped to ``$MM_ASSET_RAG_HOME/eval_report_v2.json``.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -327,11 +328,31 @@ def _match(actual: list[str], expected: list[str]) -> int | None:
     return None
 
 
-def run_text_to_text_eval_v2(top_k: int = 5) -> list[V2Result]:
-    """Run all v2 text→text cases against the live hybrid index."""
+def run_text_to_text_eval_v2(
+    top_k: int = 5,
+    *,
+    search_fn: Callable[[str, int], list] | None = None,
+    full_ids: set[str] | None = None,
+) -> list[V2Result]:
+    """Run all v2 text→text cases against the live hybrid index.
+
+    ``search_fn`` defaults to ``retrieval.hybrid_search`` (production
+    path). Tests pass a stub that returns canned ``SearchHit`` lists
+    so the eval can run offline against a mock corpus — this is the
+    ``auto-eval`` integration used by CI. The stub signature is
+    ``(query: str, top_k: int) -> list[SearchHit]``; the query
+    preprocessor / RRF / min_score are bypassed because the test
+    ships its own pre-computed results.
+
+    ``full_ids`` is the set of known asset_ids used by ``_expand`` to
+    resolve bare expected ids. Tests inject a synthetic set so the
+    eval runs without a real ``asset_index.jsonl``.
+    """
     from .retrieval import hybrid_search
 
-    full_ids = _load_full_ids()
+    search = search_fn or hybrid_search
+    ids = full_ids if full_ids is not None else _load_full_ids()
+
     out: list[V2Result] = []
     for group, cases in (
         ("zh_on_en", V2_ZH_ON_EN_PAPERS),
@@ -340,11 +361,11 @@ def run_text_to_text_eval_v2(top_k: int = 5) -> list[V2Result]:
         ("negative", V2_NEGATIVE_QUERIES),
     ):
         for case in cases:
-            hits = hybrid_search(str(case["query"]), top_k=top_k)
+            hits = search(str(case["query"]), top_k)
             actual = [hit.asset_id for hit in hits]
             expected: list[str] = []
             for item in case["expected_asset_ids"]:
-                expected.extend(_expand(str(item), full_ids))
+                expected.extend(_expand(str(item), ids))
             rank = _match(actual, expected) if expected else None
             out.append(
                 V2Result(
@@ -359,18 +380,30 @@ def run_text_to_text_eval_v2(top_k: int = 5) -> list[V2Result]:
     return out
 
 
-def run_text_to_image_eval_v2(top_k: int = 5) -> list[V2Result]:
-    """Run the v2 text→image cases against the Qdrant image collection."""
+def run_text_to_image_eval_v2(
+    top_k: int = 5,
+    *,
+    search_fn: Callable[[str, int], list] | None = None,
+    full_ids: set[str] | None = None,
+) -> list[V2Result]:
+    """Run the v2 text→image cases against the Qdrant image collection.
+
+    ``search_fn`` is the dependency-injection hook for tests; default
+    is the live ``qdrant_text_to_image_search`` call. See
+    :func:`run_text_to_text_eval_v2` for the same pattern.
+    """
     from .backends.qdrant_backend import qdrant_text_to_image_search
 
-    full_ids = _load_full_ids()
+    search = search_fn or qdrant_text_to_image_search
+    ids = full_ids if full_ids is not None else _load_full_ids()
+
     out: list[V2Result] = []
     for case in V2_TEXT_TO_IMAGE:
-        hits = qdrant_text_to_image_search(str(case["query"]), top_k=top_k)
+        hits = search(str(case["query"]), top_k)
         actual = [hit.asset_id for hit in hits]
         expected: list[str] = []
         for item in case["expected_asset_ids"]:
-            expected.extend(_expand(str(item), full_ids))
+            expected.extend(_expand(str(item), ids))
         rank = _match(actual, expected) if expected else None
         out.append(
             V2Result(
