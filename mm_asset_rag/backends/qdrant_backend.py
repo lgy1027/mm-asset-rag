@@ -62,6 +62,11 @@ BM25_MODEL_NAME = get_settings().qdrant_bm25_model
 DENSE_VECTOR_NAME = "dense"
 SPARSE_VECTOR_NAME = "bm25"
 HYBRID_PREFETCH_LIMIT = get_settings().qdrant_hybrid_prefetch_limit
+# RRF constant: matches Qdrant's server default. Exposed so deployers
+# can tune it via env if the corpus skews toward very long ranked
+# lists (smaller k biases toward the top of each channel; larger k
+# smooths across the long tail).
+RRF_K = 60
 
 
 # Module-level cache for the active collection names. Replaces
@@ -722,22 +727,6 @@ def build_qdrant_image_index(
     return inserted, f"qdrant:{collection_name}:inserted={inserted}:skipped={skipped}"
 
 
-def _channel_limit(weight: float) -> int:
-    """Translate an RRF weight into a Qdrant prefetch limit.
-
-    qdrant-client 1.18 does not expose per-prefetch RRF weights. We
-    approximate the bias by scaling the prefetch ``limit``: a channel
-    with weight 1.5 gets 1.5x the candidate pool, so its top ranks
-    have more chances to land inside the fused RRF top-k. Floor at
-    the base ``HYBRID_PREFETCH_LIMIT`` so we never shrink the pool
-    below the default; cap at 4x to avoid runaway costs on
-    misconfigured weights.
-    """
-    base = HYBRID_PREFETCH_LIMIT
-    scaled = round(base * max(0.1, min(weight, 4.0)))
-    return max(base, scaled)
-
-
 def _hybrid_text_query(
     client: QdrantClient,
     collection_name: str,
@@ -749,48 +738,79 @@ def _hybrid_text_query(
 ) -> list:
     """Issue a single hybrid query (dense + BM25(en) + BM25(zh) prefetched, fused via RRF).
 
-    Qdrant ranks each prefetch independently, then ``Fusion.RRF`` combines
-    the ranked lists. When ``bm25_zh_enabled`` is on (and the caller
-    passed a non-empty sparse vector), the Chinese channel is included
-    as a third prefetch. The final ``limit`` is the top-k returned to the
-    caller.
+    Qdrant ranks each prefetch independently, then RRF combines the
+    ranked lists. Per-channel bias is applied via
+    ``models.RrfQuery(rrf=models.Rrf(weights=[...]))`` — the weights
+    array is positional, one entry per prefetch. The default
+    1.0/1.0/1.0 matches the previous uniform-fusion behaviour; raise
+    ``Settings.rrf_weight_bm25_zh`` to 1.5 to give Chinese-BM25 more
+    weight in the fused ranking.
 
-    When ``text_filter`` is provided it is applied as the post-fusion
-    filter — used to keep image-source placeholders out of text→text
-    recall without dropping them from the collection.
+    When ``bm25_zh_enabled`` is on (and the caller passed a non-empty
+    sparse vector), the Chinese channel is included as a third
+    prefetch and the weight list grows to match.
+
+    When ``text_filter`` is provided it is applied to every prefetch
+    channel — Qdrant's ``query_filter`` parameter is ignored by the
+    RRF-fused query path on qdrant-client 1.18, so the filter has to
+    live on each ``Prefetch`` to take effect. Used to keep
+    image-source placeholders out of text→text recall without
+    dropping them from the collection.
+
+    When all weights are 1.0 (the default), we fall back to
+    ``models.FusionQuery(fusion=models.Fusion.RRF)`` — equivalent to
+    uniform RRF — so the Qdrant server's RRF defaults (k=60) apply
+    without the explicit ``RrfQuery`` wrapper.
     """
     settings = get_settings()
     prefetches = [
         models.Prefetch(
             query=dense_vector,
             using=DENSE_VECTOR_NAME,
-            limit=_channel_limit(settings.rrf_weight_dense),
+            limit=HYBRID_PREFETCH_LIMIT,
             filter=text_filter,
         ),
         models.Prefetch(
             query=sparse_vector_en,
             using=SPARSE_VECTOR_NAME,
-            limit=_channel_limit(settings.rrf_weight_bm25),
+            limit=HYBRID_PREFETCH_LIMIT,
             filter=text_filter,
         ),
     ]
-    if (
+    include_zh = (
         settings.bm25_zh_enabled
         and sparse_vector_zh is not None
         and len(sparse_vector_zh.indices) > 0
-    ):
+    )
+    if include_zh:
         prefetches.append(
             models.Prefetch(
                 query=sparse_vector_zh,
                 using=settings.bm25_zh_vector_name,
-                limit=_channel_limit(settings.rrf_weight_bm25_zh),
+                limit=HYBRID_PREFETCH_LIMIT,
                 filter=text_filter,
             )
+        )
+    weights = [
+        settings.rrf_weight_dense,
+        settings.rrf_weight_bm25,
+        settings.rrf_weight_bm25_zh if include_zh else 1.0,
+    ]
+    # Use the weighted ``RrfQuery`` only when a channel actually
+    # diverges from the default — uniform-weight queries use the
+    # simpler ``FusionQuery`` so the server's defaults apply.
+    if all(abs(w - 1.0) < 1e-9 for w in weights):
+        fusion_query: models.FusionQuery | models.RrfQuery = models.FusionQuery(
+            fusion=models.Fusion.RRF
+        )
+    else:
+        fusion_query = models.RrfQuery(
+            rrf=models.Rrf(weights=weights, k=RRF_K),
         )
     return client.query_points(
         collection_name=collection_name,
         prefetch=prefetches,
-        query=models.FusionQuery(fusion=models.Fusion.RRF),
+        query=fusion_query,
         limit=top_k,
         with_payload=True,
     ).points
