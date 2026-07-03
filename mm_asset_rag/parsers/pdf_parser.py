@@ -31,35 +31,91 @@ from ..settings import get_settings
 
 
 def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
-    """Local fallback parser for text-based PDFs."""
+    """Local fallback parser for text-based PDFs.
+
+    Each page is split by detected heading boundaries (ATX ``#``,
+    font-size heuristic, standalone short line). A page that yields
+    multiple sections becomes multiple chunks, each with a
+    ``metadata.section`` field carrying the heading text. The keyword
+    enrichment footer (Chinese jieba TextRank) is appended to every
+    chunk's text so the BM25 channel can match short user queries
+    like ``联宝 ESG`` against long PDF bodies.
+    """
+    from .chunk_splitter import split_by_heading
+
     output_dir = get_parsed_dir() / asset.asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
     docs: list[ParsedDocument] = []
 
     with fitz.open(asset.file_path) as pdf:
         for page_index, page in enumerate(pdf):
+            page_dict = page.get_text("dict")
+            # Build a parallel list of per-line font sizes for the
+            # heading heuristic. Each ``block`` -> ``line`` -> ``span``
+            # carries a size; we collapse to one size per line by
+            # averaging spans.
+            font_sizes: list[float] = []
+            for block in page_dict.get("blocks", []):
+                for line in block.get("lines", []):
+                    spans = line.get("spans", [])
+                    if not spans:
+                        font_sizes.append(0.0)
+                        continue
+                    avg = sum(s.get("size", 0.0) for s in spans) / len(spans)
+                    font_sizes.append(avg)
             text = page.get_text("text").strip()
             if not text:
                 continue
             markdown_path = output_dir / f"page_{page_index}.md"
             markdown_path.write_text(text, encoding="utf-8")
-            docs.append(
-                ParsedDocument(
-                    text=text,
-                    metadata={
-                        "asset_id": asset.asset_id,
-                        "asset_title": asset.title,
-                        "source_type": asset.source_type,
-                        "source_path": asset.relative_path,
-                        "source_url": asset.source_url,
-                        "page": page_index,
-                        "parser": "pymupdf",
-                        "markdown_path": str(markdown_path),
-                        "tags": asset.tags,
-                    },
+            sections = split_by_heading(text, font_sizes=font_sizes)
+            for chunk_index, section in enumerate(sections):
+                # Skip sections with no body — empty chunks (e.g. a
+                # bare "1" heading with no following text) would
+                # otherwise pollute the BM25 channel with a placeholder
+                # payload that drags down dense ranking.
+                if not section.body.strip():
+                    continue
+                enriched_text = _maybe_enrich_with_keywords(section.body)
+                docs.append(
+                    ParsedDocument(
+                        text=enriched_text,
+                        metadata={
+                            "asset_id": asset.asset_id,
+                            "asset_title": asset.title,
+                            "source_type": asset.source_type,
+                            "source_path": asset.relative_path,
+                            "source_url": asset.source_url,
+                            "page": page_index,
+                            "chunk_index": chunk_index,
+                            "section": section.heading,
+                            "parser": "pymupdf",
+                            "markdown_path": str(markdown_path),
+                            "tags": asset.tags,
+                        },
+                    )
                 )
-            )
     return docs
+
+
+def _maybe_enrich_with_keywords(text: str) -> str:
+    """Append a "关键词: ..." footer to a chunk when Settings enables it.
+
+    The footer is a deterministic injection point — BM25 tokenises it
+    like any other text, but the leading label makes it easy to spot
+    in retrieval debug output. Pure function (no I/O) so it's cheap
+    to call inside the per-page loop.
+    """
+    from ..settings import get_settings
+    from ..text_keywords import enrich_chunk_text, extract_keywords
+
+    s = get_settings()
+    if not s.enrich_chunk_with_keywords:
+        return text
+    kws = extract_keywords(
+        text, top_k=s.enrich_chunk_keyword_top_k, language=s.enrich_chunk_language
+    )
+    return enrich_chunk_text(text, kws)
 
 
 # ─── PaddleOCR-VL ──────────────────────────────────────────────────────────
@@ -266,9 +322,10 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
 
             markdown_path = output_dir / f"page_{page_num}.md"
             markdown_path.write_text(markdown_text, encoding="utf-8")
+            enriched_text = _maybe_enrich_with_keywords(markdown_text)
             docs.append(
                 ParsedDocument(
-                    text=markdown_text,
+                    text=enriched_text,
                     metadata={
                         "asset_id": asset.asset_id,
                         "asset_title": asset.title,

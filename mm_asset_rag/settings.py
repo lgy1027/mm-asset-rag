@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     llm_timeout: float = 120.0
 
     # ─── Text embedding ───────────────────────────────────────────────────
+    # Backend: ``openai`` (OpenAI-compatible /v1/embeddings) or
+    # ``sentence_transformers`` (local HF model). For multilingual /
+    # cross-language corpora, ``sentence_transformers`` with
+    # ``BAAI/bge-m3`` or ``intfloat/multilingual-e5-large`` is much
+    # stronger than the OpenAI default on ZH↔EN retrieval.
+    embedding_backend: Literal["openai", "sentence_transformers"] = "openai"
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str | None = None
@@ -145,6 +151,47 @@ class Settings(BaseSettings):
     bm25_zh_k1: float = 1.5
     bm25_zh_b: float = 0.75
     bm25_zh_vector_name: str = "bm25_zh"
+
+    # ─── Chunk enrichment ─────────────────────────────────────────────────
+    # When ``ENRICH_CHUNK_WITH_KEYWORDS`` is true (default), the PDF /
+    # image parser appends a "关键词: ..." line to each chunk's text
+    # before indexing. The keywords come from
+    # ``mm_asset_rag.text_keywords.extract_keywords_zh`` (jieba
+    # TextRank) which gives the BM25 channel explicit tokens to match
+    # short user queries like "联宝 ESG" against a long PDF body
+    # where the tokens would otherwise be diluted. Disable for
+    # non-Chinese corpora or when jieba is unavailable.
+    enrich_chunk_with_keywords: bool = True
+    enrich_chunk_keyword_top_k: int = 8
+    # Language hint passed to ``extract_keywords``. The parser uses
+    # this to pick the right extractor. ``auto`` runs jieba first
+    # (Chinese) and falls back to the stopword-frequency extractor
+    # (English) when jieba returns nothing — recommended for mixed
+    # corpora.
+    enrich_chunk_language: Literal["zh", "en", "auto"] = "auto"
+
+    # ─── Query preprocessing ──────────────────────────────────────────────
+    # The hybrid text search runs each query through three normalisations
+    # before routing to dense vs BM25 channels. See
+    # ``mm_asset_rag.query_preprocess.preprocess`` for the per-stage
+    # contract. Defaults are conservative — only the typo corrector is
+    # safe to leave on for all corpora.
+    query_lowercase: bool = True
+    query_fuzzy: bool = True
+    query_expansion: bool = False
+    query_expansion_pairs: str | None = None  # path to a JSON file
+
+    # ─── Per-channel RRF weights ──────────────────────────────────────────
+    # Inside ``_hybrid_text_query`` the three prefetches (dense / BM25-en /
+    # BM25-zh) are fused by Qdrant's ``Fusion.RRF`` with a uniform
+    # baseline weight of 1.0. The three weights below let the deployer
+    # bias the fusion: e.g. raising ``rrf_weight_bm25_zh`` improves
+    # Chinese-only token recall, lowering it makes the dense channel
+    # dominant for cross-language queries. The default 1.0/1.0/1.0
+    # matches the previous behaviour.
+    rrf_weight_dense: float = 1.0
+    rrf_weight_bm25: float = 1.0
+    rrf_weight_bm25_zh: float = 1.0
 
     # ─── PaddleOCR-VL ────────────────────────────────────────────────────
     paddleocr_vl_api_token: str | None = None

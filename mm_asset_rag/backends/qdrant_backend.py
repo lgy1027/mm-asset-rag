@@ -722,6 +722,22 @@ def build_qdrant_image_index(
     return inserted, f"qdrant:{collection_name}:inserted={inserted}:skipped={skipped}"
 
 
+def _channel_limit(weight: float) -> int:
+    """Translate an RRF weight into a Qdrant prefetch limit.
+
+    qdrant-client 1.18 does not expose per-prefetch RRF weights. We
+    approximate the bias by scaling the prefetch ``limit``: a channel
+    with weight 1.5 gets 1.5x the candidate pool, so its top ranks
+    have more chances to land inside the fused RRF top-k. Floor at
+    the base ``HYBRID_PREFETCH_LIMIT`` so we never shrink the pool
+    below the default; cap at 4x to avoid runaway costs on
+    misconfigured weights.
+    """
+    base = HYBRID_PREFETCH_LIMIT
+    scaled = round(base * max(0.1, min(weight, 4.0)))
+    return max(base, scaled)
+
+
 def _hybrid_text_query(
     client: QdrantClient,
     collection_name: str,
@@ -748,13 +764,13 @@ def _hybrid_text_query(
         models.Prefetch(
             query=dense_vector,
             using=DENSE_VECTOR_NAME,
-            limit=HYBRID_PREFETCH_LIMIT,
+            limit=_channel_limit(settings.rrf_weight_dense),
             filter=text_filter,
         ),
         models.Prefetch(
             query=sparse_vector_en,
             using=SPARSE_VECTOR_NAME,
-            limit=HYBRID_PREFETCH_LIMIT,
+            limit=_channel_limit(settings.rrf_weight_bm25),
             filter=text_filter,
         ),
     ]
@@ -767,7 +783,7 @@ def _hybrid_text_query(
             models.Prefetch(
                 query=sparse_vector_zh,
                 using=settings.bm25_zh_vector_name,
-                limit=HYBRID_PREFETCH_LIMIT,
+                limit=_channel_limit(settings.rrf_weight_bm25_zh),
                 filter=text_filter,
             )
         )
@@ -794,12 +810,21 @@ def qdrant_text_search(
     ``include_image_sources=True`` to include them (e.g. for image-text
     hybrid answers). The filter is applied as a Qdrant post-fusion
     filter so it does not affect RRF rank computation.
+
+    When the query preprocessor is enabled (see
+    ``Settings.query_fuzzy`` / ``query_lowercase`` / ``query_expansion``),
+    the BM25 channels use the preprocessed form (lowercased, typo-corrected,
+    expanded) while the dense channel keeps the original query intact —
+    multilingual embeddings are case-aware.
     """
+    from ..query_preprocess import preprocess
+
+    pre = preprocess(query)
     embedder = get_default_text_embedder()
     client = get_qdrant_client()
-    dense_query = embedder.embed(query)
-    sparse_query = _embed_bm25([query])[0]
-    sparse_query_zh = _embed_bm25_zh_query(query)
+    dense_query = embedder.embed(pre.dense_query)
+    sparse_query = _embed_bm25([pre.bm25_query])[0]
+    sparse_query_zh = _embed_bm25_zh_query(pre.bm25_query)
 
     text_filter: models.Filter | None = None
     if not include_image_sources:

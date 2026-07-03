@@ -134,3 +134,93 @@ class TextEmbedder:
 
 # Backward-compat alias. New code should use ``TextEmbedder``.
 EmbeddingProvider = TextEmbedder
+
+
+class SentenceTransformerTextEmbedder:
+    """Local sentence-transformers backend for multilingual / cross-language corpora.
+
+    Falls back to ``TextEmbedder`` for the OpenAI-compatible path —
+    switch by setting ``EMBEDDING_BACKEND=sentence_transformers`` and
+    ``EMBEDDING_MODEL=BAAI/bge-m3`` (or another HF model id). The
+    same Protocol contract holds: ``modality == "text"``,
+    ``name == model``, ``dim()`` lazily probes a tiny encode.
+    """
+
+    modality = "text"
+
+    def __init__(
+        self,
+        *,
+        model: str | None = None,
+        batch_size: int | None = None,
+        max_input_chars: int | None = None,
+        settings: object | None = None,
+    ) -> None:
+        from ..settings import get_settings
+
+        s = settings or get_settings()
+        self.model = model or s.embedding_model
+        if not self.model:
+            raise EmbeddingConfigError(
+                "SentenceTransformerTextEmbedder requires EMBEDDING_MODEL set to a "
+                "HuggingFace model id (e.g. BAAI/bge-m3, intfloat/multilingual-e5-large)."
+            )
+        self.batch_size = batch_size or s.embedding_batch_size
+        self.max_input_chars = max_input_chars or s.embedding_max_input_chars
+        self._model = None
+        self._dim: int | None = None
+
+    def _load(self):
+        if self._model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:  # pragma: no cover
+                raise EmbeddingConfigError(
+                    "sentence-transformers is not installed. "
+                    "Install with `pip install mm-asset-rag[clip]` "
+                    "or use EMBEDDING_BACKEND=openai instead."
+                ) from exc
+            self._model = SentenceTransformer(self.model)
+        return self._model
+
+    @property
+    def name(self) -> str:
+        return self.model
+
+    def dim(self) -> int:
+        if self._dim is None:
+            self._dim = len(self.embed("probe"))
+        return self._dim
+
+    def embed(self, content: Any) -> list[float]:
+        return self.embed_batch([content])[0]
+
+    def embed_batch(self, contents: list[Any]) -> list[list[float]]:
+        if not contents:
+            return []
+        texts = [str(c) for c in contents]
+        truncated = [
+            t if len(t) <= self.max_input_chars else t[: self.max_input_chars] for t in texts
+        ]
+        model = self._load()
+        vectors = model.encode(
+            truncated,
+            batch_size=self.batch_size,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        return [[float(v) for v in row.tolist()] for row in vectors]
+
+
+def build_default_text_embedder() -> TextEmbedder | SentenceTransformerTextEmbedder:
+    """Factory: pick the right embedder for ``Settings.embedding_backend``.
+
+    The default registry key (``("text", "default")``) routes through
+    this factory so users can switch providers without code changes.
+    """
+    from ..settings import get_settings
+
+    s = get_settings()
+    if s.embedding_backend == "sentence_transformers":
+        return SentenceTransformerTextEmbedder(settings=s)
+    return TextEmbedder(settings=s)

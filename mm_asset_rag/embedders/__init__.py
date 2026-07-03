@@ -16,13 +16,20 @@ from threading import Lock
 
 from ..registry import get_embedder, register_embedder
 from .image_embedder import ImageEmbedder, ImageEmbeddingUnavailable
-from .text_embedder import EmbeddingConfigError, TextEmbedder
+from .text_embedder import (
+    EmbeddingConfigError,
+    SentenceTransformerTextEmbedder,
+    TextEmbedder,
+    build_default_text_embedder,
+)
 
 __all__ = [
     "EmbeddingConfigError",
     "ImageEmbedder",
     "ImageEmbeddingUnavailable",
+    "SentenceTransformerTextEmbedder",
     "TextEmbedder",
+    "build_default_text_embedder",
     "get_default_image_embedder",
     "get_default_text_embedder",
     "register_embedder",
@@ -50,8 +57,9 @@ def _ensure_text_registered() -> None:
         # hasn't set credentials). Downstream callers that actually
         # try to embed something will get the same ``EmbeddingConfigError``
         # at use time, with full context — far better than crashing
-        # the whole package import.
-        _embedders.register(_DEFAULT_TEXT_KEY, TextEmbedder(), replace=False)
+        # the whole package import. ``build_default_text_embedder``
+        # picks OpenAI or sentence-transformers based on Settings.
+        _embedders.register(_DEFAULT_TEXT_KEY, build_default_text_embedder(), replace=False)
 
 
 def _ensure_image_registered() -> None:

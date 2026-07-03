@@ -99,3 +99,17 @@ def test_cli_delete_subcommand_parses() -> None:
     args = parser.parse_args(["delete", "abc123def456", "--yes", "--dry-run"])
     assert args.yes is True
     assert args.dry_run is True
+
+
+def test_cli_reindex_subcommand_yes_flag() -> None:
+    """``--yes`` skips the interactive confirmation. Needed for CI
+    and for the "switch CLIP / embedding model" recipe in
+    ``docs/eval-report-v3.md``.
+    """
+    parser = build_parser()
+    args = parser.parse_args(["reindex", "--image-only"])
+    assert args.yes is False
+    args = parser.parse_args(["reindex", "--text-only", "--yes"])
+    assert args.yes is True
+    assert args.text_only is True
+    assert args.image_only is False

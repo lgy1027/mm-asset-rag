@@ -89,10 +89,27 @@ def command_reindex(args: argparse.Namespace) -> None:
     mm-asset-rag process) before running this command, otherwise the local
     storage lock will block. Use ``QDRANT_URL`` (server mode) if you need
     concurrent access.
+
+    ``--yes`` skips the interactive confirmation — useful for CI / scripts
+    and for the "switch CLIP model" recipe in ``docs/eval-report-v3.md``.
     """
     load_env()
     from .backends.qdrant_backend import QdrantLockHeldError
     from .service import get_service
+
+    if not args.yes:
+        targets = []
+        if not args.image_only:
+            targets.append("text")
+        if not args.text_only:
+            targets.append("image")
+        msg = f"rebuild {', '.join(targets)} collection(s)? [y/N] "
+        try:
+            ans = input(msg)
+        except EOFError:
+            ans = ""
+        if ans.strip().lower() not in ("y", "yes"):
+            raise SystemExit("aborted")
 
     try:
         names = get_service().reindex(
@@ -222,6 +239,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reindex_cmd.add_argument("--text-only", action="store_true")
     reindex_cmd.add_argument("--image-only", action="store_true")
+    reindex_cmd.add_argument(
+        "--yes",
+        action="store_true",
+        help="Skip the interactive confirmation (CI / scripts).",
+    )
     reindex_cmd.set_defaults(func=command_reindex)
 
     search_cmd = subparsers.add_parser("search", help="Search indexed assets")
