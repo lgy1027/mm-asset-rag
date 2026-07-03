@@ -254,11 +254,19 @@ def _bare_to_full(bare: str, full_ids: set[str]) -> str:
 
 
 def _load_full_ids() -> set[str]:
-    """Return the set of full asset_ids for the active rows."""
-    latest: dict[str, dict] = {}
+    """Return the set of full asset_ids for the active rows.
+
+    Multiple ``_NNN_hash`` variants of the same content can coexist
+    in the index (re-ingestion of a slightly different file revision
+    keeps the SHA256 stable but bumps a per-write hash). We dedupe by
+    ``asset_id`` instead of ``sha256`` so ``_expand`` can return every
+    hash variant — ``_match`` then accepts any of them as a valid hit.
+    """
+    seen: set[str] = set()
+    out: set[str] = set()
     index_path = get_asset_index_path()
     if not index_path.exists():
-        return set()
+        return out
     with index_path.open(encoding="utf-8") as f:
         for line in f:
             if not line.strip():
@@ -269,22 +277,52 @@ def _load_full_ids() -> set[str]:
                 continue
             if row.get("deleted"):
                 continue
-            latest[row["sha256"]] = row
-    return {row["asset_id"] for row in latest.values()}
+            aid = row.get("asset_id", "")
+            if aid in seen:
+                continue
+            seen.add(aid)
+            out.add(aid)
+    return out
 
 
 def _expand(prefix: str, full_ids: set[str]) -> list[str]:
     """Expand a bare prefix (e.g. ``Caltech Airplanes``) to all full
     asset_ids that start with it. Returns ``[prefix]`` if no match
-    so the strict match still works when the caller passed a full id."""
+    so the strict match still works when the caller passed a full id.
+
+    Multiple ``_NNN_hash`` variants of the same title are common (each
+    parse run + content edit produces a new SHA). A single hash should
+    *not* be treated as the canonical answer — the matcher below also
+    accepts any actual id whose title is prefixed by the bare term.
+    """
     matches = sorted(f for f in full_ids if f.startswith(prefix))
     return matches if matches else [prefix]
 
 
+def _title_of(asset_id: str) -> str:
+    """Strip the trailing ``_<8-hex-hash>`` from an asset id to get the
+    bare title used for prefix-tolerant matching.
+
+    Asset ids look like ``<title>_<8-hex>``. If the id has no ``_`` we
+    return the whole id (e.g. for synthetic or user-supplied ids).
+    """
+    if "_" not in asset_id:
+        return asset_id
+    # The hash is the last ``_``-segment, exactly 8 lowercase hex chars.
+    head, _, tail = asset_id.rpartition("_")
+    if len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
+        return head
+    return asset_id
+
+
 def _match(actual: list[str], expected: list[str]) -> int | None:
     for rank, act in enumerate(actual, start=1):
+        act_title = _title_of(act)
         for exp in expected:
-            if exp and (exp in act or act in exp):
+            exp_title = _title_of(exp)
+            if not exp_title:
+                continue
+            if exp_title in act_title or act_title in exp_title:
                 return rank
     return None
 

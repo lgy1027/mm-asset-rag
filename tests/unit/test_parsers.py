@@ -96,10 +96,68 @@ def test_parse_image_via_caption_only(image_asset: Asset, monkeypatch) -> None:
 
 
 def test_parse_image_without_vlm_or_ocr(image_asset: Asset) -> None:
+    # Title + tags are still set on the fixture asset, so the parser has a
+    # signal to emit — the new contract is "skip when *all* of title /
+    # tags / VLM caption / OCR text are empty".
     docs = parse_image(image_asset, enable_ocr=False, enable_vlm=False)
     assert len(docs) == 1
     assert "VLM 描述：" in docs[0].text
     assert "OCR 文本：" in docs[0].text
+
+
+def test_parse_image_skips_when_no_signal(tmp_home: Path) -> None:
+    """Placeholder text must not be written into the text collection.
+
+    When title, tags, VLM caption, and OCR text are all empty, the
+    parser returns ``[]`` so BM25 does not see "Picsum 1015" /
+    "图片标题" as a frequent document token. This is the v2 eval
+    BUG 1 fix.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        pytest.skip("Pillow not installed")
+    assets_dir = tmp_home / "assets"
+    img_dir = assets_dir / "images"
+    img_dir.mkdir(parents=True)
+    p = img_dir / "picsum.jpg"
+    Image.new("RGB", (32, 32), color=(255, 128, 0)).save(p, "JPEG")
+    asset = Asset(
+        asset_id="picsum_no_signal",
+        title="",
+        source_type="image",
+        relative_path="images/picsum.jpg",
+        source_url="",
+        tags=[],
+        asset_dir=assets_dir,
+    )
+    docs = parse_image(asset, enable_ocr=False, enable_vlm=False)
+    assert docs == []
+
+
+def test_parse_image_emits_chunk_when_only_title_present(tmp_home: Path) -> None:
+    """If even a single signal field is non-empty, emit one chunk."""
+    try:
+        from PIL import Image
+    except ImportError:
+        pytest.skip("Pillow not installed")
+    assets_dir = tmp_home / "assets"
+    img_dir = assets_dir / "images"
+    img_dir.mkdir(parents=True)
+    p = img_dir / "titled.jpg"
+    Image.new("RGB", (32, 32), color=(0, 128, 255)).save(p, "JPEG")
+    asset = Asset(
+        asset_id="img_titled",
+        title="Linux logo",
+        source_type="image",
+        relative_path="images/titled.jpg",
+        source_url="",
+        tags=[],
+        asset_dir=assets_dir,
+    )
+    docs = parse_image(asset, enable_ocr=False, enable_vlm=False)
+    assert len(docs) == 1
+    assert "Linux logo" in docs[0].text
 
 
 def test_parse_pdf_auto_uses_settings_token(

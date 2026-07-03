@@ -55,9 +55,68 @@ def test_merge_hits_top_k() -> None:
     assert merged[0].score >= merged[1].score
 
 
+def test_merge_hits_min_score_drops_low_confidence() -> None:
+    """``min_score`` drops merged hits below the floor before ``top_k``."""
+    groups = [
+        [
+            _make_hit("strong", "text", 1.0),
+            _make_hit("weak", "text", 0.05),
+        ]
+    ]
+    merged_default = retrieval.merge_hits(groups, [1.0], top_k=5)
+    assert {h.asset_id for h in merged_default} == {"strong", "weak"}
+
+    merged_floored = retrieval.merge_hits(groups, [1.0], top_k=5, min_score=0.10)
+    assert {h.asset_id for h in merged_floored} == {"strong"}
+
+
+def test_hybrid_search_forwards_min_score(monkeypatch, fixed_vector) -> None:
+    """``hybrid_search`` reads ``Settings.min_score`` and passes it to ``merge_hits``."""
+    # Use two hits at different raw scores so we can pick a floor
+    # between their weighted scores. raw=1.0 -> normalised=1.0; raw=0.3
+    # -> normalised=0.3; with weight 0.8 they become 0.80 and 0.24.
+    monkeypatch.setattr(
+        "mm_asset_rag.retrieval.qdrant_text_search",
+        lambda query, top_k=5, **_: [
+            _make_hit("a", "qdrant_text", 1.0),
+            _make_hit("b", "qdrant_text", 0.3),
+        ],
+    )
+    monkeypatch.setattr(
+        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
+        lambda query, top_k=5, **_: [],
+    )
+    settings = retrieval.get_settings()
+    monkeypatch.setattr(settings, "hybrid_weight_text", 0.8)
+    monkeypatch.setattr(settings, "hybrid_weight_text_to_image", 0.2)
+
+    # Floor at 0.30 keeps a (0.80) and b (0.24 is dropped, but b's
+    # raw 0.3 * 0.8 = 0.24 < 0.30, so it should be filtered).
+    monkeypatch.setattr(settings, "min_score", 0.30)
+    hits = retrieval.hybrid_search("anything")
+    assert {h.asset_id for h in hits} == {"a"}
+
+    # Floor at 0.0 keeps both.
+    monkeypatch.setattr(settings, "min_score", 0.0)
+    hits = retrieval.hybrid_search("anything")
+    assert {h.asset_id for h in hits} == {"a", "b"}
+
+    # Floor past both weights drops everything.
+    monkeypatch.setattr(settings, "min_score", 0.90)
+    hits = retrieval.hybrid_search("anything")
+    assert hits == []
+
+
 def test_hybrid_search_uses_qdrant_backend(monkeypatch, fixed_vector) -> None:
     text_hits = [_make_hit("a", "qdrant_text", 0.9)]
     text_to_image_hits = [_make_hit("b", "qdrant_text_to_image", 0.7)]
+
+    # This test exercises the *merge* path — explicitly disable the
+    # min_score floor so the test scores survive the production default
+    # of 0.30. (b's weighted score 0.7*0.2 = 0.14 would otherwise be
+    # filtered.)
+    settings = retrieval.get_settings()
+    monkeypatch.setattr(settings, "min_score", 0.0)
 
     monkeypatch.setattr(
         "mm_asset_rag.retrieval.qdrant_text_search",
@@ -96,9 +155,9 @@ def test_hybrid_search_uses_settings_weights(monkeypatch, fixed_vector) -> None:
     # wrapper doesn't recurse into itself.
     real_merge = retrieval.merge_hits
 
-    def _fake_merge(groups, weights, top_k):
+    def _fake_merge(groups, weights, top_k, **kwargs):
         captured["weights"] = list(weights)
-        return real_merge(groups, weights, top_k)
+        return real_merge(groups, weights, top_k, **kwargs)
 
     monkeypatch.setattr("mm_asset_rag.retrieval.merge_hits", _fake_merge)
 

@@ -65,6 +65,35 @@ def fake_embedder() -> ImageEmbedder:
     return emb
 
 
+def test_image_embedder_uses_settings_clip_model(monkeypatch) -> None:
+    """The default model comes from ``Settings.clip_model``.
+
+    Tests that swap to a Chinese CLIP via env var (``CLIP_MODEL=...``)
+    should propagate the new value to the embedder instance. We
+    don't actually load the model here — the test just exercises
+    the constructor's read path.
+    """
+    from mm_asset_rag.settings import get_settings
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "clip_model", "OFA-Sys/chinese-clip-vit-base-patch16")
+
+    captured: dict[str, str] = {}
+
+    class _StubModel:
+        def encode(self, content, **kwargs):
+            captured.setdefault("calls", []).append(content)
+            import numpy as np
+
+            return np.ones((1, 4), dtype=np.float32)
+
+    emb = ImageEmbedder.__new__(ImageEmbedder)
+    emb.model_name = settings.clip_model
+    emb._model = _StubModel()
+    emb._dim = 4
+    assert emb.model_name == "OFA-Sys/chinese-clip-vit-base-patch16"
+
+
 def test_embed_text_batch_collapses_to_one_call(fake_embedder: ImageEmbedder) -> None:
     texts = ["hello", "world", "!"]
     out = fake_embedder.embed_text_batch(texts)

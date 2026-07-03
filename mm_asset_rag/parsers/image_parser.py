@@ -175,6 +175,19 @@ def parse_image(asset: Asset, enable_ocr: bool, enable_vlm: bool) -> list[Parsed
             )
 
     ocr_text = "\n".join(str(block["text"]) for block in blocks if block.get("text"))
+    # Skip the text collection entirely when nothing semantic was extracted.
+    # Picsum / OpenCV sample images without OCR or VLM caption would otherwise
+    # contribute a placeholder chunk ("图片标题: Picsum 1015 E2D45320") that
+    # pollutes text→text recall — BM25 sees "Picsum 1015" as a frequent token
+    # and the placeholder crowds out meaningful arxiv-paper chunks.
+    has_signal = bool(
+        (asset.title and asset.title.strip())
+        or (asset.tags and any(t.strip() for t in asset.tags))
+        or (caption and caption.strip())
+        or ocr_text.strip()
+    )
+    if not has_signal:
+        return []
     text = (
         f"图片标题：{asset.title}\n"
         f"图片标签：{', '.join(asset.tags)}\n"

@@ -44,11 +44,23 @@ def _merge_routes(existing: list[str] | None, new_route: str) -> list[str]:
     return sorted(set(routes))
 
 
-def merge_hits(groups: list[list[SearchHit]], weights: list[float], top_k: int) -> list[SearchHit]:
+def merge_hits(
+    groups: list[list[SearchHit]],
+    weights: list[float],
+    top_k: int,
+    min_score: float = 0.0,
+) -> list[SearchHit]:
     """Combine per-route hits by ``asset_id`` using weighted scores.
 
     Pure function: returns a new list of ``SearchHit`` instances; the
     input groups are not mutated.
+
+    When ``min_score`` is positive, hits whose final weighted score is
+    below the floor are dropped after merging (and before the
+    ``top_k`` slice). This gives the merged ranking a confidence
+    floor — off-topic queries that nevertheless manage to scrape a few
+    low-score hits from each route return an empty list rather than a
+    noise top-5. ``min_score=0.0`` keeps every result (the default).
     """
     merged: dict[str, SearchHit] = {}
     for group, weight in zip(groups, weights):
@@ -87,14 +99,25 @@ def merge_hits(groups: list[list[SearchHit]], weights: list[float], top_k: int) 
                         "routes": _merge_routes(current.metadata.get("routes"), hit.route),
                     },
                 )
-    return sorted(merged.values(), key=lambda hit: hit.score, reverse=True)[:top_k]
+    sorted_hits = sorted(merged.values(), key=lambda hit: hit.score, reverse=True)
+    if min_score > 0.0:
+        sorted_hits = [hit for hit in sorted_hits if hit.score >= min_score]
+    return sorted_hits[:top_k]
 
 
 def hybrid_search(
     query: str,
     image_path: Path | None = None,
     top_k: int = 5,
+    min_score: float | None = None,
 ) -> list[SearchHit]:
+    """Run a hybrid search across text + (optionally) image routes.
+
+    ``min_score`` defaults to ``Settings.min_score`` (env-driven) and is
+    forwarded to :func:`merge_hits` to drop low-confidence results
+    after fusion. Pass an explicit value to override per call; pass
+    ``0.0`` to disable the floor for that call.
+    """
     settings = get_settings()
     groups: list[list[SearchHit]] = [
         qdrant_text_search(query, top_k=top_k),
@@ -107,4 +130,5 @@ def hybrid_search(
     if image_path and settings.hybrid_weight_image_to_image > 0:
         groups.append(qdrant_image_to_image_search(image_path, top_k=top_k))
         weights.append(settings.hybrid_weight_image_to_image)
-    return merge_hits(groups, weights, top_k=top_k)
+    effective_min = settings.min_score if min_score is None else min_score
+    return merge_hits(groups, weights, top_k=top_k, min_score=effective_min)

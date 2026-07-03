@@ -729,6 +729,7 @@ def _hybrid_text_query(
     sparse_vector_en: models.SparseVector,
     sparse_vector_zh: models.SparseVector | None,
     top_k: int,
+    text_filter: models.Filter | None = None,
 ) -> list:
     """Issue a single hybrid query (dense + BM25(en) + BM25(zh) prefetched, fused via RRF).
 
@@ -737,6 +738,10 @@ def _hybrid_text_query(
     passed a non-empty sparse vector), the Chinese channel is included
     as a third prefetch. The final ``limit`` is the top-k returned to the
     caller.
+
+    When ``text_filter`` is provided it is applied as the post-fusion
+    filter — used to keep image-source placeholders out of text→text
+    recall without dropping them from the collection.
     """
     settings = get_settings()
     prefetches = [
@@ -744,11 +749,13 @@ def _hybrid_text_query(
             query=dense_vector,
             using=DENSE_VECTOR_NAME,
             limit=HYBRID_PREFETCH_LIMIT,
+            filter=text_filter,
         ),
         models.Prefetch(
             query=sparse_vector_en,
             using=SPARSE_VECTOR_NAME,
             limit=HYBRID_PREFETCH_LIMIT,
+            filter=text_filter,
         ),
     ]
     if (
@@ -761,6 +768,7 @@ def _hybrid_text_query(
                 query=sparse_vector_zh,
                 using=settings.bm25_zh_vector_name,
                 limit=HYBRID_PREFETCH_LIMIT,
+                filter=text_filter,
             )
         )
     return client.query_points(
@@ -772,12 +780,32 @@ def _hybrid_text_query(
     ).points
 
 
-def qdrant_text_search(query: str, top_k: int = 5) -> list[SearchHit]:
+def qdrant_text_search(
+    query: str,
+    top_k: int = 5,
+    *,
+    include_image_sources: bool = False,
+) -> list[SearchHit]:
+    """Hybrid text→text search.
+
+    By default, image-source documents are excluded from the result set
+    because they usually carry only a placeholder text chunk
+    ("图片标题: Picsum 1015") that pollutes text→text recall. Pass
+    ``include_image_sources=True`` to include them (e.g. for image-text
+    hybrid answers). The filter is applied as a Qdrant post-fusion
+    filter so it does not affect RRF rank computation.
+    """
     embedder = get_default_text_embedder()
     client = get_qdrant_client()
     dense_query = embedder.embed(query)
     sparse_query = _embed_bm25([query])[0]
     sparse_query_zh = _embed_bm25_zh_query(query)
+
+    text_filter: models.Filter | None = None
+    if not include_image_sources:
+        text_filter = models.Filter(
+            must=[models.FieldCondition(key="source_type", match=models.MatchValue(value="pdf"))]
+        )
 
     # Determine the active collection name (Qdrant active-text env var wins).
     results = _hybrid_text_query(
@@ -787,6 +815,7 @@ def qdrant_text_search(query: str, top_k: int = 5) -> list[SearchHit]:
         sparse_query,
         sparse_query_zh,
         top_k,
+        text_filter=text_filter,
     )
     return [_point_to_hit("qdrant_text", point) for point in results]
 

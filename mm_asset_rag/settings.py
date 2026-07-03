@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     embedding_max_input_chars: int = 8192
 
     # ─── Image embedding (CLIP, optional) ────────────────────────────────
+    # Default is ``clip-ViT-B-32`` (English-only). For Chinese corpora,
+    # consider ``OFA-Sys/chinese-clip-vit-base-patch16`` (≈ 768d,
+    # Chinese + English) or ``sentence-transformers/clip-ViT-B-32-multilingual-v1``.
+    # ``OFA-Sys/chinese-clip-vit-huge-patch14`` is the strongest
+    # Chinese CLIP we are aware of (~1024d) at the cost of a much larger
+    # download. Reindex after changing this — the active collection
+    # name is dim-suffixed.
     clip_model: str = "clip-ViT-B-32"
 
     # ─── Qdrant ──────────────────────────────────────────────────────────
@@ -117,6 +124,15 @@ class Settings(BaseSettings):
     # Set to ``[]`` to disable the pre-filter entirely.
     image_prefilter_fields: list[str] = ["tags", "asset_id", "asset_title"]
     image_prefilter_min_token_len: int = 3
+    # Confidence floor for the merged hybrid result. After ``merge_hits``
+    # weights and normalises per-route scores, any result whose weighted
+    # score falls below ``min_score`` is dropped. ``0.0`` keeps every
+    # result. The default ``0.30`` was tuned on the bundled corpus
+    # (v3 eval): positive recall is preserved while 6/8 negative
+    # queries return an empty list. ``0.20`` is the recommended lower
+    # bound for sparse corpora; raise to ``0.40-0.60`` for very
+    # noisy open-domain RAG.
+    min_score: float = 0.30
 
     # ─── Chinese BM25 ─────────────────────────────────────────────────────
     # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``
