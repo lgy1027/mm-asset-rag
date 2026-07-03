@@ -48,6 +48,32 @@ from .sniff import SniffedAsset, sniff
 
 log = logging.getLogger(__name__)
 
+
+# Module-level switch for the CLI's ``--no-auto-meta`` flag. The upload
+# pipeline reads this in :meth:`UploadPipeline._fill_auto_meta` and
+# short-circuits the VLM call when set, which is the only way to
+# reliably skip the (potentially slow / hanging) auto-meta step on
+# hundreds of files without re-plumbing ``Settings``.
+_auto_meta_disabled: bool = False
+
+
+def disable_auto_meta() -> None:
+    """Globally skip the VLM auto-meta call for the rest of the process.
+
+    Idempotent; safe to call from CLI parsing before instantiating the
+    pipeline. Pair with :func:`enable_auto_meta` in tests if you need to
+    toggle it back.
+    """
+    global _auto_meta_disabled
+    _auto_meta_disabled = True
+
+
+def enable_auto_meta() -> None:
+    """Re-enable the VLM auto-meta call after :func:`disable_auto_meta`."""
+    global _auto_meta_disabled
+    _auto_meta_disabled = False
+
+
 _CACHE_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 _DANGEROUS_FILENAME_CHARS = re.compile(r"[<>:\"|?*\x00-\x1f]+")
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
@@ -346,6 +372,8 @@ class UploadPipeline:
 
     def _fill_auto_meta(self, previews: list[AssetPreview]) -> None:
         """Call auto-meta helpers with bounded concurrency."""
+        if _auto_meta_disabled:
+            return
         candidates = [
             preview
             for preview in previews

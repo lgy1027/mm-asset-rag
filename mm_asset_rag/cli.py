@@ -53,6 +53,10 @@ def command_parse(args: argparse.Namespace) -> None:
         raise SystemExit(f"missing file(s): {', '.join(missing)}")
 
     pipeline = get_pipeline()
+    if args.no_auto_meta:
+        from .upload_pipeline import disable_auto_meta
+
+        disable_auto_meta()
     previews = pipeline.preview([(p.name, p) for p in file_paths])
     if not previews:
         raise SystemExit("no files to parse")
@@ -200,6 +204,15 @@ def build_parser() -> argparse.ArgumentParser:
     parse_cmd.add_argument("--ocr", action="store_true", help="Run local OCR HTTP for images")
     parse_cmd.add_argument(
         "--vlm", action="store_true", help="Run OpenAI-compatible VLM captions for images"
+    )
+    parse_cmd.add_argument(
+        "--no-auto-meta",
+        action="store_true",
+        help=(
+            "Skip the VLM-based title / tags / description extraction in the "
+            "preview phase. Useful on slow VLM endpoints or when ingesting a "
+            "large batch where the per-file round-trip becomes the bottleneck."
+        ),
     )
     parse_cmd.set_defaults(func=command_parse)
 

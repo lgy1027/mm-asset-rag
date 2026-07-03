@@ -214,6 +214,57 @@ LEGACY_QUERIES: list[dict] = [
 
 EVAL_CASES: list[dict] = EN_PAPER_QUERIES + ZH_PAPER_QUERIES
 
+# ── Text-to-image (CLIP) queries on the Caltech-101 image set ──────────
+# Each case is a free-text category name; the prefix-tolerant matcher
+# picks up any image whose asset_id starts with ``Caltech <Category>``.
+TEXT_TO_IMAGE_QUERIES: list[dict] = [
+    {"query": "airplane", "expected_asset_ids": ["Caltech Airplanes"]},
+    {"query": "motorbike", "expected_asset_ids": ["Caltech Motorbikes"]},
+    {"query": "pizza", "expected_asset_ids": ["Caltech Pizza"]},
+    {"query": "panda", "expected_asset_ids": ["Caltech Panda"]},
+    {"query": "dolphin", "expected_asset_ids": ["Caltech Dolphin"]},
+    {"query": "sunflower", "expected_asset_ids": ["Caltech Sunflower"]},
+    {"query": "helicopter", "expected_asset_ids": ["Caltech Helicopter"]},
+    {"query": "laptop computer", "expected_asset_ids": ["Caltech Laptop"]},
+    {"query": "wristwatch", "expected_asset_ids": ["Caltech Watch"]},
+    {"query": "saxophone", "expected_asset_ids": ["Caltech Saxophone"]},
+    # Chinese queries on the same corpus (cross-language CLIP).
+    {"query": "飞机", "expected_asset_ids": ["Caltech Airplanes"]},
+    {"query": "熊猫", "expected_asset_ids": ["Caltech Panda"]},
+    {"query": "披萨", "expected_asset_ids": ["Caltech Pizza"]},
+]
+
+# ── Image-to-image (CLIP) queries ──────────────────────────────────────
+# ``image_path`` is the on-disk file used as the query vector. The
+# expected ids use the ``Caltech <Category>`` prefix so the prefix-
+# tolerant matcher picks up any of the 3 samples per category.
+IMAGE_TO_IMAGE_QUERIES: list[dict] = [
+    {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Airplanes 01_9fe67b3f.jpg",
+        "expected_asset_ids": ["Caltech Airplanes"],
+    },
+    {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Motorbikes 01_00a780a9.jpg",
+        "expected_asset_ids": ["Caltech Motorbikes"],
+    },
+    {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Pizza 01_ffa99a8f.jpg",
+        "expected_asset_ids": ["Caltech Pizza"],
+    },
+    {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Panda 01_3443a5d5.jpg",
+        "expected_asset_ids": ["Caltech Panda"],
+    },
+    {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Dolphin 01_bbd397c6.jpg",
+        "expected_asset_ids": ["Caltech Dolphin"],
+    },
+    {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Laptop 01_1b73ff27.jpg",
+        "expected_asset_ids": ["Caltech Laptop"],
+    },
+]
+
 
 @dataclass
 class EvalResult:
@@ -270,6 +321,130 @@ def run_eval(top_k: int = 5) -> list[EvalResult]:
                     group=group,
                 )
             )
+    return results
+
+
+def _expand_bare_expected_to_full(bare_ids: list[str], full_ids: set[str]) -> list[str]:
+    """Expand a list of bare expected ids (e.g. ``"Caltech Airplanes"``)
+    to all full hashed asset_ids that start with the bare prefix.
+
+    Used by the image-route evals so that the strict set match inside
+    :func:`aggregate_metrics` accepts any of the 3 Caltech-101 samples
+    as a valid hit instead of only the exact ``Caltech Airplanes 01_*``
+    one would happen to test against.
+    """
+    expanded: list[str] = []
+    for bare in bare_ids:
+        matches = sorted(f for f in full_ids if f.startswith(bare))
+        if matches:
+            expanded.extend(matches)
+        else:
+            # Bare id isn't a prefix of any full id (e.g. user gave
+            # the full id verbatim). Keep as-is so the strict match
+            # still works for full-id cases.
+            expanded.append(bare)
+    return expanded
+
+
+def _all_active_full_asset_ids() -> set[str]:
+    """Return the set of full asset_ids (not the bare → full map) for
+    the currently-active (non-deleted) rows in ``asset_index.jsonl``."""
+    latest: dict[str, dict] = {}
+    index_path = get_asset_index_path()
+    if index_path.exists():
+        with index_path.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("deleted"):
+                    continue
+                latest[row["sha256"]] = row
+    return {row["asset_id"] for row in latest.values()}
+
+
+def run_text_to_image_eval(top_k: int = 5) -> list[EvalResult]:
+    """Run the text-to-image regression set against the CLIP-backed image index.
+
+    Each case is a free-text query; ``qdrant_text_to_image_search``
+    embeds the text with the same CLIP model used for image indexing
+    and returns the top-k nearest images. The image collection must
+    exist (run ``mmrag reindex --image-only`` after ingesting images).
+    """
+    from .backends.qdrant_backend import qdrant_text_to_image_search
+
+    full_ids = _all_active_full_asset_ids()
+    results: list[EvalResult] = []
+    for case in TEXT_TO_IMAGE_QUERIES:
+        hits = qdrant_text_to_image_search(str(case["query"]), top_k=top_k)
+        actual = [hit.asset_id for hit in hits]
+        expected = _expand_bare_expected_to_full(
+            [str(item) for item in case["expected_asset_ids"]], full_ids
+        )
+        rank = _match(actual, expected)
+        results.append(
+            EvalResult(
+                query=str(case["query"]),
+                expected_asset_ids=expected,
+                actual_asset_ids=actual,
+                hit=rank is not None,
+                rank=rank,
+                group="text_to_image",
+            )
+        )
+    return results
+
+
+def run_image_to_image_eval(cases: list[dict] | None = None, top_k: int = 5) -> list[EvalResult]:
+    """Run the image-to-image regression set using a real image as query.
+
+    Each case carries ``image_path`` (the on-disk file used to embed the
+    query vector) and ``expected_asset_ids`` (the asset_id prefix or full
+    id of the asset that *should* be in the top-k). The default set
+    covers the 6 most-confident Caltech-101 categories that came up
+    clean in the text-to-image sweep.
+    """
+    from .backends.qdrant_backend import qdrant_image_to_image_search
+
+    if cases is None:
+        cases = IMAGE_TO_IMAGE_QUERIES
+    full_ids = _all_active_full_asset_ids()
+    results: list[EvalResult] = []
+    for case in cases:
+        from pathlib import Path
+
+        image_path = Path(case["image_path"])
+        if not image_path.exists():
+            results.append(
+                EvalResult(
+                    query=str(image_path),
+                    expected_asset_ids=list(case["expected_asset_ids"]),
+                    actual_asset_ids=[],
+                    hit=False,
+                    rank=None,
+                    group="image_to_image",
+                )
+            )
+            continue
+        hits = qdrant_image_to_image_search(image_path, top_k=top_k)
+        actual = [hit.asset_id for hit in hits]
+        expected = _expand_bare_expected_to_full(
+            [str(item) for item in case["expected_asset_ids"]], full_ids
+        )
+        rank = _match(actual, expected)
+        results.append(
+            EvalResult(
+                query=str(image_path.name),
+                expected_asset_ids=expected,
+                actual_asset_ids=actual,
+                hit=rank is not None,
+                rank=rank,
+                group="image_to_image",
+            )
+        )
     return results
 
 
