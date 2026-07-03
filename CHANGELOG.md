@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/unit/test_assets.py` — covered by the service-layer test suite after the upload-first refactor.
 
 ### Fixed
+- **0.4.0 P2 修 OPENAI_BASE_URL** — `.env.example` 改 `https://api.minimaxi.com/v1` + `OPENAI_MODEL=MiniMax-M3`(用户已确认这是 MiniMax 平台的正确 endpoint,**不是**之前的 `api.minimaxi.com/anthropic`)。同时给 ollama bge-m3 OpenAI 兼容端点加了 4 个 test(`tests/unit/test_bge_m3_ollama_provider.py`)验证 `TextEmbedder` POST `/v1/embeddings` 的 request shape / auth header / 1024d dim。`TextEmbedder` 自身在 0.2.0 P1 已支持 OpenAI 兼容,这次主要是文档 + 测试覆盖。`docs/eval-report-v5.md` 给完整 reindex 流程 + 预期 hit_rate 提升。
 - **v4 0.2.0: 5 阶段全量优化 (代码 ready,reindex 需手动)**:
   - **P1 multilingual embedding** — new `Settings.embedding_backend: sentence_transformers` + `SentenceTransformerTextEmbedder` 支持 `BAAI/bge-m3` / `intfloat/multilingual-e5-large` 等本地 HF model。`build_default_text_embedder()` 工厂按 Settings 选 backend,默认仍是 OpenAI 兼容。
   - **P2 query preprocessing** — 新 `mm_asset_rag.query_preprocess` 模块:lowercase / fuzzy typo corrector(difflib, vocab 从 `documents.jsonl` 构建)/ 同义词 expansion (JSON file 驱动)。`qdrant_text_search` 走预处理器,BM25 channel 用预处理版,dense 保留原版(多语言 embedding 大小写敏感)。
