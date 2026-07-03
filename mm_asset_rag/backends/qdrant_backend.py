@@ -1014,12 +1014,20 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
             return []
     client = get_qdrant_client()
     query_vector = provider.embed_text(query)
-    results = client.query_points(
-        collection_name=image_collection(len(query_vector)),
-        query=query_vector,
-        limit=top_k,
-        with_payload=True,
-    ).points
+    # The image collection may not exist yet (e.g. user only ingested
+    # PDFs). Treat "no image index" as a clean empty result instead of
+    # crashing the hybrid_search call.
+    try:
+        results = client.query_points(
+            collection_name=image_collection(len(query_vector)),
+            query=query_vector,
+            limit=top_k,
+            with_payload=True,
+        ).points
+    except ValueError as exc:
+        if "not found" not in str(exc):
+            raise
+        return []
     threshold = get_settings().image_relevance_threshold
     results = _filter_by_relevance(results, threshold)
     return [_point_to_hit("qdrant_text_to_image", point) for point in results]

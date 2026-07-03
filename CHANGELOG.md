@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Eval expansion**: `mm_asset_rag/evaluation.py` now ships 32 English arxiv-paper queries + 6 Chinese cross-language queries (the original 3-case regression kept as a subset). `run_eval` resolves bare expected ids (`"Alexnet"`) to the actual hashed asset_ids via `asset_index.jsonl` so `aggregate_metrics` can score them with hit_rate / precision / recall / f1 / ndcg at k=1,3,5,10 + MRR + MAP. Per-query results + per-group aggregate metrics are persisted to `$MM_ASSET_RAG_HOME/eval_report.json`. Measured on the 32-paper chapter11 corpus: EN hit_rate@5=0.750, ZH=0.667, MRR=0.734 / 0.583.
 - Bundled single-page web UI (`mm_asset_rag/web/index.html`) for upload, task status, and streaming chat. Served by FastAPI at `/`.
 - NDJSON streaming `/chat/stream` endpoint (sources → token* → done). Strips `<think>...</think>` blocks across chunk boundaries for reasoning models.
 - `/upload` endpoint: multipart batch upload + same-hash deduplication + background parse / index thread; per-request form fields override `.env` defaults (`PDF_PARSER`, `ENABLE_OCR`, `ENABLE_VLM`, `IMAGE_PROVIDER`, `AUTO_INDEX`).
@@ -45,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Qdrant `.lock` left over from a SIGKILL'd previous session blocking startup (handled by `_clean_stale_lock` + lifespan).
 - `rejected({...})` was being called as a function in `/upload`'s empty-filename branch, crashing every upload that touched a blank filename.
 - `_run_parse_task` was hard-coding `enable_ocr=False, enable_vlm=False` regardless of form / env; now reads from `ParseOptions`.
+- **`pdf/auto` parser registry**: `parsers/__init__.py` now registers an `_AutoPdfParser` (dispatches to `parse_pdf(..., parser="auto")`) so `ParseOptions.pdf_parser="auto"` and `mmrag parse` with the default no longer fail with `KeyError: parser ('pdf', 'auto') not registered`.
+- **Daemon thread killed by early `done` status**: `_run_parse_task` flipped the task record to `status="done"` + `finished_at=...` as soon as parsing completed, so the CLI's `_wait_for_task` saw a terminal state and exited the process. The Qdrant index step runs in a daemon thread inside that process, so `upsert_text` never got to run. `_run_ingest_task` now resets `status="running"` + `finished_at=None` after parse completes and lets the index step restore the terminal state, so the daemon survives until the index is built. Previously: no Qdrant collections, zero points. After fix: 32 PDFs → 1378 chunks → `multimodal_text_2560d` populated.
+- **text-to-image search crashes when no image collection exists**: `qdrant_text_to_image_search` now catches the `ValueError: Collection ... not found` from `qdrant_client.query_points` and returns `[]` instead of propagating. Lets the user run text search on a PDF-only corpus without a separate `text_only` flag.
 
 ## [0.1.0] - 2026-06-21
 

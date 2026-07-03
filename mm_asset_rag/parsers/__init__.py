@@ -47,6 +47,25 @@ class _PaddleOcrVlParser:
         return parse_pdf(asset, parser="paddleocr_vl")
 
 
+class _AutoPdfParser:
+    """Dispatch to ``paddleocr_vl`` when its API is configured, else ``pymupdf``.
+
+    Registered as ``pdf/auto`` so the registry path mirrors the
+    ``parse_pdf(..., parser="auto")`` branch in
+    :mod:`mm_asset_rag.parsers.pdf_parser`. Without this, callers
+    that pass ``pdf_parser="auto"`` (the default in ``ParseOptions``
+    and ``Settings``) hit ``KeyError: parser ('pdf', 'auto') not
+    registered`` before any dispatch logic can run.
+    """
+
+    name = "auto"
+    source_type = "pdf"
+
+    def parse(self, asset, **options):
+        _ = options
+        return parse_pdf(asset, parser="auto")
+
+
 class _ImageParser:
     name = "image"
     source_type = "image"
@@ -63,4 +82,5 @@ class _ImageParser:
 # registry contract as PDFs, so future modalities don't need special cases.
 register_parser(_PyMuPdfParser())
 register_parser(_PaddleOcrVlParser())
+register_parser(_AutoPdfParser())
 register_parser(_ImageParser())

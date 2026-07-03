@@ -1200,6 +1200,21 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
         return
     parse_status = rec.status
 
+    # Keep the task ``running`` while we build the Qdrant index.
+    # ``_run_parse_task`` already set ``status="done"`` and
+    # ``finished_at`` once the parse stage completed, which causes the
+    # CLI's ``_wait_for_task`` (and any other terminal-state poller)
+    # to exit the process — and the daemon thread that drives the
+    # index step is killed before ``upsert_text`` ever runs. Re-flag
+    # the task as in-progress and let the final ``_patch`` at the end
+    # of the try block restore the terminal status.
+    service._patch(
+        rec,
+        status="running",
+        finished_at=None,
+        current="parse done, building index",
+    )
+
     # Snapshot which assets the parse step successfully produced. Only
     # these are candidates for the per-asset index status updates below.
     indexed_targets = {
