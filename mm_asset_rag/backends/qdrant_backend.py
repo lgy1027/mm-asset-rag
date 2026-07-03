@@ -1,11 +1,20 @@
 """Qdrant-backed vector store for both text and image embeddings.
 
-Text collection carries two vector kinds for the same payload:
+Text collection carries three vector kinds for the same payload:
 
-* **dense** — ``qwen3-embedding:4b`` (2560d), used for semantic search.
+* **dense** — text embedder (configurable; ``qwen3-embedding:4b`` 2560d
+  by default, ``BAAI/bge-m3`` 1024d via ollama OpenAI-compatible
+  endpoint, or any OpenAI-compatible ``/v1/embeddings`` backend).
+  Used for semantic search.
 * **bm25** — sparse BM25 vectors from ``fastembed`` / ``Qdrant/bm25``,
-  used for exact-token retrieval. Stored alongside dense so a single
-  ``query_points`` call can RRF-fuse both ranks.
+  used for exact-token English retrieval.
+* **bm25_zh** — sparse BM25 vectors from ``mm_asset_rag.bm25_zh`` (jieba
+  + Okapi BM25), used for Chinese token-level recall.
+
+All three are RRF-fused in a single ``query_points`` call. The active
+collection name is dim-suffixed (``multimodal_text_1024d`` /
+``multimodal_text_2560d``) so the schema mismatch check fires
+correctly when the embedder changes.
 
 This module talks directly to ``qdrant-client``. We intentionally avoid
 the ``llama-index-vector-stores-qdrant`` integration because:
