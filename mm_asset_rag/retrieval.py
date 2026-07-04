@@ -34,6 +34,7 @@ def normalize_scores(hits: list[SearchHit]) -> list[SearchHit]:
             source_path=hit.source_path,
             evidence=hit.evidence,
             metadata=dict(hit.metadata),
+            images=hit.images,
         )
         for hit in hits
     ]
@@ -43,6 +44,28 @@ def _merge_routes(existing: list[str] | None, new_route: str) -> list[str]:
     routes = list(existing or [])
     routes.append(new_route)
     return sorted(set(routes))
+
+
+def _merge_images(existing: list, new: list) -> list:
+    """Union of two image-ref lists, de-duplicated by ``path``.
+
+    When several chunks of the same asset surface as separate route hits,
+    ``merge_hits`` collapses them into one ``SearchHit`` per asset — the
+    user-facing hit should carry *all* figures those chunks referenced,
+    not just the first chunk's. Order is preserved (existing first), which
+    keeps the highest-scoring chunk's figures on top.
+    """
+    seen: set[str] = set()
+    out: list = []
+    for img in [*existing, *new]:
+        if not isinstance(img, dict):
+            continue
+        path = img.get("path")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        out.append(img)
+    return out
 
 
 def merge_hits(
@@ -80,6 +103,7 @@ def merge_hits(
                     source_path=hit.source_path,
                     evidence=hit.evidence,
                     metadata={**hit.metadata, "routes": [hit.route]},
+                    images=list(hit.images),
                 )
             else:
                 current = merged[key]
@@ -99,6 +123,7 @@ def merge_hits(
                         **current.metadata,
                         "routes": _merge_routes(current.metadata.get("routes"), hit.route),
                     },
+                    images=_merge_images(current.images, hit.images),
                 )
     sorted_hits = sorted(merged.values(), key=lambda hit: hit.score, reverse=True)
     if min_score > 0.0:
