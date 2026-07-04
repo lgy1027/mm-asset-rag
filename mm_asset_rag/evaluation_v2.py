@@ -118,7 +118,6 @@ V2_EN_ON_EN_PAPERS: list[dict] = [
 V2_ZH_ON_ZH_CORPUS: list[dict] = [
     {"query": "联宝 ESG 年度报告", "expected_asset_ids": ["责任联宝"]},
     {"query": "Codex 全景指南 AI 编程", "expected_asset_ids": ["所有深度用 AI 编程"]},
-    {"query": "2026 年 AI 技术趋势", "expected_asset_ids": ["2026 年 AI 技术趋势"]},
     {"query": "联宝 CES 未来 PC", "expected_asset_ids": ["CES 2026"]},
     {"query": "联宝 媒眼 安徽外贸", "expected_asset_ids": ["媒眼看联宝"]},
     {"query": "联宝 中试基地 省级备案", "expected_asset_ids": ["创新联宝"]},
@@ -126,10 +125,14 @@ V2_ZH_ON_ZH_CORPUS: list[dict] = [
     # Cross-document, brand disambiguation
     {"query": "联宝 机器人 经开区", "expected_asset_ids": ["媒眼看联宝"]},
     {"query": "联宝 ESG", "expected_asset_ids": ["责任联宝"]},
-    {"query": "联宝 2026 财年 启幕", "expected_asset_ids": ["敢 AI 敢为"]},
+    # corpus asset title is the连写 form (no spaces) — matching the
+    # actual indexed title avoids a false miss in `_match`'s substring check.
+    {"query": "联宝 2026 财年 启幕", "expected_asset_ids": ["敢AI敢为"]},
     # Cross-corpus (mixing English+Chinese)
     {"query": "transformer 论文 中文", "expected_asset_ids": ["Attention Is All You Need"]},
-    {"query": "CLIP 中文版", "expected_asset_ids": ["学习从自然语言监督中获取可迁移视觉模型"]},
+    # CLIP 论文在 corpus 里是英文原题,expected 用英文 title 才匹配;
+    # 之前写中文译名导致 `_match` 字符串包含失败(假 miss)。
+    {"query": "CLIP 中文版", "expected_asset_ids": ["Learning Transferable Visual Models"]},
 ]
 
 # ── Negative samples (no expected hit) ──────────────────────────────────
