@@ -40,6 +40,7 @@ from .paths import (
     get_assets_dir,
     get_documents_jsonl,
     get_indexes_dir,
+    get_parsed_dir,
     get_preview_cache_dir,
     get_text_index_dir,
 )
@@ -529,6 +530,41 @@ def get_asset(asset_id: str) -> dict[str, object]:
     if detail is None:
         raise HTTPException(status_code=404, detail=f"unknown asset id: {asset_id}")
     return detail
+
+
+# Suffixes allowed for served parsed images. Kept tight so a crafted
+# ``filename`` cannot exfiltrate arbitrary files (e.g. ``../../tasks.jsonl``).
+_PARSED_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+
+
+@app.get("/parsed-image/{asset_id}/{filename}")
+def get_parsed_image(asset_id: str, filename: str) -> FileResponse:
+    """Serve an image extracted from a parsed PDF (``parsed/<id>/images/``).
+
+    Used by the web UI ``<img src>`` to render figure thumbnails attached
+    to text hits (tier-1 multimodal: the figure path rides in the hit
+    payload). ``asset_id`` and ``filename`` are validated to prevent path
+    traversal — ``filename`` must be a bare base name with an image suffix,
+    and the resolved path must stay inside the asset's ``images/`` dir.
+    """
+    # Reject anything that tries to escape via slashes / dots.
+    if "/" in filename or "\\" in filename or filename in ("", ".", ".."):
+        raise HTTPException(status_code=404, detail="not found")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in _PARSED_IMAGE_SUFFIXES:
+        raise HTTPException(status_code=404, detail="not found")
+    # Sanitize asset_id too (defence in depth — reject path separators).
+    if "/" in asset_id or "\\" in asset_id or asset_id in ("", ".", ".."):
+        raise HTTPException(status_code=404, detail="not found")
+    candidate = get_parsed_dir() / asset_id / "images" / filename
+    # Final containment check after resolution.
+    try:
+        candidate.resolve().relative_to((get_parsed_dir() / asset_id / "images").resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="not found") from None
+    if not candidate.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(candidate, media_type=f"image/{suffix.lstrip('.')}")
 
 
 @app.get("/", include_in_schema=False)

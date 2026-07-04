@@ -42,33 +42,64 @@ def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
     like ``联宝 ESG`` against long PDF bodies.
     """
     from .chunk_splitter import split_by_heading
+    from .pdf_images import (
+        LineItem,
+        associate_images,
+        detect_figure_captions,
+        extract_page_images,
+    )
 
+    settings = get_settings()
+    extract_images = settings.pdf_extract_images
     output_dir = get_parsed_dir() / asset.asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = output_dir / "images"
     docs: list[ParsedDocument] = []
 
     with fitz.open(asset.file_path) as pdf:
         for page_index, page in enumerate(pdf):
             page_dict = page.get_text("dict")
-            # Build a parallel list of per-line font sizes for the
-            # heading heuristic. Each ``block`` -> ``line`` -> ``span``
-            # carries a size; we collapse to one size per line by
-            # averaging spans.
+            # Build three parallel lists from one dict walk:
+            #   font_sizes[i] — avg span size of line i (heading heuristic)
+            #   line_bboxes[i] — bbox of line i (chunk bbox → figure fallback)
+            #   line_items[i] — LineItem for caption detection
+            # All indexed by dict-line order, matching the parallel-list
+            # contract ``split_by_heading`` already relies on for font_sizes.
             font_sizes: list[float] = []
+            line_bboxes: list = []
+            line_items: list[LineItem] = []
             for block in page_dict.get("blocks", []):
                 for line in block.get("lines", []):
                     spans = line.get("spans", [])
+                    line_bbox = line.get("bbox")
+                    bbox_tuple = tuple(line_bbox) if line_bbox else None
                     if not spans:
                         font_sizes.append(0.0)
+                        line_bboxes.append(bbox_tuple)
+                        line_items.append(LineItem(text="", bbox=bbox_tuple))
                         continue
                     avg = sum(s.get("size", 0.0) for s in spans) / len(spans)
                     font_sizes.append(avg)
+                    line_bboxes.append(bbox_tuple)
+                    line_text = "".join(s.get("text", "") for s in spans)
+                    line_items.append(LineItem(text=line_text, bbox=bbox_tuple, size=avg))
             text = page.get_text("text").strip()
             if not text:
                 continue
             markdown_path = output_dir / f"page_{page_index}.md"
             markdown_path.write_text(text, encoding="utf-8")
-            sections = split_by_heading(text, font_sizes=font_sizes)
+
+            # Extract embedded images + resolve figure captions for this page.
+            page_images = []
+            page_figures: dict = {}
+            if extract_images:
+                page_images = extract_page_images(
+                    page, pdf, page_index, images_dir, min_dim=settings.pdf_image_min_dim
+                )
+                if page_images:
+                    page_figures = detect_figure_captions(line_items, page_images)
+
+            sections = split_by_heading(text, font_sizes=font_sizes, line_bboxes=line_bboxes)
             for chunk_index, section in enumerate(sections):
                 # Skip sections with no body — empty chunks (e.g. a
                 # bare "1" heading with no following text) would
@@ -77,22 +108,30 @@ def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
                 if not section.body.strip():
                     continue
                 enriched_text = _maybe_enrich_with_keywords(section.body)
+                chunk_images: list = []
+                if extract_images and page_images:
+                    chunk_images = associate_images(
+                        section.body, section.bbox, page_images, page_figures
+                    )
+                meta = {
+                    "asset_id": asset.asset_id,
+                    "asset_title": asset.title,
+                    "source_type": asset.source_type,
+                    "source_path": asset.relative_path,
+                    "source_url": asset.source_url,
+                    "page": page_index,
+                    "chunk_index": chunk_index,
+                    "section": section.heading,
+                    "parser": "pymupdf",
+                    "markdown_path": str(markdown_path),
+                    "tags": asset.tags,
+                }
+                if chunk_images:
+                    meta["images"] = chunk_images
                 docs.append(
                     ParsedDocument(
                         text=enriched_text,
-                        metadata={
-                            "asset_id": asset.asset_id,
-                            "asset_title": asset.title,
-                            "source_type": asset.source_type,
-                            "source_path": asset.relative_path,
-                            "source_url": asset.source_url,
-                            "page": page_index,
-                            "chunk_index": chunk_index,
-                            "section": section.heading,
-                            "parser": "pymupdf",
-                            "markdown_path": str(markdown_path),
-                            "tags": asset.tags,
-                        },
+                        metadata=meta,
                     )
                 )
     return docs
@@ -323,23 +362,37 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
             markdown_path = output_dir / f"page_{page_num}.md"
             markdown_path.write_text(markdown_text, encoding="utf-8")
             enriched_text = _maybe_enrich_with_keywords(markdown_text)
-            docs.append(
-                ParsedDocument(
-                    text=enriched_text,
-                    metadata={
-                        "asset_id": asset.asset_id,
-                        "asset_title": asset.title,
-                        "source_type": asset.source_type,
-                        "source_path": asset.relative_path,
-                        "source_url": asset.source_url,
-                        "page": page_num,
-                        "parser": "paddleocr-vl-api",
-                        "markdown_path": str(markdown_path),
-                        "images_dir": str(images_dir) if images_dir.exists() else "",
-                        "tags": asset.tags,
-                    },
+            # PaddleOCR-VL emits one chunk per page; markdown preserves
+            # reading order, so every ``![](images/x.png)`` ref in this
+            # page's markdown belongs to this chunk. Figure numbers, when
+            # the body names them, are matched positionally (Nth ref →
+            # Nth referenced number) — best effort; PyMuPDF path does the
+            # precise bbox-based caption matching.
+            from .pdf_images import extract_markdown_image_refs, scan_figure_refs
+
+            md_refs = extract_markdown_image_refs(markdown_text)
+            ref_numbers = sorted(scan_figure_refs(markdown_text))
+            chunk_images: list = []
+            for i, (_, _, ref_path) in enumerate(md_refs):
+                fig_id = ref_numbers[i] if i < len(ref_numbers) else None
+                chunk_images.append(
+                    {"path": ref_path, "figure_id": fig_id, "caption": "", "page": page_num}
                 )
-            )
+            meta = {
+                "asset_id": asset.asset_id,
+                "asset_title": asset.title,
+                "source_type": asset.source_type,
+                "source_path": asset.relative_path,
+                "source_url": asset.source_url,
+                "page": page_num,
+                "parser": "paddleocr-vl-api",
+                "markdown_path": str(markdown_path),
+                "images_dir": str(images_dir) if images_dir.exists() else "",
+                "tags": asset.tags,
+            }
+            if chunk_images:
+                meta["images"] = chunk_images
+            docs.append(ParsedDocument(text=enriched_text, metadata=meta))
             page_num += 1
     return docs
 

@@ -20,6 +20,7 @@ class SearchHit:
     source_path: str
     evidence: str = ""
     metadata: dict[str, object] = field(default_factory=dict)
+    images: list = field(default_factory=list)
 
     def key(self) -> str:
         page = self.metadata.get("page", "")

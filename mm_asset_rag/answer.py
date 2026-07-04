@@ -24,9 +24,52 @@ def format_sources(hits: list[SearchHit]) -> list[dict[str, object]]:
             "routes": hit.metadata.get("routes", [hit.route]),
             "page": hit.metadata.get("page"),
             "parser": hit.metadata.get("parser") or hit.metadata.get("provider"),
+            "images": hit.images or hit.metadata.get("images") or [],
         }
         for hit in hits
     ]
+
+
+def _image_hint(hit: SearchHit) -> str:
+    """One-line summary of a hit's associated images for the LLM context.
+
+    The LLM cannot see image pixels (tier 1) but can cite figure captions
+    and tell the user which figure to look at — e.g. "见证据[1]关联的图3:
+    双碳目标路线图". Returns "" when the hit has no images.
+    """
+    images = hit.images or hit.metadata.get("images") or []
+    if not images:
+        return ""
+    parts = []
+    for img in images:
+        if not isinstance(img, dict):
+            continue
+        cap = str(img.get("caption") or "").strip()
+        fig = img.get("figure_id")
+        tag = f"图{fig}" if fig else "图"
+        label = f"{tag}: {cap}" if cap else tag
+        parts.append(f"{label} (/parsed-image/{hit.asset_id}/{img.get('path', '')})")
+    return f"关联图片: {'; '.join(parts)}" if parts else ""
+
+
+def _build_evidence_context(hits: list[SearchHit]) -> str:
+    """Assemble the numbered evidence block fed to the LLM.
+
+    Each hit becomes ``[N] asset_id=... title=... source=... page=...`` then
+    the evidence text, then — when the hit carries associated figures — a
+    ``关联图片:`` line so a text-only LLM can still cite which figure the
+    user should look at ("见证据[1]的图3: 双碳目标路线图").
+    """
+    blocks = []
+    for index, hit in enumerate(hits, start=1):
+        header = (
+            f"[{index}] asset_id={hit.asset_id} title={hit.title} "
+            f"source={hit.source_path} page={hit.metadata.get('page')}"
+        )
+        body = hit.evidence[:1200]
+        hint = _image_hint(hit)
+        blocks.append(f"{header}\n{body}\n{hint}" if hint else f"{header}\n{body}")
+    return "\n\n".join(blocks)
 
 
 def fallback_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
@@ -48,11 +91,7 @@ def llm_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
     if not base_url or not api_key or not model:
         return fallback_answer(question, hits)
 
-    context = "\n\n".join(
-        f"[{index}] asset_id={hit.asset_id} title={hit.title} source={hit.source_path} "
-        f"page={hit.metadata.get('page')}\n{hit.evidence[:1200]}"
-        for index, hit in enumerate(hits, start=1)
-    )
+    context = _build_evidence_context(hits)
     payload = {
         "model": model,
         "temperature": 0.1,
@@ -114,11 +153,7 @@ def stream_answer_chunks(question: str, hits: list[SearchHit]) -> Iterator[str]:
             yield cleaned
         return
 
-    context = "\n\n".join(
-        f"[{index}] asset_id={hit.asset_id} title={hit.title} source={hit.source_path} "
-        f"page={hit.metadata.get('page')}\n{hit.evidence[:1200]}"
-        for index, hit in enumerate(hits, start=1)
-    )
+    context = _build_evidence_context(hits)
     payload = {
         "model": model,
         "temperature": 0.1,

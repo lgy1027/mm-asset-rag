@@ -42,24 +42,56 @@ MAX_HEADING_LEN = 80
 @dataclass
 class Section:
     """A heading + its body text. Empty heading means 'no heading —
-    body continues from the previous section or from the start'."""
+    body continues from the previous section or from the start'.
+
+    ``bbox`` is the page-space bounding box of the section's body text,
+    as ``(x0, y0, x1, y1)`` in PDF points. ``None`` when the caller did
+    not supply per-line bboxes (e.g. plain-text / markdown input with no
+    geometry). Used by ``pdf_images.associate_images`` for the spatial
+    figure-attachment fallback — chunks that sit next to a figure without
+    naming it.
+    """
 
     heading: str
     body: str
+    bbox: tuple[float, float, float, float] | None = None
 
 
-def split_by_heading(text: str, *, font_sizes: list[float] | None = None) -> list[Section]:
+def _union_bbox(a, b):
+    """Combine two ``(x0,y0,x1,y1)`` bboxes, ignoring ``None`` sides."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return (min(a[0], b[0]), min(a[1], b[1]), max(a[2], b[2]), max(a[3], b[3]))
+
+
+def split_by_heading(
+    text: str,
+    *,
+    font_sizes: list[float] | None = None,
+    line_bboxes: list | None = None,
+) -> list[Section]:
     """Walk ``text`` and emit a :class:`Section` per heading.
 
     ``font_sizes``, when provided, is a parallel list of font sizes
     for each line in the text (one entry per line, after splitting
-    on ``\n``). Lines with a font size at least
+    on ``\\n``). Lines with a font size at least
     ``HEADING_SIZE_RATIO`` x the median are treated as headings.
+
+    ``line_bboxes`` is an optional parallel list of per-line bboxes
+    (``(x0, y0, x1, y1)`` tuples or ``None``), one per line in
+    ``text.splitlines()``. When supplied, each emitted ``Section``
+    carries the union bbox of its body lines in ``Section.bbox`` — used
+    by the PyMuPDF path to spatially attach nearby figures. When omitted
+    (the markdown / plain-text callers), ``bbox`` stays ``None`` and
+    behavior is unchanged.
     """
     if not text or not text.strip():
-        return [Section(heading="", body=text or "")]
+        return [Section(heading="", body=text or "", bbox=None)]
     sections: list[Section] = []
     body_lines: list[str] = []
+    body_bbox = None
     current_heading = ""
 
     lines = text.splitlines()
@@ -69,13 +101,26 @@ def split_by_heading(text: str, *, font_sizes: list[float] | None = None) -> lis
         if _is_heading(line, lines, i, font_sizes, median_size):
             if body_lines or current_heading:
                 sections.append(
-                    Section(heading=current_heading, body="\n".join(body_lines).strip())
+                    Section(
+                        heading=current_heading,
+                        body="\n".join(body_lines).strip(),
+                        bbox=body_bbox,
+                    )
                 )
             current_heading = _clean_heading(line)
             body_lines = []
+            body_bbox = None
         else:
             body_lines.append(line)
-    sections.append(Section(heading=current_heading, body="\n".join(body_lines).strip()))
+            if line_bboxes and i < len(line_bboxes):
+                body_bbox = _union_bbox(body_bbox, line_bboxes[i])
+    sections.append(
+        Section(
+            heading=current_heading,
+            body="\n".join(body_lines).strip(),
+            bbox=body_bbox,
+        )
+    )
     return [s for s in sections if s.body or s.heading]
 
 

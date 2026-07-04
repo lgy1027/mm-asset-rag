@@ -188,6 +188,18 @@ class Settings(BaseSettings):
     # corpora.
     enrich_chunk_language: Literal["zh", "en", "auto"] = "auto"
 
+    # ─── PDF embedded-image extraction (tier-1 multimodal) ───────────────
+    # PyMuPDF parses text only by default; embedded figures are dropped.
+    # When ``pdf_extract_images`` is on, ``pdf_images.extract_page_images``
+    # pulls every image a page references into ``parsed/<id>/images/`` and
+    # ``associate_images`` attaches the figures a chunk references (or sits
+    # next to) to ``ParsedDocument.metadata["images"]`` — surfaced to the
+    # LLM (as a 关联图片 hint) and the web UI (as a thumbnail). Images are
+    # NOT embedded into the vector index (that is tier 2); they ride in the
+    # text hit's payload. ``pdf_image_min_dim`` filters logos/icons.
+    pdf_extract_images: bool = True
+    pdf_image_min_dim: int = 80
+
     # ─── Query preprocessing ──────────────────────────────────────────────
     # The hybrid text search runs each query through three normalisations
     # before routing to dense vs BM25 channels. See

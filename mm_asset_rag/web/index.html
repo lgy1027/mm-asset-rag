@@ -90,6 +90,8 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     .source .score { background: var(--accent-2); color: white; padding: 1px 6px; border-radius: 999px; font-size: 10px; }
     .source .route { color: var(--muted); }
     .source .ev { color: var(--muted); font-size: 12px; line-height: 1.45; max-height: 60px; overflow: hidden; }
+    .source .src-images { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .source .src-thumb { height: 80px; width: auto; border-radius: 4px; border: 1px solid var(--border); object-fit: cover; cursor: zoom-in; }
     .input-row { display: flex; gap: 8px; align-items: flex-end; padding-top: 8px; }
     .input-row textarea { flex: 1; }
     .input-row .modes { display: flex; gap: 4px; flex-direction: column; }
@@ -1191,8 +1193,28 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       if (!sources.length) return "";
       const head = `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">SOURCES (${sources.length})</div>`;
       const body = sources
-        .map(
-          (s, i) => `
+        .map((s, i) => {
+          const imgs = Array.isArray(s.images) ? s.images : [];
+          const thumbs = imgs
+            .map(
+              (img) => `
+              <a href="/parsed-image/${encodeURIComponent(s.asset_id || "")}/${encodeURIComponent(
+                (img && img.path) || "",
+              )}" target="_blank" rel="noopener" title="${escapeHtml(
+                (img && (img.caption || "")) || "",
+              )}">
+                <img class="src-thumb" src="/parsed-image/${encodeURIComponent(
+                  s.asset_id || "",
+                )}/${encodeURIComponent((img && img.path) || "")}" alt="${escapeHtml(
+                  (img && (img.caption || `图${img.figure_id || ""}`)) || "图",
+                )}" loading="lazy" />
+              </a>`,
+            )
+            .join("");
+          const imgRow = thumbs
+            ? `<div class="src-images">${thumbs}</div>`
+            : "";
+          return `
           <div class="source">
             <div class="head">
               <span class="score">#${i + 1}</span>
@@ -1202,8 +1224,9 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
               <span style="color:var(--muted)">score ${(s.score || 0).toFixed(3)}</span>
             </div>
             <div class="ev">${escapeHtml((s.evidence || "").slice(0, 240))}…</div>
-          </div>`,
-        )
+            ${imgRow}
+          </div>`;
+        })
         .join("");
       return `<div class="sources">${head}${body}</div>`;
     }

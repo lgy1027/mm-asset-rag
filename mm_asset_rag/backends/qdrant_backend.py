@@ -1152,6 +1152,7 @@ def _point_to_hit(route: str, point) -> SearchHit:
 
 
 def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> SearchHit:
+    images = payload.get("images")
     return SearchHit(
         route=route,
         score=score,
@@ -1161,6 +1162,7 @@ def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> Sea
         source_path=str(payload.get("source_path", "")),
         evidence=str(payload.get("text", ""))[:1000],
         metadata=dict(payload),
+        images=list(images) if isinstance(images, list) else [],
     )
 
 

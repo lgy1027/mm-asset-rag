@@ -87,6 +87,15 @@ Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`.
 
 Changing `MAX_CHUNKS_PER_PDF` requires `mmrag reindex` to rebuild existing collections.
 
+## PDF embedded-image extraction
+
+PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXTRACT_IMAGES` is on, the parser pulls every image a page references into `parsed/<id>/images/` and attaches the figures a chunk references (or sits next to) to that chunk's `metadata["images"]`. The figures ride in the text hit's payload — surfaced to the LLM (a `关联图片` hint citing the figure caption) and the web UI (a thumbnail served by `GET /parsed-image/{asset_id}/{filename}`). Images are **not** embedded into the vector index (that is tier 2); they are an attachment of the text hit. `PDF_IMAGE_MIN_DIM` filters logos / icons. Requires `mmrag reindex` (or a fresh `mmrag parse`) to populate `images` on existing chunks.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `PDF_EXTRACT_IMAGES` | `true` | Extract embedded images + attach to text hits |
+| `PDF_IMAGE_MIN_DIM` | `80` | Skip images with either dimension below this (logos/icons) |
+
 ## Contextual Retrieval (opt-in)
 
 Anthropic-style chunk context: each chunk gets a short LLM-generated preamble situating it within its document, prepended to the embedding/BM25 input so dense + sparse channels can disambiguate generic terms. opt-in because it costs ~1 LLM call per chunk. Generated at parse time and cached under `parsed/<id>/context.jsonl` so `mmrag reindex` reuses it without re-calling the LLM. Enable via `mmrag parse --contextual`.

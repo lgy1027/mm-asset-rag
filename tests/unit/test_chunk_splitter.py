@@ -87,3 +87,46 @@ def test_split_preserves_blank_lines_in_body() -> None:
     body = next(s for s in sections if s.heading == "Title").body
     assert "Para 1" in body
     assert "Para 2" in body
+
+
+def test_split_bbox_none_when_not_supplied() -> None:
+    """No ``line_bboxes`` → every Section.bbox stays ``None``."""
+    sections = split_by_heading("# H\nbody line one\nbody line two")
+    assert all(s.bbox is None for s in sections)
+
+
+def test_split_bbox_unions_body_lines() -> None:
+    """``line_bboxes`` parallel to lines → each section's bbox is the
+    union of its body lines' bboxes (heading bbox excluded)."""
+    # Lines: ["# H", "aa", "bb", "# I", "cc"]
+    text = "# H\naa\nbb\n# I\ncc"
+    line_bboxes = [
+        (0, 0, 50, 10),  # heading "# H"
+        (0, 12, 30, 22),  # "aa"
+        (0, 24, 30, 34),  # "bb"
+        (0, 40, 50, 50),  # heading "# I"
+        (0, 52, 30, 62),  # "cc"
+    ]
+    sections = split_by_heading(text, line_bboxes=line_bboxes)
+    h = next(s for s in sections if s.heading == "H")
+    i = next(s for s in sections if s.heading == "I")
+    # H's body = "aa" + "bb" → union of their bboxes
+    assert h.bbox == (0, 12, 30, 34)
+    # I's body = "cc"
+    assert i.bbox == (0, 52, 30, 62)
+
+
+def test_split_bbox_tolerates_none_entries() -> None:
+    """A ``None`` bbox entry (blank line / unknown) is skipped, not unioned."""
+    body1 = "First body line long enough to exceed the eighty char heading cap for safety."
+    body2 = "Second body line long enough to exceed the eighty char heading cap for safety."
+    text = f"# H\n{body1}\n\n{body2}"
+    line_bboxes = [
+        (0, 0, 50, 10),
+        (0, 12, 30, 22),
+        None,  # blank line
+        (0, 30, 30, 40),
+    ]
+    sections = split_by_heading(text, line_bboxes=line_bboxes)
+    h = next(s for s in sections if s.heading == "H")
+    assert h.bbox == (0, 12, 30, 40)
