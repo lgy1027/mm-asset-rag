@@ -591,7 +591,19 @@ def build_qdrant_text_index(
                 progress_cb(offset + len(batch), len(documents), "skipping cached")
             continue
 
-        texts = [batch[i].text for i in to_do]
+        # Contextual Retrieval: prepend the LLM-generated context (stored in
+        # ``metadata["context"]`` at parse time) to the embedding/BM25 input
+        # so dense + sparse channels see the disambiguating preamble. The
+        # payload ``text`` below stays the raw chunk body so evidence / answer
+        # generation isn't polluted by the preamble. No ``context`` key →
+        # identical to the pre-contextual behavior.
+        texts = []
+        for i in to_do:
+            ctx = batch[i].metadata.get("context")
+            if ctx:
+                texts.append(f"{ctx}\n\n{batch[i].text}")
+            else:
+                texts.append(batch[i].text)
 
         # Reuse the probe embedding when offset==0 and doc 0 is in to_do.
         dense_vectors: list[list[float]] = []

@@ -67,7 +67,11 @@ def command_parse(args: argparse.Namespace) -> None:
         raise SystemExit("no supported files to parse")
 
     options = ParseOptions(
-        assets=assets, pdf_parser=args.pdf_parser, enable_ocr=args.ocr, enable_vlm=args.vlm
+        assets=assets,
+        pdf_parser=args.pdf_parser,
+        enable_ocr=args.ocr,
+        enable_vlm=args.vlm,
+        contextual=args.contextual,
     )
     rec = get_service().ingest_assets(assets, options)
     print(f"started task {rec.task_id} (parse + index)")
@@ -229,6 +233,17 @@ def build_parser() -> argparse.ArgumentParser:
             "Skip the VLM-based title / tags / description extraction in the "
             "preview phase. Useful on slow VLM endpoints or when ingesting a "
             "large batch where the per-file round-trip becomes the bottleneck."
+        ),
+    )
+    parse_cmd.add_argument(
+        "--contextual",
+        action="store_true",
+        help=(
+            "Generate an LLM context preamble per chunk (Contextual Retrieval) "
+            "before indexing. Improves precision when queries use generic terms "
+            "(e.g. 'diffusion' matching DDPM vs Stable Diffusion). opt-in: costs "
+            "~1 LLM call per chunk; cached under parsed/<id>/context.jsonl so "
+            "reindex reuses it. Requires OPENAI_* LLM credentials."
         ),
     )
     parse_cmd.set_defaults(func=command_parse)

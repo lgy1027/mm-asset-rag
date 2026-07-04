@@ -140,6 +140,24 @@ class Settings(BaseSettings):
     # noisy open-domain RAG.
     min_score: float = 0.30
 
+    # ─── Two-stage reranker ───────────────────────────────────────────────
+    # bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a
+    # candidate pool with dense + BM25, then score each (query, doc) pair
+    # with a cross-encoder. Catches high-score false positives that the
+    # global ``min_score`` floor cannot (v6b: 1.20 only dropped 1/8
+    # negatives while losing 4 positives). opt-in — disabled by default
+    # because it adds ~50-200ms latency per query and the model is ~600MB
+    # on first download. Runs locally via ``sentence_transformers.CrossEncoder``
+    # (same dep as the bge-m3 embedder); no ollama / API. When enabled,
+    # ``hybrid_search`` fetches ``reranker_top_n`` candidates, reranks, and
+    # returns ``reranker_top_k`` (or the caller's top_k if None).
+    # ``reranker_top_n`` should be ≤ ``qdrant_hybrid_prefetch_limit`` (default
+    # 20) or the candidate pool is bounded by the prefetch.
+    reranker_enabled: bool = False
+    reranker_model: str = "BAAI/bge-reranker-v2-m3"
+    reranker_top_n: int = 20
+    reranker_top_k: int | None = None
+
     # ─── Chinese BM25 ─────────────────────────────────────────────────────
     # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``
     # (jieba tokenisation + Okapi BM25). Stored alongside the existing
@@ -248,6 +266,23 @@ class Settings(BaseSettings):
     auto_meta_pdf_max_pages: int = 100
     auto_meta_pdf_render_dpi: int = 120
     auto_meta_pdf_max_render_pixels: int = 8_000_000
+
+    # ─── Contextual Retrieval ─────────────────────────────────────────────
+    # Anthropic-style chunk context (2024, -49% retrieval failure rate):
+    # each chunk gets a short LLM-generated preamble situating it within its
+    # document, prepended to the embedding/BM25 input so dense + sparse
+    # channels can disambiguate generic terms ("diffusion" → DDPM vs Stable
+    # Diffusion). opt-in — disabled by default because it costs ~1 LLM call
+    # per chunk (4158 PDF chunks on the bundled corpus ≈ 9.4M tokens).
+    # The shared ``OPENAI_*`` triple is reused; ``contextual_model`` only
+    # overrides the model name. Generated at parse time and cached under
+    # ``parsed/<id>/context.jsonl`` so ``mmrag reindex`` reuses it without
+    # re-calling the LLM. Enable via ``mmrag parse --contextual``.
+    contextual_enabled: bool = False
+    contextual_model: str | None = None
+    contextual_concurrency: int = 4
+    contextual_chunk_max_chars: int = 8000
+    contextual_timeout: float = 60.0
 
     # ─── Derived properties ───────────────────────────────────────────────
 

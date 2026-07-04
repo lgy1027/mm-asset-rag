@@ -87,6 +87,29 @@ Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`.
 
 Changing `MAX_CHUNKS_PER_PDF` requires `mmrag reindex` to rebuild existing collections.
 
+## Contextual Retrieval (opt-in)
+
+Anthropic-style chunk context: each chunk gets a short LLM-generated preamble situating it within its document, prepended to the embedding/BM25 input so dense + sparse channels can disambiguate generic terms. opt-in because it costs ~1 LLM call per chunk. Generated at parse time and cached under `parsed/<id>/context.jsonl` so `mmrag reindex` reuses it without re-calling the LLM. Enable via `mmrag parse --contextual`.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `CONTEXTUAL_ENABLED` | `false` | opt-in master switch |
+| `CONTEXTUAL_MODEL` | unset (→ `OPENAI_MODEL`) | LLM model override |
+| `CONTEXTUAL_CONCURRENCY` | `4` | Parallel chunk-context calls |
+| `CONTEXTUAL_CHUNK_MAX_CHARS` | `8000` | Cap chunk text fed to the LLM |
+| `CONTEXTUAL_TIMEOUT` | `60` | Per-call HTTP timeout (seconds) |
+
+## Two-stage reranker (opt-in)
+
+bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a candidate pool with dense + BM25, then score each `(query, doc)` pair with a cross-encoder. Catches high-score false positives that `MIN_SCORE` cannot. Runs locally via `sentence-transformers.CrossEncoder` (same dep as the bge-m3 embedder); no ollama / API. Adds ~50-200ms latency per query; first run downloads ~600MB.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `RERANKER_ENABLED` | `false` | opt-in master switch |
+| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | HuggingFace cross-encoder model id |
+| `RERANKER_TOP_N` | `20` | Candidates fetched from each route before rerank (≤ `QDRANT_HYBRID_PREFETCH_LIMIT`) |
+| `RERANKER_TOP_K` | unset (→ caller's `top_k`) | Final result count after rerank |
+
 ## Chinese BM25
 
 | Variable | Default | Purpose |

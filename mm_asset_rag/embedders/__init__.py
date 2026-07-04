@@ -16,6 +16,7 @@ from threading import Lock
 
 from ..registry import get_embedder, register_embedder
 from .image_embedder import ImageEmbedder, ImageEmbeddingUnavailable
+from .reranker import Reranker, get_default_reranker, reset_reranker
 from .text_embedder import (
     EmbeddingConfigError,
     SentenceTransformerTextEmbedder,
@@ -27,12 +28,15 @@ __all__ = [
     "EmbeddingConfigError",
     "ImageEmbedder",
     "ImageEmbeddingUnavailable",
+    "Reranker",
     "SentenceTransformerTextEmbedder",
     "TextEmbedder",
     "build_default_text_embedder",
     "get_default_image_embedder",
+    "get_default_reranker",
     "get_default_text_embedder",
     "register_embedder",
+    "reset_reranker",
 ]
 
 

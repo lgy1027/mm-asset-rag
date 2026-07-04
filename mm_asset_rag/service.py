@@ -216,6 +216,7 @@ class ParseOptions:
     enable_ocr: bool = False
     enable_vlm: bool = False
     image_provider: str = "lite"
+    contextual: bool = False
 
 
 @dataclass
@@ -1165,6 +1166,23 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
                 service._patch(rec, processed=i, current=f"error {asset.asset_id}: {exc}")
                 continue
             with target.open("a", encoding="utf-8") as f:
+                # Contextual Retrieval: attach an LLM-generated context to each
+                # chunk before writing to documents.jsonl. opt-in via
+                # ``--contextual``; no-op (and no LLM cost) otherwise. Cached
+                # under parsed/<id>/context.jsonl so reindex reuses it.
+                if options.contextual and docs:
+                    from .contextual import enrich_docs_with_context
+
+                    cache_path = get_parsed_dir() / asset.asset_id / "context.jsonl"
+                    service._patch(
+                        rec,
+                        current=f"contextual: {asset.asset_id} ({len(docs)} chunks)",
+                    )
+                    enrich_docs_with_context(
+                        docs,
+                        asset_title=asset.title or asset.asset_id,
+                        cache_path=cache_path,
+                    )
                 for d in docs:
                     f.write(json.dumps(d.to_json(), ensure_ascii=False) + "\n")
             parsed += 1

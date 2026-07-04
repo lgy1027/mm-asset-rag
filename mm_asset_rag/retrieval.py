@@ -9,6 +9,7 @@ from .backends.qdrant_backend import (
     qdrant_text_search,
     qdrant_text_to_image_search,
 )
+from .embedders import get_default_reranker
 from .schema import SearchHit
 from .settings import get_settings
 
@@ -117,18 +118,34 @@ def hybrid_search(
     forwarded to :func:`merge_hits` to drop low-confidence results
     after fusion. Pass an explicit value to override per call; pass
     ``0.0`` to disable the floor for that call.
+
+    When ``Settings.reranker_enabled`` is true, a two-stage pipeline runs:
+    ``reranker_top_n`` candidates are fetched from each route and merged,
+    then a cross-encoder (``bge-reranker-v2-m3``) re-scores each
+    ``(query, evidence)`` pair and the top ``reranker_top_k`` (or
+    ``top_k`` if None) are returned. The pre-rerank hybrid score is
+    preserved in ``metadata["hybrid_score"]``. If the reranker fails to
+    load (missing dep / model), the search degrades to the single-stage
+    path transparently.
     """
     settings = get_settings()
+    reranker = get_default_reranker()
+    # Fetch a wider candidate pool when reranking; otherwise top_k end-to-end.
+    fetch_k = settings.reranker_top_n if reranker is not None else top_k
     groups: list[list[SearchHit]] = [
-        qdrant_text_search(query, top_k=top_k),
-        qdrant_text_to_image_search(query, top_k=top_k),
+        qdrant_text_search(query, top_k=fetch_k),
+        qdrant_text_to_image_search(query, top_k=fetch_k),
     ]
     weights = [settings.hybrid_weight_text, settings.hybrid_weight_text_to_image]
     # Image-to-image is only consulted when an ``image_path`` is supplied
     # *and* its weight is positive — calling it just to multiply by 0
     # wastes a Qdrant round-trip.
     if image_path and settings.hybrid_weight_image_to_image > 0:
-        groups.append(qdrant_image_to_image_search(image_path, top_k=top_k))
+        groups.append(qdrant_image_to_image_search(image_path, top_k=fetch_k))
         weights.append(settings.hybrid_weight_image_to_image)
     effective_min = settings.min_score if min_score is None else min_score
-    return merge_hits(groups, weights, top_k=top_k, min_score=effective_min)
+    merged = merge_hits(groups, weights, top_k=fetch_k, min_score=effective_min)
+    if reranker is not None:
+        return_k = settings.reranker_top_k if settings.reranker_top_k is not None else top_k
+        return reranker.rerank(query, merged, top_k=return_k)
+    return merged
