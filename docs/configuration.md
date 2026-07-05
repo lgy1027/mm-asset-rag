@@ -118,6 +118,8 @@ PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXT
 
 When `ANSWER_WITH_IMAGES` is on, `/answer` and `/chat/stream` inject each hit's associated images (base64 data URLs) into the chat request as `image_url` content parts alongside the text evidence, so a vision-capable LLM can *see* figure pixels and answer questions whose answer lives in the figure (numbers / tables / flowcharts the body text doesn't repeat). Requires a vision-capable chat model (`OPENAI_MODEL` must be multimodal — e.g. MiniMax-M3, or ollama `gemma3` / `llama3.2-vision`). If the configured model rejects images, the call is retried text-only so the feature is safe to toggle without breaking `/answer`. No effect when `PDF_EXTRACT_IMAGES` is off (no images on the hits to inject).
 
+**Most deployments should leave this off.** Tier-1 already attaches every hit's figures as `metadata.images` so the web UI shows thumbnails below each source — the user sees the figures directly without the LLM having to "read" them, and the LLM context still carries a `关联图片: 图N: <caption>` line so the answer can reference figures by number. Tier-3 is only worth enabling when users frequently ask questions whose answer lives *only* in the image pixels (chart numbers, table values, flowchart steps the body text doesn't repeat) and the deployment has a vision-capable LLM available. For text-only LLMs the tier-3 toggle has no benefit — leave it off.
+
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `ANSWER_WITH_IMAGES` | `false` | opt-in — inject hit images into the LLM chat request |
