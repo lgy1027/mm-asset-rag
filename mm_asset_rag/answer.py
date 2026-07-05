@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -197,17 +196,15 @@ def fallback_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
 
 
 def llm_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    api_key = os.environ.get("OPENAI_API_KEY")
-    model = os.environ.get("OPENAI_MODEL")
+    settings = get_settings()
+    base_url, api_key, model = settings.llm_creds
     if not base_url or not api_key or not model:
         return fallback_answer(question, hits)
 
     context = _build_evidence_context(hits)
-    settings = get_settings()
     content = _user_content(question, context, hits, settings)
     messages = [_SYSTEM_MSG, {"role": "user", "content": content}]
-    timeout = float(os.environ.get("LLM_TIMEOUT", "120"))
+    timeout = float(settings.llm_timeout)
     try:
         response = _post_chat(base_url, api_key, model, messages, stream=False, timeout=timeout)
         response.raise_for_status()
@@ -246,9 +243,7 @@ def stream_answer_chunks(question: str, hits: list[SearchHit]) -> Iterator[str]:
     when LLM credentials are not configured. Reasoning-model ``<think>`` blocks
     are stripped across chunk boundaries so the user only sees the final answer.
     """
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    api_key = os.environ.get("OPENAI_API_KEY")
-    model = os.environ.get("OPENAI_MODEL")
+    base_url, api_key, model = get_settings().llm_creds
     if not base_url or not api_key or not model:
         fb = fallback_answer(question, hits)
         cleaned = re.sub(r"<think>.*?</think>", "", str(fb["answer"]), flags=re.DOTALL).strip()
@@ -260,7 +255,7 @@ def stream_answer_chunks(question: str, hits: list[SearchHit]) -> Iterator[str]:
     settings = get_settings()
     content = _user_content(question, context, hits, settings)
     messages = [_SYSTEM_MSG, {"role": "user", "content": content}]
-    timeout = float(os.environ.get("LLM_TIMEOUT", "120"))
+    timeout = float(settings.llm_timeout)
     try:
         response = _post_chat(base_url, api_key, model, messages, stream=True, timeout=timeout)
         response.raise_for_status()

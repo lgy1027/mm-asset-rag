@@ -9,6 +9,7 @@ import requests
 from ..assets import Asset
 from ..paths import get_captions_dir, get_parsed_dir
 from ..schema import ParsedDocument
+from ..settings import get_settings
 
 
 def call_ocr_http(image_path: Path) -> list[dict[str, object]]:
@@ -51,9 +52,7 @@ def normalize_ocr_blocks(payload: dict[str, object]) -> list[dict[str, object]]:
 
 
 def call_vlm_caption(image_path: Path) -> str:
-    base_url = os.environ.get("VLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
-    api_key = os.environ.get("VLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    model = os.environ.get("VLM_MODEL") or os.environ.get("OPENAI_MODEL")
+    base_url, api_key, model = get_settings().vlm_creds
     if not base_url or not api_key or not model:
         return ""
 

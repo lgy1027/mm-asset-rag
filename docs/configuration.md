@@ -31,7 +31,14 @@ There is no `asset_manifest.json`; uploaded files are auto-sniffed and converted
 | `OPENAI_MODEL` | unset | Chat model |
 | `LLM_TIMEOUT` | `120.0` | Chat timeout seconds |
 
-When the OpenAI triple is incomplete, `/answer` and `/chat` return evidence-summary fallback answers instead of failing.
+### LLM ↔ VLM bidirectional fallback
+
+The chat LLM channel (`/answer`, `/chat`) and the image-channel VLM (image caption, `/upload/preview` auto-meta, tier-3 multimodal answer) can each use a different provider. Configure either `OPENAI_*` or `VLM_*` alone and both channels work; configure both to split by purpose (e.g. local ollama for chat, MiniMax-M3 for vision).
+
+- `/answer` LLM channel: `OPENAI_*` preferred, falls back to `VLM_*`.
+- `/upload/preview` VLM channel: `VLM_*` preferred, falls back to `OPENAI_*`.
+
+When neither triple is complete, `/answer` and `/chat` return evidence-summary fallback answers instead of failing.
 
 ## Text embedding
 

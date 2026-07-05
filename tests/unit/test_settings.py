@@ -88,9 +88,15 @@ def test_case_insensitive_env(monkeypatch):
 
 
 def test_has_llm_requires_full_triple(monkeypatch):
+    # ``has_llm`` accepts either ``OPENAI_*`` or ``VLM_*`` (LLM channel
+    # falls back to VLM credentials), so the negative case must clear both
+    # triples — otherwise a sibling test that set ``VLM_*`` would leak in.
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("VLM_API_KEY", raising=False)
+    monkeypatch.delenv("VLM_BASE_URL", raising=False)
+    monkeypatch.delenv("VLM_MODEL", raising=False)
     assert Settings(_env_file=None).has_llm is False
 
     monkeypatch.setenv("OPENAI_API_KEY", "k")

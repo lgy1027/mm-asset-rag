@@ -320,8 +320,49 @@ class Settings(BaseSettings):
 
     @property
     def has_llm(self) -> bool:
-        """Whether the LLM triple is complete enough to issue real requests."""
-        return bool(self.openai_api_key and self.openai_base_url and self.openai_model)
+        """Whether the LLM triple is complete enough to issue real requests.
+
+        True when *either* the ``OPENAI_*`` triple is set *or* the ``VLM_*``
+        triple is set (the LLM channel falls back to VLM credentials — see
+        :attr:`llm_creds`). This lets a deployment configure a single
+        multimodal model under ``VLM_*`` and have it serve both the image
+        caption / auto-meta path *and* the ``/answer`` / ``/chat`` text path.
+        """
+        return bool(
+            (self.openai_api_key and self.openai_base_url and self.openai_model)
+            or (self.vlm_api_key and self.vlm_base_url and self.vlm_model)
+        )
+
+    @property
+    def llm_creds(self) -> tuple[str | None, str | None, str | None]:
+        """Return ``(base_url, api_key, model)`` for the chat LLM channel.
+
+        ``OPENAI_*`` is preferred (it is the canonical chat triple); when
+        any of the three is missing the ``VLM_*`` triple is used as
+        fallback so a deployment that only configured a multimodal VLM
+        still gets a working ``/answer`` / ``/chat``. Returns ``(None,
+        None, None)`` when neither triple is complete — callers then fall
+        back to the evidence-summary path.
+        """
+        if self.openai_api_key and self.openai_base_url and self.openai_model:
+            return self.openai_base_url, self.openai_api_key, self.openai_model
+        if self.vlm_api_key and self.vlm_base_url and self.vlm_model:
+            return self.vlm_base_url, self.vlm_api_key, self.vlm_model
+        return None, None, None
+
+    @property
+    def vlm_creds(self) -> tuple[str | None, str | None, str | None]:
+        """Return ``(base_url, api_key, model)`` for the VLM channel.
+
+        ``VLM_*`` is preferred; falls back to ``OPENAI_*`` when unset
+        (preserves the long-standing "configure once under OPENAI_*"
+        convenience for image caption / auto-meta).
+        """
+        if self.vlm_api_key and self.vlm_base_url and self.vlm_model:
+            return self.vlm_base_url, self.vlm_api_key, self.vlm_model
+        if self.openai_api_key and self.openai_base_url and self.openai_model:
+            return self.openai_base_url, self.openai_api_key, self.openai_model
+        return None, None, None
 
     @property
     def text_embedding_creds(self) -> tuple[str | None, str | None, str | None]:

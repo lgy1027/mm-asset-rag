@@ -86,11 +86,13 @@ class AutoMeta:
 
 
 def _vlm_creds() -> tuple[str, str, str] | None:
-    """Return ``(base_url, api_key, model)`` or ``None`` when unconfigured."""
-    s = get_settings()
-    base_url = s.vlm_base_url or s.openai_base_url
-    api_key = s.vlm_api_key or s.openai_api_key
-    model = s.vlm_model or s.openai_model
+    """Return ``(base_url, api_key, model)`` or ``None`` when unconfigured.
+
+    Delegates to :attr:`Settings.vlm_creds` (VLM_* preferred, OPENAI_*
+    fallback) so the VLM channel and the LLM channel share one resolution
+    rule — a deployment that configures either triple gets both paths.
+    """
+    base_url, api_key, model = get_settings().vlm_creds
     if not (base_url and api_key and model):
         return None
     return base_url, api_key, model
