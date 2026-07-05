@@ -100,3 +100,46 @@ def get_asset_index_path() -> Path:
     created lazily on first write, not on read.
     """
     return get_data_dir() / "asset_index.jsonl"
+
+
+# Suffixes allowed for served/embedded parsed images. Kept tight so a
+# crafted ``filename`` cannot exfiltrate arbitrary files. Shared by the
+# ``/parsed-image`` HTTP endpoint and the tier-3 multimodal answer path.
+PARSED_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+
+
+def safe_parsed_image_path(asset_id: str, filename: str) -> Path | None:
+    """Resolve ``parsed/<asset_id>/images/<filename>`` with traversal guard.
+
+    Returns the absolute :class:`Path` when ``filename`` is a bare base
+    name with an image suffix, ``asset_id`` has no path separators, the
+    resolved path stays inside the asset's ``images/`` dir, and the file
+    exists on disk. Returns ``None`` otherwise — callers (the
+    ``/parsed-image`` endpoint and the tier-3 answer image loader) turn
+    that into a 404 / a skipped image without raising.
+
+    Centralised here so the endpoint and the answer path apply identical
+    validation: a hit's ``images`` list is untrusted payload data that
+    must not reach the filesystem unfiltered.
+    """
+    import re
+
+    if not filename or "/" in filename or "\\" in filename or filename in (".", ".."):
+        return None
+    if not asset_id or "/" in asset_id or "\\" in asset_id or asset_id in (".", ".."):
+        return None
+    # Reject any path component that resolves above the images dir, even
+    # via unusual encodings — the containment check below is the real
+    # backstop, but a bare base name is the only thing we ever accept.
+    if re.search(r"[\x00-\x1f]", filename) or re.search(r"[\x00-\x1f]", asset_id):
+        return None
+    suffix = Path(filename).suffix.lower()
+    if suffix not in PARSED_IMAGE_SUFFIXES:
+        return None
+    base = (get_parsed_dir() / asset_id / "images").resolve()
+    candidate = (base / filename).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return None
+    return candidate if candidate.is_file() else None

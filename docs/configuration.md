@@ -37,6 +37,7 @@ When the OpenAI triple is incomplete, `/answer` and `/chat` return evidence-summ
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `EMBEDDING_BACKEND` | `openai` | `openai` (OpenAI-compatible /v1/embeddings) or `sentence_transformers` (local HF model) |
 | `EMBEDDING_API_KEY` | `OPENAI_API_KEY` fallback | Embedding API key |
 | `EMBEDDING_BASE_URL` | `OPENAI_BASE_URL` fallback | Embedding base URL |
 | `EMBEDDING_MODEL` | unset | Embedding model |
@@ -87,6 +88,16 @@ Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`.
 
 Changing `MAX_CHUNKS_PER_PDF` requires `mmrag reindex` to rebuild existing collections.
 
+## Chunk keyword enrichment
+
+Appends a `关键词: ...` footer (jieba TextRank) to every PDF chunk's text before indexing, so the BM25 channel has explicit tokens to match short queries like `联宝 ESG` against long PDF bodies where the tokens would otherwise be diluted. Disable for non-Chinese corpora or when jieba is unavailable. Requires `mmrag reindex` to affect existing collections.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `ENRICH_CHUNK_WITH_KEYWORDS` | `true` | Append jieba TextRank keyword footer to each chunk |
+| `ENRICH_CHUNK_KEYWORD_TOP_K` | `8` | Number of keywords in the footer |
+| `ENRICH_CHUNK_LANGUAGE` | `auto` | `zh` / `en` / `auto` (jieba first, stopword-frequency fallback) |
+
 ## PDF embedded-image extraction
 
 PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXTRACT_IMAGES` is on, the parser pulls every image a page references into `parsed/<id>/images/` and attaches the figures a chunk references (or sits next to) to that chunk's `metadata["images"]`. The figures ride in the text hit's payload — surfaced to the LLM (a `关联图片` hint citing the figure caption) and the web UI (a thumbnail served by `GET /parsed-image/{asset_id}/{filename}`). Images are **not** embedded into the vector index (that is tier 2); they are an attachment of the text hit. `PDF_IMAGE_MIN_DIM` filters logos / icons. Requires `mmrag reindex` (or a fresh `mmrag parse`) to populate `images` on existing chunks.
@@ -95,6 +106,15 @@ PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXT
 | --- | ---: | --- |
 | `PDF_EXTRACT_IMAGES` | `true` | Extract embedded images + attach to text hits |
 | `PDF_IMAGE_MIN_DIM` | `80` | Skip images with either dimension below this (logos/icons) |
+
+## Tier-3 multimodal answer
+
+When `ANSWER_WITH_IMAGES` is on, `/answer` and `/chat/stream` inject each hit's associated images (base64 data URLs) into the chat request as `image_url` content parts alongside the text evidence, so a vision-capable LLM can *see* figure pixels and answer questions whose answer lives in the figure (numbers / tables / flowcharts the body text doesn't repeat). Requires a vision-capable chat model (`OPENAI_MODEL` must be multimodal — e.g. MiniMax-M3, or ollama `gemma3` / `llama3.2-vision`). If the configured model rejects images, the call is retried text-only so the feature is safe to toggle without breaking `/answer`. No effect when `PDF_EXTRACT_IMAGES` is off (no images on the hits to inject).
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `ANSWER_WITH_IMAGES` | `false` | opt-in — inject hit images into the LLM chat request |
+| `ANSWER_IMAGE_MAX_PER_HIT` | `2` | Max images sent per hit (bounds token cost; hard global cap is 4) |
 
 ## Contextual Retrieval (opt-in)
 
@@ -139,6 +159,7 @@ These limits protect `/upload/preview` from accidental very large uploads. Overs
 | `UPLOAD_MAX_PDF_PAGES` | `500` | Reject confirmed PDFs above this page count |
 | `UPLOAD_MAX_IMAGE_PIXELS` | `50000000` | Reject images above this pixel count |
 | `UPLOAD_SLUG_MAX_LEN` | `80` | Maximum readable title slug length used in asset file names |
+| `PREVIEW_CACHE_TTL_SECONDS` | `86400` | TTL for `/upload/preview` staging files (background sweep deletes expired entries) |
 
 ## Upload auto-metadata
 
@@ -149,6 +170,7 @@ The upload preview pipeline can call a VLM once per file to extract title / desc
 | `AUTO_META_ENABLED` | `true` | Enable VLM metadata extraction in `/upload/preview` |
 | `AUTO_META_TIMEOUT` | `30.0` | Per-file VLM timeout |
 | `AUTO_META_MAX_TOKENS` | `800` | JSON response budget |
+| `AUTO_META_MAX_CONCURRENCY` | `3` | Parallel VLM calls across a multi-file preview batch |
 | `AUTO_META_IMAGE_PROMPT` | unset | Override image prompt |
 | `AUTO_META_PDF_PROMPT` | unset | Override PDF-first-page prompt |
 | `AUTO_META_PDF_MAX_PAGES` | `100` | Skip PDF VLM preview above this page count |

@@ -200,6 +200,19 @@ class Settings(BaseSettings):
     pdf_extract_images: bool = True
     pdf_image_min_dim: int = 80
 
+    # ─── Tier-3 multimodal answer (opt-in) ───────────────────────────────
+    # When on, ``answer.llm_answer`` / ``stream_answer_chunks`` inject the
+    # hit's associated images (base64 data URLs) into the chat request as
+    # ``image_url`` content parts alongside the text evidence, so a
+    # multimodal LLM can *see* figure pixels and answer "图里 2025 年的
+    # 数字是多少" questions that the text alone cannot satisfy. Requires a
+    # vision-capable chat model (e.g. MiniMax-M3, or ollama gemma3 / llama3.2
+    # -vision). If the configured model rejects images, the call is retried
+    # text-only so the feature is safe to toggle without breaking /answer.
+    # ``answer_image_max_per_hit`` caps images per hit to bound token cost.
+    answer_with_images: bool = False
+    answer_image_max_per_hit: int = 2
+
     # ─── Query preprocessing ──────────────────────────────────────────────
     # The hybrid text search runs each query through three normalisations
     # before routing to dense vs BM25 channels. See
