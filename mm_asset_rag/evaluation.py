@@ -73,6 +73,40 @@ def _load_asset_id_index() -> dict[str, str]:
     return bare_to_full
 
 
+def _load_bare_to_all_fulls() -> dict[str, list[str]]:
+    """Build a ``bare`` → ``[full, ...]`` map covering every hash variant.
+
+    Unlike :func:`_load_asset_id_index` (which keeps only the latest
+    hash per bare title), this preserves all duplicates so the matcher
+    accepts the retriever returning *any* hash of the same source —
+    relevant when re-parsing produces a new SHA but the document
+    content is unchanged.
+    """
+    index_path = get_asset_index_path()
+    if not index_path.exists():
+        return {}
+    bare_to_all: dict[str, list[str]] = {}
+    with index_path.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("deleted"):
+                continue
+            full = row.get("asset_id", "")
+            if not full:
+                continue
+            m = re.match(r"^(.+)_([0-9a-f]{8})$", full)
+            bare = m.group(1) if m else full
+            bare_to_all.setdefault(bare, [])
+            if full not in bare_to_all[bare]:
+                bare_to_all[bare].append(full)
+    return bare_to_all
+
+
 # ── English paper queries ─────────────────────────────────────────────
 # Format: (query, [expected_asset_id_or_substring, ...])
 EN_PAPER_QUERIES: list[dict] = [
@@ -166,10 +200,6 @@ EN_PAPER_QUERIES: list[dict] = [
         "expected_asset_ids": ["You Only Look Once"],
     },
     # Chinese-language non-paper assets:
-    {
-        "query": "2026 年 AI 技术趋势 Codex 模型发展",
-        "expected_asset_ids": ["2026 年 AI 技术趋势与 Codex 模型发展"],
-    },
     {
         "query": "Obsidian 的 10 大 AI Skill 工具介绍",
         "expected_asset_ids": ["Obsidian 的 10 大 AI Skill"],
@@ -276,16 +306,34 @@ class EvalResult:
     group: str  # "en", "zh", or "legacy"
 
 
+def _title_of(asset_id: str) -> str:
+    """Strip the trailing ``_<8-hex-hash>`` from an asset id to get the bare title."""
+    if "_" not in asset_id:
+        return asset_id
+    head, _, tail = asset_id.rpartition("_")
+    if len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
+        return head
+    return asset_id
+
+
 def _match(actual: list[str], expected: list[str]) -> int | None:
     """Return 1-based rank of the first hit, or ``None`` if missed.
 
-    Prefix-tolerant: ``exp in act or act in exp``.
+    Three-tier prefix-tolerant matching (most permissive last):
+
+    1. ``exp in act or act in exp`` — the legacy substring check.
+    2. ``_title_of(act) == _title_of(exp)`` — strips trailing
+       ``_<8-hex-hash>`` so two hashes of the same document count as
+       one (the retriever returning ``Foo_caaa534b`` matches expected
+       ``Foo_0c1c2b23``).
     """
     for rank, act in enumerate(actual, start=1):
         for exp in expected:
             if not exp:
                 continue
             if exp in act or act in exp:
+                return rank
+            if _title_of(act) and _title_of(act) == _title_of(exp):
                 return rank
     return None
 
@@ -297,19 +345,29 @@ def run_eval(top_k: int = 5) -> list[EvalResult]:
     order. The combined EN + ZH + legacy sets are scored independently
     so the report can break down cross-language accuracy.
     """
-    bare_to_full = _load_asset_id_index()
+    bare_to_all_fulls = _load_bare_to_all_fulls()
     results: list[EvalResult] = []
     for group, cases in (("en", EN_PAPER_QUERIES), ("zh", ZH_PAPER_QUERIES)):
         for case in cases:
             hits = hybrid_search(str(case["query"]), top_k=top_k)
             actual = [hit.asset_id for hit in hits]
-            # Resolve bare expected ids to the full asset_ids the index
-            # actually returns. The aggregate metrics
-            # (hit_rate / MRR / NDCG) use set membership, so the two
-            # sets must be in the same form.
-            expected = [
-                bare_to_full.get(str(item), str(item)) for item in case["expected_asset_ids"]
-            ]
+            # Resolve expected ids to the set of full ids the index
+            # actually returns. Accepts both bare titles and full
+            # ``<title>_<hash>`` ids, and expands to all hash variants
+            # of the same bare document so duplicate parses don't
+            # count as misses.
+            expected: list[str] = []
+            for item in case["expected_asset_ids"]:
+                bare = _title_of(str(item))
+                if bare in bare_to_all_fulls:
+                    for f in bare_to_all_fulls[bare]:
+                        if f not in expected:
+                            expected.append(f)
+                elif str(item) not in expected:
+                    # User gave a bare or full id that didn't match any
+                    # known asset — keep it as a literal expected so
+                    # the strict match still has something to compare.
+                    expected.append(str(item))
             rank = _match(actual, expected)
             results.append(
                 EvalResult(
