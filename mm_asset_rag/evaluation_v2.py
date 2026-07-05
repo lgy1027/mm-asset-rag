@@ -61,7 +61,12 @@ V2_ZH_ON_EN_PAPERS: list[dict] = [
     # Multi-relevant: any of these papers should hit.
     {
         "query": "目标检测模型",
-        "expected_asset_ids": ["You Only Look Once", "Rich feature hierarchies", "Ssd", "Detr"],
+        "expected_asset_ids": [
+            "You Only Look Once",
+            "Rich Feature Hierarchies For Accurate Object Detection And Semantic Segmentation",
+            "Ssd",
+            "Detr",
+        ],
     },
     {
         "query": "图像分割方法",
