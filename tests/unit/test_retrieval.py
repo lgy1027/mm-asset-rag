@@ -137,9 +137,7 @@ def test_merge_hits_min_score_soft_floor() -> None:
 
     # floor above tail's contribution drops only tail
     tail_score = 1.0 / (RRF_K + 2)
-    merged_floored = retrieval.merge_hits(
-        groups, [1.0], top_k=5, min_score=tail_score + 1e-9
-    )
+    merged_floored = retrieval.merge_hits(groups, [1.0], top_k=5, min_score=tail_score + 1e-9)
     assert {h.asset_id for h in merged_floored} == {"top"}
 
 

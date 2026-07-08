@@ -114,9 +114,7 @@ def test_create_collection_matches_when_embed_sparse_enabled(monkeypatch) -> Non
         existing_sparse_names=[qb.SPARSE_VECTOR_NAME, "bm25_zh", qb.EMBED_SPARSE_VECTOR_NAME],
     )
     # No raise.
-    qb._create_collection(
-        client, "text", vector_size=1024, sparse=True, embed_sparse=True
-    )
+    qb._create_collection(client, "text", vector_size=1024, sparse=True, embed_sparse=True)
     client.create_collection.assert_not_called()
 
 
@@ -128,9 +126,7 @@ def test_create_collection_fails_when_embed_sparse_missing(monkeypatch) -> None:
         existing_sparse_names=[qb.SPARSE_VECTOR_NAME, "bm25_zh"],  # no embed_sparse
     )
     with pytest.raises(RuntimeError, match="schema mismatch"):
-        qb._create_collection(
-            client, "text", vector_size=1024, sparse=True, embed_sparse=True
-        )
+        qb._create_collection(client, "text", vector_size=1024, sparse=True, embed_sparse=True)
 
 
 def test_create_collection_matches_when_embed_colbert_enabled(monkeypatch) -> None:

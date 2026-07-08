@@ -468,12 +468,8 @@ def test_text_to_image_does_not_short_circuit_on_zero_overlap(
     # verify ``query_points`` was called (not short-circuited).
     fake_qdrant_client.query_points.return_value = MagicMock(points=[])
 
-    monkeypatch.setattr(
-        qdrant_backend, "get_qdrant_client", lambda: fake_qdrant_client
-    )
-    monkeypatch.setattr(
-        qdrant_backend, "image_collection", lambda dim: "multimodal_image_512d"
-    )
+    monkeypatch.setattr(qdrant_backend, "get_qdrant_client", lambda: fake_qdrant_client)
+    monkeypatch.setattr(qdrant_backend, "image_collection", lambda dim: "multimodal_image_512d")
 
     class _Provider:
         def embed_text(self, text):

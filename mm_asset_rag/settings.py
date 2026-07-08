@@ -180,6 +180,18 @@ class Settings(BaseSettings):
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_top_n: int = 30
     reranker_top_k: int | None = None
+    # Weight of the cross-encoder score in the final blended rank.
+    # ``hybrid_search`` passes the pre-rerank RRF score through to the
+    # reranker; rather than letting the cross-encoder *overwrite* the
+    # hybrid signal (which lets a long, well-structured but off-topic
+    # chunk out-score the true match), the final score is a convex blend
+    # ``blend * norm(cross_encoder) + (1-blend) * norm(hybrid_rrf)``.
+    # 0.0 = ignore the reranker (hybrid only); 1.0 = pure reranker
+    # (the pre-blend behaviour, which over-trusts the cross-encoder on
+    # long evidence). 0.6 keeps the reranker in charge while the
+    # whole-document dense + BM25 signal anchors it. Corpus- and
+    # model-agnostic: works for any embedder / reranker combination.
+    reranker_hybrid_blend: float = 0.6
 
     # ─── Chinese BM25 ─────────────────────────────────────────────────────
     # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``

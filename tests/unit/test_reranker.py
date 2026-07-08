@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from mm_asset_rag.embedders.reranker import Reranker, get_default_reranker, reset_reranker
 from mm_asset_rag.schema import SearchHit
 
@@ -52,9 +54,14 @@ def test_rerank_reorders_by_cross_encoder_score(tmp_home, monkeypatch):
         out = reranker.rerank("query", hits, top_k=2)
 
     assert [h.asset_id for h in out] == ["B", "A"]
-    # Cross-encoder score written to hit.score
-    assert out[0].score == 0.8
-    assert out[1].score == 0.2
+    # Final score is the blended (norm(CE) + norm(hybrid)) value, not the
+    # raw cross-encoder score. With blend=0.6: B = 0.6*1.0 + 0.4*0.0 = 0.6,
+    # A = 0.6*0.0 + 0.4*1.0 = 0.4 (CE ranks B>A, hybrid ranks A>B; CE wins).
+    assert out[0].score == pytest.approx(0.6)
+    assert out[1].score == pytest.approx(0.4)
+    # Raw cross-encoder score preserved in metadata.
+    assert out[0].metadata["rerank_score"] == 0.8
+    assert out[1].metadata["rerank_score"] == 0.2
     # Pre-rerank hybrid score preserved
     assert out[0].metadata["hybrid_score"] == 0.1
     assert out[1].metadata["hybrid_score"] == 0.9
@@ -227,13 +234,16 @@ def test_rerank_skips_cross_encoder_for_image_hits(tmp_home, monkeypatch):
 
     # Cross-encoder saw only the text hit.
     assert ce.calls == 1
-    # Image hit's score is preserved.
+    # Image hit's raw CLIP score is preserved in metadata; the hit.score
+    # is now the blended value, not the raw CLIP score.
     img_out = next(h for h in out if h.asset_id == "imgB")
-    assert img_out.score == 0.35
+    assert img_out.metadata["rerank_score"] == 0.35
     assert img_out.metadata["hybrid_score"] == 0.35
-    # Text hit got the cross-encoder score.
+    # Text hit: CE 0.9 (norm 1.0, the only text hit) + hybrid 0.2 (norm 0.0
+    # vs the image's 0.35) → 0.6*1.0 + 0.4*0.0 = 0.6.
     text_out = next(h for h in out if h.asset_id == "docA")
-    assert text_out.score == 0.9
+    assert text_out.score == pytest.approx(0.6)
+    assert text_out.metadata["rerank_score"] == 0.9
 
 
 def test_rerank_image_only_hits_keep_scores(tmp_home, monkeypatch):
@@ -257,15 +267,20 @@ def test_rerank_image_only_hits_keep_scores(tmp_home, monkeypatch):
     # Cross-encoder never invoked (no text hits).
     mock_load.assert_not_called()
     assert [h.asset_id for h in out] == ["img2", "img1", "img0"]
-    # Scores preserved.
-    assert out[0].score == 0.32
+    # Scores are blended (norm(CLIP) + norm(hybrid)); with a single signal
+    # family the order is unchanged. img2 = 0.6*1.0 + 0.4*1.0 = 1.0.
+    assert out[0].score == pytest.approx(1.0)
+    assert out[0].metadata["rerank_score"] == 0.32
 
 
 def test_rerank_image_and_text_unified_sort(tmp_home, monkeypatch):
-    """Image and text hits are sorted together by their respective scores.
+    """Image and text hits are blended onto a common [0,1] scale and sorted
+    together. The blend is scale-free, so a CLIP score and a cross-encoder
+    logit compete by *rank within their signal family*, not raw magnitude.
 
-    The text hit's cross-encoder score (0.95) outranks the image hit's
-    preserved CLIP score (0.30), so the text hit comes first.
+    Here the text hit's CE (0.95) and the image hit's CLIP (0.30) each top
+    their own family (norm=1.0); the image also tops the hybrid RRF
+    (0.30 vs 0.20), so its blend (1.0) edges the text hit's (0.6).
     """
     monkeypatch.setenv("RERANKER_ENABLED", "true")
     reset_reranker()
@@ -281,7 +296,10 @@ def test_rerank_image_and_text_unified_sort(tmp_home, monkeypatch):
     with patch.object(Reranker, "_load", return_value=FakeCE()):
         out = reranker.rerank("query", [text_hit, image_hit], top_k=5)
 
-    assert out[0].asset_id == "docA"
-    assert out[0].score == 0.95
-    assert out[1].asset_id == "imgB"
-    assert out[1].score == 0.30
+    # Image tops both its CLIP family and the hybrid RRF → blend 1.0;
+    # text tops CE but is last in hybrid → blend 0.6.
+    assert out[0].asset_id == "imgB"
+    assert out[0].score == pytest.approx(1.0)
+    assert out[1].asset_id == "docA"
+    assert out[1].score == pytest.approx(0.6)
+    assert out[1].metadata["rerank_score"] == 0.95
