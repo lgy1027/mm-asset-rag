@@ -297,13 +297,15 @@ class Settings(BaseSettings):
     # each chunk gets a short LLM-generated preamble situating it within its
     # document, prepended to the embedding/BM25 input so dense + sparse
     # channels can disambiguate generic terms ("diffusion" → DDPM vs Stable
-    # Diffusion). opt-in — disabled by default because it costs ~1 LLM call
-    # per chunk (4158 PDF chunks on the bundled corpus ≈ 9.4M tokens).
+    # Diffusion). Enabled by default — the latency/precision trade-off favors
+    # precision; set ``CONTEXTUAL_ENABLED=false`` to opt out. It costs ~1 LLM
+    # call per chunk (4158 PDF chunks on the bundled corpus ≈ 9.4M tokens).
     # The shared ``OPENAI_*`` triple is reused; ``contextual_model`` only
     # overrides the model name. Generated at parse time and cached under
     # ``parsed/<id>/context.jsonl`` so ``mmrag reindex`` reuses it without
-    # re-calling the LLM. Enable via ``mmrag parse --contextual``.
-    contextual_enabled: bool = False
+    # re-calling the LLM. When ``OPENAI_*`` is unconfigured the whole step
+    # degrades to a no-op (no LLM call, no cache file) — safe to leave on.
+    contextual_enabled: bool = True
     contextual_model: str | None = None
     contextual_concurrency: int = 4
     contextual_chunk_max_chars: int = 8000

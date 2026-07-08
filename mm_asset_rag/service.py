@@ -1167,10 +1167,12 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
                 continue
             with target.open("a", encoding="utf-8") as f:
                 # Contextual Retrieval: attach an LLM-generated context to each
-                # chunk before writing to documents.jsonl. opt-in via
-                # ``--contextual``; no-op (and no LLM cost) otherwise. Cached
-                # under parsed/<id>/context.jsonl so reindex reuses it.
-                if options.contextual and docs:
+                # chunk before writing to documents.jsonl. On by default via
+                # ``Settings.contextual_enabled``; the per-task ``--contextual``
+                # flag forces it on. No-op (and no LLM cost) when OPENAI_* is
+                # unconfigured. Cached under parsed/<id>/context.jsonl so
+                # reindex reuses it.
+                if (options.contextual or service._settings.contextual_enabled) and docs:
                     from .contextual import enrich_docs_with_context
 
                     cache_path = get_parsed_dir() / asset.asset_id / "context.jsonl"
