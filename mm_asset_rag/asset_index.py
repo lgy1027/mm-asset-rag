@@ -37,19 +37,18 @@ _EMBEDDING_LOCK = threading.Lock()
 
 
 def _dedup_threshold() -> float:
-    """Read the semantic-dedup cosine threshold from env.
+    """Read the semantic-dedup cosine threshold from Settings.
 
-    Kept out of ``Settings`` on purpose: Agent A is reshaping the
-    ``Settings`` dataclass in parallel, and a dedicated field here would
-    cause merge churn for a single scalar. Default ``0.92`` matches the
-    LlamaIndex DeduplicationModule default.
+    Reads ``Settings.dedup_semantic_threshold`` (env ``DEDUP_SEMANTIC_THRESHOLD``,
+    default ``0.92`` matching LlamaIndex's DeduplicationModule). The value
+    is clamped to [-1, 1]; NaN / non-numeric input falls back to the default.
     """
-    raw = os.environ.get("DEDUP_SEMANTIC_THRESHOLD", "0.92")
+    from .settings import get_settings
+
     try:
-        val = float(raw)
+        val = float(get_settings().dedup_semantic_threshold)
     except (TypeError, ValueError):
         return 0.92
-    # Negative / NaN thresholds make no sense; fall back to the default.
     if not math.isfinite(val) or val < -1.0 or val > 1.0:
         return 0.92
     return val
@@ -200,25 +199,29 @@ def _asset_embeddings_path(explicit: Path | None = None) -> Path:
 
 
 def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Pure-python cosine similarity (avoids a numpy hard-dependency)."""
+    """Pure-python cosine similarity (avoids a numpy hard-dependency).
+
+    Vectors of *different* dimension are treated as non-comparable and
+    return ``0.0`` rather than truncating to the shorter length — a
+    truncated dot product is meaningless and would risk misclassifying an
+    asset as a near-duplicate when the embedding model (and thus the dim)
+    changed between ingests.
+    """
     if not a or not b:
         return 0.0
-    n = min(len(a), len(b))
-    if n == 0:
+    if len(a) != len(b):
         return 0.0
     dot = 0.0
     na = 0.0
     nb = 0.0
-    for i in range(n):
-        av = float(a[i])
-        bv = float(b[i])
+    for av, bv in zip(a, b):
+        av = float(av)
+        bv = float(bv)
         dot += av * bv
         na += av * av
         nb += bv * bv
     if na <= 0.0 or nb <= 0.0:
         return 0.0
-    import math
-
     return dot / (math.sqrt(na) * math.sqrt(nb))
 
 

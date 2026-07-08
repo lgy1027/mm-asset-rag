@@ -303,3 +303,38 @@ def test_rerank_image_and_text_unified_sort(tmp_home, monkeypatch):
     assert out[1].asset_id == "docA"
     assert out[1].score == pytest.approx(0.6)
     assert out[1].metadata["rerank_score"] == 0.95
+
+
+def test_rerank_image_hit_uses_raw_clip_not_rrf_score(tmp_home, monkeypatch):
+    """After ``merge_hits``, ``hit.score`` is the RRF contribution (~0.016)
+    while the original CLIP cosine is preserved in ``metadata['raw_score']``.
+    The reranker must blend the CLIP score, not the RRF score — otherwise the
+    blend fuses two RRF signals on image hits and the CLIP relevance is lost.
+    """
+    monkeypatch.setenv("RERANKER_ENABLED", "true")
+    reset_reranker()
+
+    image_hit = SearchHit(
+        route="qdrant_text_to_image",
+        score=0.016,  # RRF contribution after merge_hits
+        asset_id="imgB",
+        title="imgB",
+        source_type="image",
+        source_path="images/imgB.jpg",
+        evidence="caption imgB",
+        metadata={"raw_score": 0.40},  # original CLIP cosine
+    )
+
+    class FakeCE:
+        def predict(self, pairs, show_progress_bar=False):
+            return []
+
+    reranker = Reranker()
+    with patch.object(Reranker, "_load", return_value=FakeCE()):
+        out = reranker.rerank("query", [image_hit], top_k=5)
+
+    img = out[0]
+    # rerank_score records the CLIP raw score (0.40), not the RRF score.
+    assert img.metadata["rerank_score"] == 0.40
+    # hybrid_score records the RRF score.
+    assert img.metadata["hybrid_score"] == 0.016

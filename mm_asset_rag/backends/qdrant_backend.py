@@ -1317,13 +1317,12 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
     # suppressed legitimate CLIP-correct recalls for queries whose
     # wording has no token overlap with the (often sparse) image
     # metadata (e.g. "a red car" against an image whose tags are just
-    # ["vehicle"]). We keep the relevance-threshold floor below as
-    # the sole precision control; the pre-filter index is still built
-    # (and cached) so a future boosting step can use it without
-    # re-scanning the collection.
-    query_tokens = _tokenize_for_prefilter(query)
-    if query_tokens:
-        _load_image_tag_index()
+    # ["vehicle"]). The relevance-threshold floor below is the sole
+    # precision control. The pre-filter helpers (``_load_image_tag_index``
+    # / ``_has_any_token_overlap``) are retained for a future boosting
+    # step but no longer invoked per query — building the index costs a
+    # Qdrant ``count`` round-trip, which is not worth paying for a
+    # feature that is currently unused.
     client = get_qdrant_client()
     query_vector = provider.embed_text(query)
     # The image collection may not exist yet (e.g. user only ingested

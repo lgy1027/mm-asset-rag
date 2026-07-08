@@ -43,6 +43,18 @@ def test_merge_hits_rrf_combines_routes_for_same_asset() -> None:
     assert merged[0].score == pytest.approx(1.0 / (RRF_K + 1))
 
 
+def test_merge_hits_preserves_raw_score_for_reranker() -> None:
+    """``merge_hits`` overwrites ``hit.score`` with the RRF contribution, so
+    the original route score (CLIP cosine for image routes) is preserved in
+    ``metadata['raw_score']`` for the reranker to read."""
+    groups = [[_make_hit("img", "text_to_image", 0.35, source_type="image")]]
+    merged = retrieval.merge_hits(groups, [1.0], top_k=5)
+    assert merged[0].metadata["raw_score"] == 0.35
+    # The fused score is the RRF contribution, not the raw CLIP cosine.
+    assert merged[0].score == pytest.approx(1.0 / (RRF_K + 1))
+    assert merged[0].score != 0.35
+
+
 def test_merge_hits_rrf_top_rank_scores_higher_than_second() -> None:
     """Within a single route the rank-1 hit scores above the rank-2 hit."""
     groups = [[_make_hit(f"id{i}", "text", 1.0 / (i + 1)) for i in range(5)]]

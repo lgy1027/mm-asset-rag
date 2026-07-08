@@ -193,6 +193,15 @@ class Settings(BaseSettings):
     # model-agnostic: works for any embedder / reranker combination.
     reranker_hybrid_blend: float = 0.6
 
+    # ─── Semantic dedup ───────────────────────────────────────────────────
+    # Cosine threshold for LlamaIndex-style asset dedup in ``asset_index``:
+    # a new asset whose title / first-chunk embedding is cosine-close to an
+    # existing active asset (with a different sha256) reuses the existing
+    # ``asset_id`` so near-duplicates aren't re-indexed. Default ``0.92``
+    # matches LlamaIndex's DeduplicationModule. ``asset_index`` clamps the
+    # value to [-1, 1] and falls back to the default on invalid env input.
+    dedup_semantic_threshold: float = 0.92
+
     # ─── Chinese BM25 ─────────────────────────────────────────────────────
     # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``
     # (jieba tokenisation + Okapi BM25). Stored alongside the existing

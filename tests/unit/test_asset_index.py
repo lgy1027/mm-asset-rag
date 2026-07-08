@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from mm_asset_rag.asset_index import (
     AssetIndexEntry,
     find_active_by_asset_id,
@@ -285,10 +287,25 @@ def test_mark_deleted_tombstones_embedding(tmp_path: Path) -> None:
 
 
 def test_dedup_threshold_env_override(monkeypatch, tmp_path: Path) -> None:
+    from mm_asset_rag.settings import get_settings
+
     emb_path = tmp_path / "emb.jsonl"
     record_asset_embedding("a_55555555", "a", [1.0, 0.0], embeddings_path=emb_path)
     # cosine([1,0],[1,1]) ≈ 0.707. Default 0.92 → miss.
     assert find_by_semantic([1.0, 1.0], embeddings_path=emb_path) is None
-    # Lower threshold via env → hit.
+    # Lower threshold via env → hit. ``get_settings`` is lru_cached, so the
+    # cache must be cleared for the new env value to take effect mid-test.
     monkeypatch.setenv("DEDUP_SEMANTIC_THRESHOLD", "0.5")
+    get_settings.cache_clear()
     assert find_by_semantic([1.0, 1.0], embeddings_path=emb_path) == "a_55555555"
+
+
+def test_cosine_similarity_rejects_dimension_mismatch() -> None:
+    """Vectors of different dimension return 0.0 rather than a truncated dot
+    product, so an embedding-model change (dim change) between ingests cannot
+    misclassify an asset as a near-duplicate via a meaningless short-vector
+    projection."""
+    from mm_asset_rag.asset_index import _cosine_similarity
+
+    assert _cosine_similarity([1.0, 0.0, 0.0], [1.0, 0.0]) == 0.0
+    assert _cosine_similarity([1.0, 0.0], [1.0, 0.0]) == pytest.approx(1.0)

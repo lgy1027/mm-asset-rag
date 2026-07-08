@@ -84,11 +84,15 @@ class Reranker:
         image_hits = [h for h in hits if h.source_type == "image"]
         text_hits = [h for h in hits if h.source_type != "image"]
 
-        # Preserve image hits' original scores; only text/PDF hits go
-        # through the cross-encoder.
+        # Image hits are not re-scored by the text cross-encoder — a CLIP
+        # cosine is already a query-document relevance signal. We read the
+        # *original* CLIP score from ``metadata["raw_score"]`` because
+        # ``merge_hits`` overwrites ``hit.score`` with the RRF contribution
+        # (~1/(60+rank)); without this the blend below would fuse two RRF
+        # signals on image hits and discard the CLIP relevance entirely.
         image_scored = [
-            (h, h.score, h.score)
-            for h in image_hits  # (hit, ce_score, hybrid_score)
+            (h, h.metadata.get("raw_score", h.score), h.score)
+            for h in image_hits  # (hit, clip_score, hybrid_score)
         ]
 
         text_scored: list[tuple[SearchHit, float, float]] = []

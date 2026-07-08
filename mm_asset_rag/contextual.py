@@ -259,5 +259,12 @@ def enrich_docs_with_context(
                     key = _key_for(idx, d)
                     ctx = d.metadata.get("context", "")
                     f.write(json.dumps({"key": key, "context": ctx}, ensure_ascii=False) + "\n")
-        except Exception:
-            pass
+        except Exception as exc:  # disk full / permission — degrade, but log
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "contextual cache write failed for %s; a later reindex will "
+                "re-invoke the LLM per chunk instead of reusing the cache: %s",
+                cache_path,
+                exc,
+            )

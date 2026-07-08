@@ -229,3 +229,36 @@ def test_split_with_recursion_multiple_headings_split_independently() -> None:
     headings = {s.heading for s in sections}
     assert "A" in headings and "B" in headings
     assert len(sections) > 2  # each long body split into multiple
+
+
+def test_recursive_split_caps_with_real_tokenizer() -> None:
+    """When count_tokens is a real tokenizer whose chars/token ratio
+    differs from the 3.5 approximation (here 1 char = 1 token, like CJK),
+    the hard cap must verify against the real counter and shrink — otherwise
+    an oversized piece survives past max_tokens."""
+    # 1 token per char defeats the chars/3.5 approximation.
+    def count(t: str) -> int:
+        return len(t)
+
+    body = "x" * 1000  # 1000 real tokens, no separators to split on
+    pieces = recursive_split(
+        body, target_tokens=100, max_tokens=200, overlap_tokens=0, count_tokens=count
+    )
+    assert len(pieces) > 1
+    for p in pieces:
+        assert count(p) <= 200
+
+
+def test_tail_for_overlap_is_bounded() -> None:
+    """_tail_for_overlap never returns a tail far larger than the overlap
+    budget, even when the only separator sits early in the text (which the
+    unbounded rfind would otherwise pull ``start`` back to)."""
+    from mm_asset_rag.parsers.chunk_splitter import _tail_for_overlap
+
+    # One paragraph break near the very start, then a long run of prose.
+    text = "intro\n\n" + "正文" * 2000
+    tail = _tail_for_overlap(text, overlap_tokens=60, count_tokens=_char_count_tokens)
+    # Bounded to ~2x the char budget (overlap window + one pull-back window),
+    # not the whole document.
+    assert len(tail) <= 2 * int(60 * 3.5) + 10
+    assert len(tail) < len(text)

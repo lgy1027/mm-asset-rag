@@ -118,7 +118,15 @@ def merge_hits(
                     source_type=hit.source_type,
                     source_path=hit.source_path,
                     evidence=hit.evidence,
-                    metadata={**hit.metadata, "routes": [hit.route]},
+                    metadata={
+                        **hit.metadata,
+                        "routes": [hit.route],
+                        # Preserve the route's raw score (CLIP cosine for
+                        # image routes, dense/BM25 for text) so the reranker
+                        # can still read the original signal after RRF
+                        # overwrites ``score`` with the fusion contribution.
+                        "raw_score": hit.score,
+                    },
                     images=list(hit.images),
                 )
             else:

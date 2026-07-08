@@ -268,19 +268,29 @@ def recursive_split(
             merged.append(chunk)
     # Hard cap: anything still over max_tokens after all separators is
     # force-cut so the dense embedder never sees an unbounded payload.
+    # The cut width starts from the char approximation, but each piece is
+    # verified against the real ``count_tokens`` (which may be a true HF
+    # tokenizer when ``CHUNK_TOKENIZER`` is set) and shrunk further if the
+    # approximation was too generous — e.g. pure CJK where 1 char ≈ 1
+    # token, not 3.5, would otherwise leave an oversized piece.
     capped: list[str] = []
     for chunk in merged:
         if count_tokens(chunk) <= max_tokens:
             capped.append(chunk)
-        else:
-            # Char-level hard cut at the approx max boundary, then keep
-            # splitting the remainder.
-            limit = int(max_tokens * _CHARS_PER_TOKEN)
-            i = 0
-            while i < len(chunk):
-                piece = chunk[i : i + limit]
-                capped.append(piece)
-                i += limit
+            continue
+        limit = max(1, int(max_tokens * _CHARS_PER_TOKEN))
+        i = 0
+        while i < len(chunk):
+            piece = chunk[i : i + limit]
+            # Shrink until the real token count fits, so a tokenizer whose
+            # chars/token ratio differs from the 3.5 approximation cannot
+            # leave a piece over ``max_tokens``. Rare path (every separator
+            # already exhausted), so the extra counting is acceptable.
+            while count_tokens(piece) > max_tokens and len(piece) > 1:
+                ratio = max_tokens / count_tokens(piece)
+                piece = piece[: max(1, int(len(piece) * ratio))]
+            capped.append(piece)
+            i += len(piece)
     # Apply overlap between adjacent chunks.
     if overlap_tokens <= 0 or len(capped) <= 1:
         return capped
@@ -295,6 +305,10 @@ def _tail_for_overlap(text: str, overlap_tokens: int, count_tokens: callable) ->
     """Return the trailing slice of ``text`` sized to ≈ ``overlap_tokens``,
     pulled back to a separator boundary so the overlap does not start
     mid-word. Returns "" when the text is already shorter than the budget.
+
+    The pull-back is bounded to one ``limit`` window before ``start`` so a
+    separator that sits far earlier in the text cannot drag ``start`` back
+    and return a tail far larger than the overlap budget.
     """
     if not text:
         return ""
@@ -302,11 +316,14 @@ def _tail_for_overlap(text: str, overlap_tokens: int, count_tokens: callable) ->
     if len(text) <= limit:
         return text
     start = len(text) - limit
-    # Pull start back to the nearest separator so we don't cut mid-word.
+    # Pull start back to the nearest separator so we don't cut mid-word,
+    # but only within the overlap window — never to a separator far earlier
+    # in the text, which would return a tail far larger than the budget.
+    search_floor = max(0, start - limit)
     for sep in _SEPARATORS:
         if sep == "":
             continue
-        idx = text.rfind(sep, 0, start)
+        idx = text.rfind(sep, search_floor, start)
         if idx != -1:
             start = idx + len(sep)
             break

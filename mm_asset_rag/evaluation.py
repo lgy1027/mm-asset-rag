@@ -309,16 +309,6 @@ class EvalResult:
     group: str  # "en", "zh", or "legacy"
 
 
-def _title_of(asset_id: str) -> str:
-    """Strip the trailing ``_<8-hex-hash>`` from an asset id to get the bare title."""
-    if "_" not in asset_id:
-        return asset_id
-    head, _, tail = asset_id.rpartition("_")
-    if len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
-        return head
-    return asset_id
-
-
 def strip_trailing_hash(asset_id: str) -> str:
     """Normalise an asset id for eval matching.
 
