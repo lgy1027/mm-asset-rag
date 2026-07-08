@@ -87,10 +87,24 @@ def test_rerank_empty_hits(tmp_home, monkeypatch):
     assert reranker.rerank("query", [], top_k=5) == []
 
 
-def test_get_default_reranker_disabled_by_default(tmp_home):
-    """No RERANKER_ENABLED → None (hybrid_search skips rerank)."""
+def test_get_default_reranker_disabled_by_default(tmp_home, monkeypatch):
+    """Reranker is now enabled by default; disable via RERANKER_ENABLED=false."""
     reset_reranker()
+    # Explicitly disable.
+    monkeypatch.setenv("RERANKER_ENABLED", "false")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
     assert get_default_reranker() is None
+
+
+def test_get_default_reranker_enabled_by_default(tmp_home):
+    """The default is now enabled (latency for precision). The Reranker
+    instance is constructed lazily and returned here without loading the
+    model (model load only happens on the first ``rerank`` call)."""
+    reset_reranker()
+    reranker = get_default_reranker()
+    assert reranker is not None
 
 
 def test_get_default_reranker_load_failure_is_sticky(tmp_home, monkeypatch):
@@ -105,10 +119,21 @@ def test_get_default_reranker_load_failure_is_sticky(tmp_home, monkeypatch):
     with patch("mm_asset_rag.embedders.reranker.Reranker", return_value=MagicMock()):
         assert get_default_reranker() is None
 
+    # Clean up the sticky flag so it doesn't leak into later tests now
+    # that reranker is enabled by default.
+    reset_reranker()
+
 
 def test_hybrid_search_skips_rerank_when_disabled(tmp_home, monkeypatch):
     """reranker off → hybrid_search behaves as before (no rerank call)."""
     from mm_asset_rag.retrieval import hybrid_search
+
+    # The default is now enabled; explicitly disable for this test.
+    monkeypatch.setenv("RERANKER_ENABLED", "false")
+    reset_reranker()
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
 
     fake_hits = [_hit("X", "doc", score=0.8)]
     with (
@@ -158,3 +183,105 @@ def test_hybrid_search_reranks_when_enabled(tmp_home, monkeypatch):
     assert captured_fetch_k["value"] == 20
     # Reranker was applied (output is the reranked set, sliced to 5)
     assert len(out) == 5
+
+
+# ─── image rerank split ────────────────────────────────────────────────────
+
+
+def _image_hit(asset_id: str, score: float = 0.5) -> SearchHit:
+    return SearchHit(
+        route="qdrant_text_to_image",
+        score=score,
+        asset_id=asset_id,
+        title=asset_id,
+        source_type="image",
+        source_path=f"images/{asset_id}.jpg",
+        evidence=f"image caption {asset_id}",
+        metadata={"page": 1},
+    )
+
+
+def test_rerank_skips_cross_encoder_for_image_hits(tmp_home, monkeypatch):
+    """Image-source hits keep their original CLIP score; the text cross-encoder
+    is only called for text/PDF hits."""
+    monkeypatch.setenv("RERANKER_ENABLED", "true")
+    reset_reranker()
+
+    text_hit = _hit("docA", "alpha doc", score=0.2)
+    image_hit = _image_hit("imgB", score=0.35)
+
+    class FakeCE:
+        def __init__(self):
+            self.calls = 0
+
+        def predict(self, pairs, show_progress_bar=False):
+            self.calls += 1
+            # Only one pair should reach the cross-encoder (the text hit).
+            assert len(pairs) == 1
+            return [0.9]
+
+    ce = FakeCE()
+    reranker = Reranker()
+    with patch.object(Reranker, "_load", return_value=ce):
+        out = reranker.rerank("query", [text_hit, image_hit], top_k=5)
+
+    # Cross-encoder saw only the text hit.
+    assert ce.calls == 1
+    # Image hit's score is preserved.
+    img_out = next(h for h in out if h.asset_id == "imgB")
+    assert img_out.score == 0.35
+    assert img_out.metadata["hybrid_score"] == 0.35
+    # Text hit got the cross-encoder score.
+    text_out = next(h for h in out if h.asset_id == "docA")
+    assert text_out.score == 0.9
+
+
+def test_rerank_image_only_hits_keep_scores(tmp_home, monkeypatch):
+    """When all hits are images, the cross-encoder is never loaded."""
+    monkeypatch.setenv("RERANKER_ENABLED", "true")
+    reset_reranker()
+
+    image_hits = [_image_hit(f"img{i}", score=0.3 + 0.01 * i) for i in range(3)]
+
+    load_called = {"n": 0}
+
+    class FakeCE:
+        def predict(self, pairs, show_progress_bar=False):
+            load_called["n"] += 1
+            return [0.5] * len(pairs)
+
+    reranker = Reranker()
+    with patch.object(Reranker, "_load", return_value=FakeCE()) as mock_load:
+        out = reranker.rerank("query", image_hits, top_k=5)
+
+    # Cross-encoder never invoked (no text hits).
+    mock_load.assert_not_called()
+    assert [h.asset_id for h in out] == ["img2", "img1", "img0"]
+    # Scores preserved.
+    assert out[0].score == 0.32
+
+
+def test_rerank_image_and_text_unified_sort(tmp_home, monkeypatch):
+    """Image and text hits are sorted together by their respective scores.
+
+    The text hit's cross-encoder score (0.95) outranks the image hit's
+    preserved CLIP score (0.30), so the text hit comes first.
+    """
+    monkeypatch.setenv("RERANKER_ENABLED", "true")
+    reset_reranker()
+
+    text_hit = _hit("docA", "alpha doc", score=0.2)
+    image_hit = _image_hit("imgB", score=0.30)
+
+    class FakeCE:
+        def predict(self, pairs, show_progress_bar=False):
+            return [0.95]
+
+    reranker = Reranker()
+    with patch.object(Reranker, "_load", return_value=FakeCE()):
+        out = reranker.rerank("query", [text_hit, image_hit], top_k=5)
+
+    assert out[0].asset_id == "docA"
+    assert out[0].score == 0.95
+    assert out[1].asset_id == "imgB"
+    assert out[1].score == 0.30

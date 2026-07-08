@@ -84,6 +84,16 @@ class TextEmbedderProtocol(Protocol):
     ``embed_text`` directly when the registered embedder conforms to
     this Protocol; otherwise they fall back to the generic
     ``embed_batch`` path.
+
+    Optional sparse / ColBERT capabilities are *not* declared as
+    Protocol methods (default implementations would break
+    ``runtime_checkable``). Instead, call sites probe with
+    ``getattr(embedder, "embed_text_sparse", None)`` /
+    ``getattr(embedder, "embed_text_colbert", None)`` so an embedder
+    that only emits dense vectors (the OpenAI-compatible
+    :class:`TextEmbedder`) is still a valid participant. The
+    ``SentenceTransformerTextEmbedder`` only exposes these methods when
+    its model supports them (e.g. ``BAAI/bge-m3``).
     """
 
     def embed_text(self, text: str) -> list[float]: ...

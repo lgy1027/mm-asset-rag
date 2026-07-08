@@ -62,10 +62,42 @@ class Reranker:
         preserved in ``metadata["hybrid_score"]``; the returned
         ``SearchHit.score`` is the cross-encoder score. Pure: returns a
         new list, the input ``hits`` are not mutated.
+
+        Image hits (``source_type == "image"``) are **not** re-scored by
+        the text cross-encoder — a CLIP cosine is already a
+        query-document relevance signal and running it through a
+        text-only cross-encoder would only suppress it. Their original
+        score is preserved as-is and they compete with the text hits'
+        cross-encoder scores in the final unified sort. This keeps
+        relevant image hits visible when the reranker is on while still
+        letting high-scoring text hits rise to the top.
         """
         if not hits:
             return []
-        pairs = [(query, h.evidence or "") for h in hits]
+        image_hits = [h for h in hits if h.source_type == "image"]
+        text_hits = [h for h in hits if h.source_type != "image"]
+
+        # Preserve image hits' original scores; only text/PDF hits go
+        # through the cross-encoder.
+        image_ranked = [
+            SearchHit(
+                route=h.route,
+                score=h.score,
+                asset_id=h.asset_id,
+                title=h.title,
+                source_type=h.source_type,
+                source_path=h.source_path,
+                evidence=h.evidence,
+                metadata={**h.metadata, "hybrid_score": h.score},
+            )
+            for h in image_hits
+        ]
+
+        if not text_hits:
+            ranked = sorted(image_ranked, key=lambda h: h.score, reverse=True)
+            return ranked[:top_k]
+
+        pairs = [(query, h.evidence or "") for h in text_hits]
         model = self._load()
         scores = model.predict(pairs, show_progress_bar=False)
         # ``predict`` returns a numpy array; normalise to float regardless
@@ -75,7 +107,7 @@ class Reranker:
         except TypeError:  # pragma: no cover — scores already a scalar
             score_list = [float(scores)]
 
-        ranked = sorted(
+        text_ranked = sorted(
             (
                 SearchHit(
                     route=h.route,
@@ -87,11 +119,18 @@ class Reranker:
                     evidence=h.evidence,
                     metadata={**h.metadata, "hybrid_score": h.score},
                 )
-                for i, h in enumerate(hits)
+                for i, h in enumerate(text_hits)
             ),
             key=lambda h: h.score,
             reverse=True,
         )
+        # Merge the two ranked lists by their respective scores and
+        # take the top_k. The scores live on different scales (CLIP
+        # cosine vs cross-encoder logit) so the ordering is a
+        # best-effort interleaving — image hits with a high CLIP score
+        # stay visible while text hits with a high cross-encoder score
+        # rise to the top. Future work: plug an image reranker here.
+        ranked = sorted([*text_ranked, *image_ranked], key=lambda h: h.score, reverse=True)
         return ranked[:top_k]
 
 

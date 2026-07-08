@@ -77,6 +77,14 @@ HYBRID_PREFETCH_LIMIT = get_settings().qdrant_hybrid_prefetch_limit
 # smooths across the long tail).
 RRF_K = 60
 
+# Optional sparse / ColBERT vector field names. These are only added
+# to the text collection when the active embedder supports them (see
+# ``_embedder_sparse_capability`` / ``_embedder_colbert_capability``).
+# The OpenAI-compatible ``TextEmbedder`` never supports them, so the
+# default configuration keeps the dense + bm25 + bm25_zh schema.
+EMBED_SPARSE_VECTOR_NAME = "embed_sparse"
+EMBED_COLBERT_VECTOR_NAME = "embed_colbert"
+
 
 # Module-level cache for the active collection names. Replaces
 # ``os.environ["QDRANT_ACTIVE_TEXT_COLLECTION"]`` side effects which
@@ -165,6 +173,56 @@ def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
 
     tokens = _bm25_zh_mod.tokenize_zh(query)
     return _bm25_zh_mod.bm25_zh_encode_query(tokens, idf)
+
+
+# ─── Embedder sparse / ColBERT capability probes ──────────────────────────
+# The active text embedder may optionally expose ``embed_text_sparse``
+# and ``embed_text_colbert`` (only the SentenceTransformerTextEmbedder
+# with bge-m3 does). We probe with ``getattr`` so the OpenAI-compatible
+# ``TextEmbedder`` — which does not implement these — returns ``None``
+# and the collection schema stays dense + bm25 + bm25_zh (zero schema
+# change, no reindex required). Settings flags
+# ``embedding_sparse_enabled`` / ``embedding_colbert_enabled`` can
+# force-enable / force-disable; ``auto`` (default) follows the probe.
+
+
+def _embedder_sparse_capability(embedder) -> bool:
+    """True iff the embedder should contribute a sparse prefetch channel."""
+    settings = get_settings()
+    flag = settings.embedding_sparse_enabled
+    if flag == "false":
+        return False
+    if flag == "true":
+        return hasattr(embedder, "embed_text_sparse")
+    # auto: probe the method and confirm it returns a non-None on a
+    # tiny probe — the method existing is not enough (bge-m3 embedder
+    # only supports sparse when its model is actually bge-m3). We call
+    # it once with a probe string; a None result means "not supported
+    # in this configuration".
+    fn = getattr(embedder, "embed_text_sparse", None)
+    if fn is None:
+        return False
+    try:
+        return fn("probe") is not None
+    except Exception:
+        return False
+
+
+def _embedder_colbert_capability(embedder) -> bool:
+    """True iff the embedder should contribute a ColBERT prefetch channel."""
+    settings = get_settings()
+    flag = settings.embedding_colbert_enabled
+    if flag == "false":
+        return False
+    if flag == "true":
+        return hasattr(embedder, "embed_text_colbert")
+    fn = getattr(embedder, "embed_text_colbert", None)
+    if fn is None:
+        return False
+    try:
+        return fn("probe") is not None
+    except Exception:
+        return False
 
 
 # ─── Per-asset chunk selector ─────────────────────────────────────────────
@@ -415,6 +473,9 @@ def _create_collection(
     vector_size: int,
     sparse: bool = False,
     recreate: bool = False,
+    embed_sparse: bool = False,
+    embed_colbert: bool = False,
+    colbert_dim: int | None = None,
 ) -> None:
     """Create (or recreate) a Qdrant collection with the standard config.
 
@@ -426,33 +487,54 @@ def _create_collection(
       When ``bm25_zh_enabled`` is set on :class:`Settings`, a second
       Chinese sparse vector (``bm25_zh``) is added so Chinese docs and
       queries get token-level recall via a jieba-based Okapi BM25.
+    - ``embed_sparse=True`` adds an extra sparse vector field
+      (``embed_sparse``) populated from the embedder's native sparse
+      output (bge-m3). Only when the embedder supports it; the
+      OpenAI-compatible ``TextEmbedder`` never sets this so the
+      default schema is unchanged.
+    - ``embed_colbert=True`` adds a multi-vector field
+      (``embed_colbert``) for late-interaction retrieval. ``colbert_dim``
+      is the per-token vector dim (required when ``embed_colbert`` is
+      true). Again only when the embedder supports it.
     """
     if recreate:
         if client.collection_exists(name):
             client.delete_collection(name)
     elif client.collection_exists(name):
-        # Schema check: when ``sparse=True``, the existing collection must
-        # carry every sparse vector the current Settings expect. Catches
-        # the silent-skip-after-upgrade footgun where adding a new
-        # sparse field (e.g. ``bm25_zh``) would otherwise leave the old
-        # 2-vector collection in place while the indexer tries to write
-        # 3-vector points.
+        # Schema check: the existing collection must carry every sparse
+        # and multi-vector the current Settings expect. Catches the
+        # silent-skip-after-upgrade footgun where adding a new field
+        # (e.g. ``bm25_zh`` / ``embed_sparse`` / ``embed_colbert``)
+        # would otherwise leave the old collection in place while the
+        # indexer tries to write richer points.
         if sparse:
             info = client.get_collection(name)
             existing_sparse = set((info.config.params.sparse_vectors or {}).keys())
+            existing_multi = set((info.config.params.vectors or {}).keys())
             settings = get_settings()
             expected_sparse: set[str] = {SPARSE_VECTOR_NAME}
             if settings.bm25_zh_enabled:
                 expected_sparse.add(settings.bm25_zh_vector_name)
-            missing = sorted(expected_sparse - existing_sparse)
-            unexpected = sorted(existing_sparse - expected_sparse)
-            if missing or unexpected:
+            if embed_sparse:
+                expected_sparse.add(EMBED_SPARSE_VECTOR_NAME)
+            expected_multi: set[str] = {DENSE_VECTOR_NAME}
+            if embed_colbert:
+                expected_multi.add(EMBED_COLBERT_VECTOR_NAME)
+            missing_sparse = sorted(expected_sparse - existing_sparse)
+            unexpected_sparse = sorted(existing_sparse - expected_sparse)
+            missing_multi = sorted(expected_multi - existing_multi)
+            unexpected_multi = sorted(existing_multi - expected_multi)
+            if missing_sparse or unexpected_sparse or missing_multi or unexpected_multi:
                 raise RuntimeError(
                     f"Qdrant collection '{name}' schema mismatch.\n"
                     f"  expected sparse vectors: {sorted(expected_sparse)}\n"
                     f"  actual sparse vectors:   {sorted(existing_sparse)}\n"
-                    f"  missing:   {missing or '(none)'}\n"
-                    f"  unexpected: {unexpected or '(none)'}\n"
+                    f"  missing sparse:   {missing_sparse or '(none)'}\n"
+                    f"  unexpected sparse: {unexpected_sparse or '(none)'}\n"
+                    f"  expected vectors: {sorted(expected_multi)}\n"
+                    f"  actual vectors:   {sorted(existing_multi)}\n"
+                    f"  missing vectors:   {missing_multi or '(none)'}\n"
+                    f"  unexpected vectors: {unexpected_multi or '(none)'}\n"
                     f"Run `mmrag reindex` to rebuild the collection with the "
                     f"current Settings (it is drop+rebuild by default)."
                 )
@@ -465,13 +547,24 @@ def _create_collection(
         settings = get_settings()
         if settings.bm25_zh_enabled:
             sparse_config[settings.bm25_zh_vector_name] = models.SparseVectorParams()
+        if embed_sparse:
+            sparse_config[EMBED_SPARSE_VECTOR_NAME] = models.SparseVectorParams()
+        vectors_config: dict[str, models.VectorParams] = {
+            DENSE_VECTOR_NAME: models.VectorParams(
+                size=vector_size, distance=models.Distance.COSINE
+            ),
+        }
+        if embed_colbert and colbert_dim:
+            vectors_config[EMBED_COLBERT_VECTOR_NAME] = models.VectorParams(
+                size=colbert_dim,
+                distance=models.Distance.COSINE,
+                multivector_config=models.MultiVectorConfig(
+                    comparator=models.MultiVectorComparator.MAX_SIM
+                ),
+            )
         client.create_collection(
             collection_name=name,
-            vectors_config={
-                DENSE_VECTOR_NAME: models.VectorParams(
-                    size=vector_size, distance=models.Distance.COSINE
-                ),
-            },
+            vectors_config=vectors_config,
             sparse_vectors_config=sparse_config,
         )
     else:
@@ -538,6 +631,23 @@ def build_qdrant_text_index(
     batch_size = batch_size or max(1, get_settings().qdrant_upsert_batch_size)
     embedder = get_default_text_embedder()
 
+    # Probe the embedder's optional sparse / ColBERT capabilities. The
+    # OpenAI-compatible ``TextEmbedder`` returns False for both so the
+    # collection schema and the per-point vectors stay identical to
+    # the pre-capability path. ``SentenceTransformerTextEmbedder`` with
+    # bge-m3 enables them; the schema-mismatch check in
+    # ``_create_collection`` then prompts a ``mmrag reindex`` when the
+    # deployer switches embedder.
+    use_embed_sparse = _embedder_sparse_capability(embedder)
+    use_embed_colbert = _embedder_colbert_capability(embedder)
+    colbert_dim: int | None = None
+    if use_embed_colbert:
+        probe_colbert = embedder.embed_text_colbert("probe")  # type: ignore[attr-defined]
+        if probe_colbert and probe_colbert[0]:
+            colbert_dim = len(probe_colbert[0])
+        else:  # pragma: no cover — probe should have succeeded in _capability
+            use_embed_colbert = False
+
     # One embedding call up front to learn the vector size (= collection name).
     # On a warm cache this doc may already be in qdrant; we still need it.
     first_vector = embedder.embed(documents[0].text)
@@ -546,9 +656,24 @@ def build_qdrant_text_index(
 
     if force_recreate:
         _create_collection(
-            client, collection_name, vector_size=len(first_vector), sparse=True, recreate=True
+            client,
+            collection_name,
+            vector_size=len(first_vector),
+            sparse=True,
+            recreate=True,
+            embed_sparse=use_embed_sparse,
+            embed_colbert=use_embed_colbert,
+            colbert_dim=colbert_dim,
         )
-    _create_collection(client, collection_name, vector_size=len(first_vector), sparse=True)
+    _create_collection(
+        client,
+        collection_name,
+        vector_size=len(first_vector),
+        sparse=True,
+        embed_sparse=use_embed_sparse,
+        embed_colbert=use_embed_colbert,
+        colbert_dim=colbert_dim,
+    )
 
     inserted = 0
     skipped = 0
@@ -616,6 +741,23 @@ def build_qdrant_text_index(
 
         sparse_vectors = _embed_bm25(texts)
 
+        # Optional embedder-native sparse vectors (bge-m3). One call per
+        # text; ``embed_text_sparse`` returns a dict with indices/values
+        # or None when not supported (gated by ``use_embed_sparse`` so
+        # we don't call a missing method on the OpenAI embedder).
+        embed_sparse_vectors: list[dict | None] = []
+        if use_embed_sparse:
+            for t in texts:
+                sv = embedder.embed_text_sparse(t)  # type: ignore[attr-defined]
+                embed_sparse_vectors.append(sv)
+        # Optional ColBERT multi-vectors (bge-m3). Each text becomes a
+        # list of token vectors.
+        embed_colbert_vectors: list[list[list[float]] | None] = []
+        if use_embed_colbert:
+            for t in texts:
+                cv = embedder.embed_text_colbert(t)  # type: ignore[attr-defined]
+                embed_colbert_vectors.append(cv)
+
         for j, i in enumerate(to_do):
             payload = {**batch[i].metadata, "text": batch[i].text, "doc_key": doc_keys[i]}
             vector_dict: dict[str, object] = {
@@ -624,6 +766,16 @@ def build_qdrant_text_index(
             }
             if bm25_zh_vectors is not None:
                 vector_dict[settings.bm25_zh_vector_name] = bm25_zh_vectors[offset + i]
+            if use_embed_sparse:
+                sv = embed_sparse_vectors[j]
+                if sv is not None:
+                    vector_dict[EMBED_SPARSE_VECTOR_NAME] = models.SparseVector(
+                        indices=sv["indices"], values=sv["values"]
+                    )
+            if use_embed_colbert:
+                cv = embed_colbert_vectors[j]
+                if cv is not None:
+                    vector_dict[EMBED_COLBERT_VECTOR_NAME] = cv
             pending.append(
                 models.PointStruct(
                     id=point_ids[i],
@@ -756,6 +908,8 @@ def _hybrid_text_query(
     sparse_vector_zh: models.SparseVector | None,
     top_k: int,
     text_filter: models.Filter | None = None,
+    embed_sparse_vector: dict | None = None,
+    embed_colbert_vector: list[list[float]] | None = None,
 ) -> list:
     """Issue a single hybrid query (dense + BM25(en) + BM25(zh) prefetched, fused via RRF).
 
@@ -770,6 +924,14 @@ def _hybrid_text_query(
     When ``bm25_zh_enabled`` is on (and the caller passed a non-empty
     sparse vector), the Chinese channel is included as a third
     prefetch and the weight list grows to match.
+
+    When ``embed_sparse_vector`` / ``embed_colbert_vector`` are
+    provided (the embedder supports them — bge-m3), extra prefetches
+    for the ``embed_sparse`` sparse field and the ``embed_colbert``
+    multi-vector field are appended, and the RRF weights list grows
+    to keep the positional mapping intact. The OpenAI-compatible
+    embedder passes ``None`` for both so the prefetch list and
+    schema are unchanged from the pre-capability behaviour.
 
     When ``text_filter`` is provided it is applied to every prefetch
     channel — Qdrant's ``query_filter`` parameter is ignored by the
@@ -812,11 +974,40 @@ def _hybrid_text_query(
                 filter=text_filter,
             )
         )
+    include_embed_sparse = embed_sparse_vector is not None and bool(
+        embed_sparse_vector.get("indices")
+    )
+    if include_embed_sparse:
+        prefetches.append(
+            models.Prefetch(
+                query=models.SparseVector(
+                    indices=embed_sparse_vector["indices"],  # type: ignore[index]
+                    values=embed_sparse_vector["values"],  # type: ignore[index]
+                ),
+                using=EMBED_SPARSE_VECTOR_NAME,
+                limit=HYBRID_PREFETCH_LIMIT,
+                filter=text_filter,
+            )
+        )
+    include_embed_colbert = embed_colbert_vector is not None and len(embed_colbert_vector) > 0
+    if include_embed_colbert:
+        prefetches.append(
+            models.Prefetch(
+                query=embed_colbert_vector,
+                using=EMBED_COLBERT_VECTOR_NAME,
+                limit=HYBRID_PREFETCH_LIMIT,
+                filter=text_filter,
+            )
+        )
     weights = [
         settings.rrf_weight_dense,
         settings.rrf_weight_bm25,
         settings.rrf_weight_bm25_zh if include_zh else 1.0,
     ]
+    if include_embed_sparse:
+        weights.append(1.0)
+    if include_embed_colbert:
+        weights.append(1.0)
     # Use the weighted ``RrfQuery`` only when a channel actually
     # diverges from the default — uniform-weight queries use the
     # simpler ``FusionQuery`` so the server's defaults apply.
@@ -867,6 +1058,27 @@ def qdrant_text_search(
     sparse_query = _embed_bm25([pre.bm25_query])[0]
     sparse_query_zh = _embed_bm25_zh_query(pre.bm25_query)
 
+    # Probe optional embedder-native sparse / ColBERT query vectors.
+    # The OpenAI-compatible embedder does not implement these methods
+    # (``getattr`` returns ``None``), so the default configuration
+    # keeps the dense + bm25 + bm25_zh prefetch list unchanged.
+    embed_sparse_query: dict | None = None
+    embed_colbert_query: list[list[float]] | None = None
+    if _embedder_sparse_capability(embedder):
+        fn_s = getattr(embedder, "embed_text_sparse", None)
+        if fn_s is not None:
+            try:
+                embed_sparse_query = fn_s(pre.dense_query)
+            except Exception:
+                embed_sparse_query = None
+    if _embedder_colbert_capability(embedder):
+        fn_c = getattr(embedder, "embed_text_colbert", None)
+        if fn_c is not None:
+            try:
+                embed_colbert_query = fn_c(pre.dense_query)
+            except Exception:
+                embed_colbert_query = None
+
     text_filter: models.Filter | None = None
     if not include_image_sources:
         text_filter = models.Filter(
@@ -882,6 +1094,8 @@ def qdrant_text_search(
         sparse_query_zh,
         top_k,
         text_filter=text_filter,
+        embed_sparse_vector=embed_sparse_query,
+        embed_colbert_vector=embed_colbert_query,
     )
     return [_point_to_hit("qdrant_text", point) for point in results]
 
@@ -1097,16 +1311,19 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
         provider = get_default_image_embedder()
     except ImageEmbeddingUnavailable:
         return []
-    # Sparse pre-filter: skip the Qdrant call entirely when no image
-    # has any token overlap with the query. Picsum images carry
-    # ``tags=['photo']`` so any query that doesn't mention "photo" is
-    # a clean off-topic case; the same logic keeps Caltech images that
-    # *do* share a token (e.g. "fish" → "happyfish") in the pipeline.
+    # Token-overlap pre-filter is now a *boost*, not a hard cut. The
+    # previous behaviour returned an empty list whenever the query
+    # shared zero tokens with any image's payload fields — that
+    # suppressed legitimate CLIP-correct recalls for queries whose
+    # wording has no token overlap with the (often sparse) image
+    # metadata (e.g. "a red car" against an image whose tags are just
+    # ["vehicle"]). We keep the relevance-threshold floor below as
+    # the sole precision control; the pre-filter index is still built
+    # (and cached) so a future boosting step can use it without
+    # re-scanning the collection.
     query_tokens = _tokenize_for_prefilter(query)
     if query_tokens:
-        tag_index = _load_image_tag_index()
-        if tag_index and not _has_any_token_overlap(query_tokens, tag_index):
-            return []
+        _load_image_tag_index()
     client = get_qdrant_client()
     query_vector = provider.embed_text(query)
     # The image collection may not exist yet (e.g. user only ingested
@@ -1153,14 +1370,25 @@ def _point_to_hit(route: str, point) -> SearchHit:
 
 def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> SearchHit:
     images = payload.get("images")
+    title = str(payload.get("asset_title") or payload.get("title") or "")
+    section = str(payload.get("section") or "")
+    body = str(payload.get("text", ""))
+    # Build a richer evidence snippet: "<title> [<section>] <body[:N]>".
+    # The previous 1000-char truncation dropped context the reranker
+    # cross-encoder needs to separate relevant hits from high-score
+    # false positives. 4000 chars keeps the body around a typical
+    # cross-encoder context window while bounding payload size.
+    prefix_parts = [p for p in (title, section) if p]
+    prefix = " | ".join(prefix_parts)
+    evidence = f"{prefix}\n\n{body[:4000]}" if prefix else body[:4000]
     return SearchHit(
         route=route,
         score=score,
         asset_id=str(payload.get("asset_id", "")),
-        title=str(payload.get("asset_title") or payload.get("title") or ""),
+        title=title,
         source_type=str(payload.get("source_type", "")),
         source_path=str(payload.get("source_path", "")),
-        evidence=str(payload.get("text", ""))[:1000],
+        evidence=evidence,
         metadata=dict(payload),
         images=list(images) if isinstance(images, list) else [],
     )

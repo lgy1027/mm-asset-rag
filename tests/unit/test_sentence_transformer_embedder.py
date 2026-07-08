@@ -98,3 +98,93 @@ def test_factory_picks_openai_by_default(monkeypatch) -> None:
 
     assert isinstance(emb, TextEmbedder)
     assert not isinstance(emb, SentenceTransformerTextEmbedder)
+
+
+# ─── Optional sparse / ColBERT capability ──────────────────────────────────
+
+
+def test_supports_sparse_colbert_only_for_bge_m3(monkeypatch) -> None:
+    """``_supports_sparse_colbert`` is True only for bge-m3 models."""
+    # bge-m3 model
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    s = Settings(_env_file=None)
+    emb = SentenceTransformerTextEmbedder(settings=s)
+    assert emb._supports_sparse_colbert() is True
+
+    # other model
+    monkeypatch.setenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-large")
+    s = Settings(_env_file=None)
+    emb = SentenceTransformerTextEmbedder(settings=s)
+    assert emb._supports_sparse_colbert() is False
+
+
+def test_embed_text_sparse_returns_none_for_non_bge_m3(monkeypatch) -> None:
+    monkeypatch.setenv("EMBEDDING_MODEL", "intfloat/multilingual-e5-large")
+    s = Settings(_env_file=None)
+    emb = SentenceTransformerTextEmbedder(settings=s)
+    assert emb.embed_text_sparse("hello") is None
+    assert emb.embed_text_colbert("hello") is None
+
+
+def test_embed_text_sparse_returns_vectors_for_bge_m3(monkeypatch) -> None:
+    """A bge-m3 embedder returns a dict with indices/values from the model."""
+
+    class _BgeM3Stub:
+        def encode(self, texts, **kwargs):
+            return_sparse = kwargs.get("return_sparse", False)
+            return_colbert = kwargs.get("return_colbert_vecs", False)
+            if return_sparse:
+                return {"sparse": [{"indices": [1, 2, 3], "values": [0.1, 0.2, 0.3]}]}
+            if return_colbert:
+                return {"colbert_vecs": [[[0.1, 0.2], [0.3, 0.4]]]}
+            # dense path
+            return np.zeros((len(texts), 8), dtype=np.float32)
+
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    s = Settings(_env_file=None)
+    emb = SentenceTransformerTextEmbedder(settings=s)
+    emb._model = _BgeM3Stub()
+    emb._dim = 8
+
+    sparse = emb.embed_text_sparse("hello world")
+    assert sparse is not None
+    assert sparse["indices"] == [1, 2, 3]
+    assert sparse["values"] == [0.1, 0.2, 0.3]
+
+    colbert = emb.embed_text_colbert("hello world")
+    assert colbert is not None
+    assert colbert == [[0.1, 0.2], [0.3, 0.4]]
+
+
+def test_embed_text_sparse_returns_none_when_model_returns_none(monkeypatch) -> None:
+    """If the model's encode returns an unexpected shape, return None."""
+
+    class _StubReturnsNone:
+        def encode(self, texts, **kwargs):
+            return {}  # no "sparse" key
+
+    monkeypatch.setenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+    s = Settings(_env_file=None)
+    emb = SentenceTransformerTextEmbedder(settings=s)
+    emb._model = _StubReturnsNone()
+    emb._dim = 8
+    assert emb.embed_text_sparse("hello") is None
+    assert emb.embed_text_colbert("hello") is None
+
+
+def test_openai_text_embedder_does_not_implement_sparse_colbert(monkeypatch) -> None:
+    """The OpenAI-compatible TextEmbedder must not expose sparse/colbert.
+
+    This is the guarantee that the default OpenAI configuration has zero
+    schema change — ``qdrant_backend`` probes with ``getattr`` and the
+    methods are absent, so no sparse/colbert field is added.
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.example.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "text-embedding-3-small")
+    s = Settings(_env_file=None)
+    from mm_asset_rag.embedders.text_embedder import TextEmbedder
+
+    emb = TextEmbedder(settings=s)
+    assert not hasattr(emb, "embed_text_sparse")
+    assert not hasattr(emb, "embed_text_colbert")
