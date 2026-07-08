@@ -29,6 +29,7 @@ caller wraps each into a ``ParsedDocument``.
 
 from __future__ import annotations
 
+import itertools
 import re
 from dataclasses import dataclass
 
@@ -122,6 +123,240 @@ def split_by_heading(
         )
     )
     return [s for s in sections if s.body or s.heading]
+
+
+# ─── Recursive token-budget splitting ────────────────────────────────────
+#
+# ``split_by_heading`` produces one chunk per detected heading. Long
+# sections (a 10-page methods chapter under a single ``# Methods``) still
+# become a single oversized chunk — the dense embedder truncates it, BM25
+# signal dilutes, and the cross-encoder reranker is misled by long-body
+# token frequency. ``recursive_split`` caps each chunk to a token budget
+# with overlap, walking a hierarchy of separators so cuts land on natural
+# boundaries (paragraph → line → sentence → char).
+#
+# Benchmark guidance (Vecta 7-strategy + arXiv 8-method surveys): a
+# ~500-token recursive chunk wins on retrieval accuracy; >800 starts to
+# dilute. Corpus- and model-agnostic: token counts default to a character
+# approximation (token ≈ chars/3.5, mixed zh/en) with no tokenizer
+# dependency, with an optional HF tokenizer upgrade path.
+
+# Separator hierarchy, coarsest first. Paragraph break is preferred over
+# line break over sentence end over space over char. CJK sentence-enders
+# (fullwidth period/exclamation/question/semicolon) sit alongside their
+# ASCII counterparts so Chinese prose splits on its own punctuation.
+_SEPARATORS: tuple[str, ...] = ("\n\n", "\n", "。", ".", "！", "!", "？", "?", "；", ";", " ", "")
+
+# Char-to-token ratio for the approximation. Pure CJK ≈ 1 char/token,
+# pure ASCII ≈ 4 chars/token; 3.5 is the mixed-corpus compromise.
+_CHARS_PER_TOKEN = 3.5
+
+
+def _char_count_tokens(text: str) -> int:
+    """Approximate token count from character length (model-agnostic)."""
+    return max(1, round(len(text) / _CHARS_PER_TOKEN))
+
+
+def _make_token_counter(tokenizer_id: str | None) -> tuple[object | None, callable]:
+    """Build a token-counting callable.
+
+    Returns ``(counter, tokenizer_or_none)``. When ``tokenizer_id`` is
+    set and importable, ``counter`` calls the real tokenizer; otherwise it
+    falls back to the char approximation. The tokenizer object is returned
+    so the caller can keep it alive (some tokenizers hold resources).
+    """
+    if not tokenizer_id:
+        return None, _char_count_tokens
+    try:
+        from transformers import AutoTokenizer  # type: ignore[import]
+
+        tok = AutoTokenizer.from_pretrained(tokenizer_id)
+
+        def _count(text: str) -> int:
+            return len(tok(text, add_special_tokens=False)["input_ids"])
+
+        return tok, _count
+    except Exception:
+        # Missing transformers, bad id, network — degrade to char approx
+        # rather than failing the whole parse.
+        return None, _char_count_tokens
+
+
+def _split_on_separator(text: str, sep: str) -> list[str]:
+    """Split ``text`` on ``sep``, keeping the separator attached to the
+    preceding piece (so ``"a。b。"`` → ``["a。", "b。"]``, not ``["a", "b"]``).
+    A trailing empty piece is dropped. The empty-string separator returns
+    the whole text as one piece (char-level fallback uses a different path).
+    """
+    if sep == "":
+        return [text] if text else []
+    parts: list[str] = []
+    buf: list[str] = []
+    i = 0
+    while i < len(text):
+        # Greedy: find the next separator occurrence from i.
+        nxt = text.find(sep, i)
+        if nxt == -1:
+            buf.append(text[i:])
+            break
+        end = nxt + len(sep)
+        buf.append(text[i:end])
+        parts.append("".join(buf))
+        buf = []
+        i = end
+    if buf:
+        parts.append("".join(buf))
+    # Drop a trailing piece that is only the separator / whitespace.
+    return [p for p in parts if p]
+
+
+def recursive_split(
+    body: str,
+    *,
+    target_tokens: int = 500,
+    max_tokens: int = 800,
+    overlap_tokens: int = 60,
+    count_tokens: callable = _char_count_tokens,
+) -> list[str]:
+    """Split ``body`` into chunks of ≈ ``target_tokens`` (≤ ``max_tokens``),
+    with ``overlap_tokens`` of shared context between adjacent chunks.
+
+    Walks :data:`_SEPARATORS` from coarsest to finest: a piece under
+    ``target_tokens`` is emitted as-is; one over ``max_tokens`` is split
+    with the next-finer separator. When every separator has been tried
+    and a piece is still over ``max_tokens``, it is hard-cut at
+    ``max_tokens`` characters-of-approx so no chunk is ever unbounded.
+
+    Overlap is applied post-split: each chunk (after the first) is
+    prefixed with the tail of the previous chunk, sized to
+    ``overlap_tokens``. The overlap is pulled back to a separator
+    boundary when possible so it does not start mid-word.
+
+    Pure function; returns a non-empty list (``[body]`` when no split is
+    needed or ``body`` is tiny).
+    """
+    if not body or not body.strip():
+        return [body] if body is not None else []
+    if count_tokens(body) <= target_tokens:
+        return [body]
+
+    def _split_recursive(text: str, sep_idx: int) -> list[str]:
+        if count_tokens(text) <= target_tokens or sep_idx >= len(_SEPARATORS):
+            return [text]
+        sep = _SEPARATORS[sep_idx]
+        pieces = _split_on_separator(text, sep)
+        if len(pieces) <= 1:
+            # This separator found nothing to cut on; try the next finer one.
+            return _split_recursive(text, sep_idx + 1)
+        out: list[str] = []
+        for piece in pieces:
+            if count_tokens(piece) <= target_tokens:
+                out.append(piece)
+            else:
+                out.extend(_split_recursive(piece, sep_idx + 1))
+        return out
+
+    chunks = _split_recursive(body, 0)
+    # Merge tiny tail pieces back into the previous chunk when together
+    # they stay under target — avoids degenerate 1-token chunks from a
+    # long run of short sentences.
+    merged: list[str] = []
+    for chunk in chunks:
+        if merged and count_tokens(merged[-1] + chunk) <= target_tokens:
+            merged[-1] = merged[-1] + chunk
+        else:
+            merged.append(chunk)
+    # Hard cap: anything still over max_tokens after all separators is
+    # force-cut so the dense embedder never sees an unbounded payload.
+    capped: list[str] = []
+    for chunk in merged:
+        if count_tokens(chunk) <= max_tokens:
+            capped.append(chunk)
+        else:
+            # Char-level hard cut at the approx max boundary, then keep
+            # splitting the remainder.
+            limit = int(max_tokens * _CHARS_PER_TOKEN)
+            i = 0
+            while i < len(chunk):
+                piece = chunk[i : i + limit]
+                capped.append(piece)
+                i += limit
+    # Apply overlap between adjacent chunks.
+    if overlap_tokens <= 0 or len(capped) <= 1:
+        return capped
+    out = [capped[0]]
+    for prev, cur in itertools.pairwise(capped):
+        tail = _tail_for_overlap(prev, overlap_tokens, count_tokens)
+        out.append(tail + cur if tail else cur)
+    return out
+
+
+def _tail_for_overlap(text: str, overlap_tokens: int, count_tokens: callable) -> str:
+    """Return the trailing slice of ``text`` sized to ≈ ``overlap_tokens``,
+    pulled back to a separator boundary so the overlap does not start
+    mid-word. Returns "" when the text is already shorter than the budget.
+    """
+    if not text:
+        return ""
+    limit = int(overlap_tokens * _CHARS_PER_TOKEN)
+    if len(text) <= limit:
+        return text
+    start = len(text) - limit
+    # Pull start back to the nearest separator so we don't cut mid-word.
+    for sep in _SEPARATORS:
+        if sep == "":
+            continue
+        idx = text.rfind(sep, 0, start)
+        if idx != -1:
+            start = idx + len(sep)
+            break
+    return text[start:]
+
+
+def split_with_recursion(
+    text: str,
+    *,
+    font_sizes: list[float] | None = None,
+    line_bboxes: list | None = None,
+    target_tokens: int = 500,
+    max_tokens: int = 800,
+    overlap_tokens: int = 60,
+    count_tokens: callable = _char_count_tokens,
+) -> list[Section]:
+    """Heading-aware split + recursive token-budget sizing.
+
+    Two layers: :func:`split_by_heading` finds the structural boundaries
+    (preserving heading text + bbox for figure attachment), then each
+    section's body is :func:`recursive_split` to the token budget. Every
+    sub-chunk inherits its parent section's heading and bbox — figure
+    attachment (``associate_images``) keeps working unchanged, and the
+    answer layer's per-hit image cap de-dupes the repeated attachments.
+
+    Sections whose body is empty after stripping are dropped (same rule
+    as :func:`split_by_heading`), so a bare heading with no following body
+    does not pollute the index.
+    """
+    sections = split_by_heading(text, font_sizes=font_sizes, line_bboxes=line_bboxes)
+    out: list[Section] = []
+    for section in sections:
+        body = section.body.strip() if section.body else ""
+        if not body:
+            continue
+        if count_tokens(body) <= target_tokens:
+            out.append(Section(heading=section.heading, body=body, bbox=section.bbox))
+            continue
+        for piece in recursive_split(
+            body,
+            target_tokens=target_tokens,
+            max_tokens=max_tokens,
+            overlap_tokens=overlap_tokens,
+            count_tokens=count_tokens,
+        ):
+            piece = piece.strip()
+            if not piece:
+                continue
+            out.append(Section(heading=section.heading, body=piece, bbox=section.bbox))
+    return out
 
 
 def _is_heading(

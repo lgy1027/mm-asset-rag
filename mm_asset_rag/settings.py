@@ -223,6 +223,27 @@ class Settings(BaseSettings):
     # corpora.
     enrich_chunk_language: Literal["zh", "en", "auto"] = "auto"
 
+    # ─── Recursive chunking ─────────────────────────────────────────────
+    # PDF text is first split by heading (``split_by_heading``), then each
+    # section's body is recursively split to a target token budget with
+    # overlap. Long sections no longer produce oversized chunks that
+    # dilute BM25, get truncated by the dense embedder, and mislead the
+    # cross-encoder reranker with long-body token frequency. Benchmark
+    # guidance (Vecta 7-strategy + arXiv 8-method surveys): recursive
+    # ~500-token chunks win on accuracy; >800 starts to dilute.
+    #
+    # Token counts default to a *character approximation*
+    # (``token ≈ chars / 3.5``, a mixed zh/en compromise) so the splitter
+    # works with any embedder and no tokenizer dependency. Set
+    # ``CHUNK_TOKENIZER`` to a HuggingFace tokenizer id (e.g.
+    # ``bert-base-chinese``) for exact counts; if it fails to import the
+    # splitter falls back to the char approximation. Corpus- and
+    # model-agnostic.
+    chunk_target_tokens: int = 500
+    chunk_max_tokens: int = 800
+    chunk_overlap_tokens: int = 60
+    chunk_tokenizer: str | None = None
+
     # ─── PDF embedded-image extraction (tier-1 multimodal) ───────────────
     # PyMuPDF parses text only by default; embedded figures are dropped.
     # When ``pdf_extract_images`` is on, ``pdf_images.extract_page_images``

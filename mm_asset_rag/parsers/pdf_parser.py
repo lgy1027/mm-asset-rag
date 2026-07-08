@@ -41,7 +41,7 @@ def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
     chunk's text so the BM25 channel can match short user queries
     like ``联宝 ESG`` against long PDF bodies.
     """
-    from .chunk_splitter import split_by_heading
+    from .chunk_splitter import _make_token_counter, split_with_recursion
     from .pdf_images import (
         LineItem,
         associate_images,
@@ -55,6 +55,10 @@ def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
     output_dir.mkdir(parents=True, exist_ok=True)
     images_dir = output_dir / "images"
     docs: list[ParsedDocument] = []
+    # Token counter is built once per parse (tokenizer load is expensive);
+    # falls back to char approximation when CHUNK_TOKENIZER is unset or
+    # unavailable. Corpus- and model-agnostic.
+    _tok, count_tokens = _make_token_counter(settings.chunk_tokenizer)
 
     with fitz.open(asset.file_path) as pdf:
         for page_index, page in enumerate(pdf):
@@ -99,7 +103,15 @@ def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
                 if page_images:
                     page_figures = detect_figure_captions(line_items, page_images)
 
-            sections = split_by_heading(text, font_sizes=font_sizes, line_bboxes=line_bboxes)
+            sections = split_with_recursion(
+                text,
+                font_sizes=font_sizes,
+                line_bboxes=line_bboxes,
+                target_tokens=settings.chunk_target_tokens,
+                max_tokens=settings.chunk_max_tokens,
+                overlap_tokens=settings.chunk_overlap_tokens,
+                count_tokens=count_tokens,
+            )
             for chunk_index, section in enumerate(sections):
                 # Skip sections with no body — empty chunks (e.g. a
                 # bare "1" heading with no following text) would
@@ -310,6 +322,17 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
     output_dir.mkdir(parents=True, exist_ok=True)
     images_dir = output_dir / "images"
     raw_jsonl_path = output_dir / "raw.jsonl"
+    # Build the chunk-sizing tuple once (tokenizer load is expensive);
+    # reused per page below.
+    from .chunk_splitter import _make_token_counter
+
+    _s = get_settings()
+    _chunk_settings = (
+        _s.chunk_target_tokens,
+        _s.chunk_max_tokens,
+        _s.chunk_overlap_tokens,
+        _make_token_counter(_s.chunk_tokenizer)[1],
+    )
 
     if raw_jsonl_path.exists() and raw_jsonl_path.stat().st_size > 0:
         jsonl_text = raw_jsonl_path.read_text(encoding="utf-8")
@@ -361,38 +384,54 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
 
             markdown_path = output_dir / f"page_{page_num}.md"
             markdown_path.write_text(markdown_text, encoding="utf-8")
-            enriched_text = _maybe_enrich_with_keywords(markdown_text)
-            # PaddleOCR-VL emits one chunk per page; markdown preserves
-            # reading order, so every ``![](images/x.png)`` ref in this
-            # page's markdown belongs to this chunk. Figure numbers, when
-            # the body names them, are matched positionally (Nth ref →
-            # Nth referenced number) — best effort; PyMuPDF path does the
-            # precise bbox-based caption matching.
+            # Recursive chunk-sizing: a PaddleOCR page is a long markdown
+            # blob; capping it to the token budget keeps BM25 signal
+            # concentrated and the cross-encoder reranker off long-body
+            # token frequency. Same splitter the PyMuPDF path uses.
+            from .chunk_splitter import recursive_split
             from .pdf_images import extract_markdown_image_refs, scan_figure_refs
 
-            md_refs = extract_markdown_image_refs(markdown_text)
-            ref_numbers = sorted(scan_figure_refs(markdown_text))
-            chunk_images: list = []
-            for i, (_, _, ref_path) in enumerate(md_refs):
-                fig_id = ref_numbers[i] if i < len(ref_numbers) else None
-                chunk_images.append(
-                    {"path": ref_path, "figure_id": fig_id, "caption": "", "page": page_num}
-                )
-            meta = {
-                "asset_id": asset.asset_id,
-                "asset_title": asset.title,
-                "source_type": asset.source_type,
-                "source_path": asset.relative_path,
-                "source_url": asset.source_url,
-                "page": page_num,
-                "parser": "paddleocr-vl-api",
-                "markdown_path": str(markdown_path),
-                "images_dir": str(images_dir) if images_dir.exists() else "",
-                "tags": asset.tags,
-            }
-            if chunk_images:
-                meta["images"] = chunk_images
-            docs.append(ParsedDocument(text=enriched_text, metadata=meta))
+            pieces = recursive_split(
+                markdown_text,
+                target_tokens=_chunk_settings[0],
+                max_tokens=_chunk_settings[1],
+                overlap_tokens=_chunk_settings[2],
+                count_tokens=_chunk_settings[3],
+            )
+            for chunk_index, piece in enumerate(pieces):
+                piece = piece.strip()
+                if not piece:
+                    continue
+                enriched_text = _maybe_enrich_with_keywords(piece)
+                # Images are assigned per-sub-chunk by re-scanning the
+                # sub-chunk's own text for ``![]()`` refs — a ref belongs
+                # to whichever sub-chunk it physically appears in.
+                # (Overlap may attach a ref to two adjacent sub-chunks;
+                # the answer layer's per-hit image cap de-dupes.)
+                sub_refs = extract_markdown_image_refs(piece)
+                ref_numbers = sorted(scan_figure_refs(piece))
+                chunk_images: list = []
+                for i, (_, _, ref_path) in enumerate(sub_refs):
+                    fig_id = ref_numbers[i] if i < len(ref_numbers) else None
+                    chunk_images.append(
+                        {"path": ref_path, "figure_id": fig_id, "caption": "", "page": page_num}
+                    )
+                meta = {
+                    "asset_id": asset.asset_id,
+                    "asset_title": asset.title,
+                    "source_type": asset.source_type,
+                    "source_path": asset.relative_path,
+                    "source_url": asset.source_url,
+                    "page": page_num,
+                    "chunk_index": chunk_index,
+                    "parser": "paddleocr-vl-api",
+                    "markdown_path": str(markdown_path),
+                    "images_dir": str(images_dir) if images_dir.exists() else "",
+                    "tags": asset.tags,
+                }
+                if chunk_images:
+                    meta["images"] = chunk_images
+                docs.append(ParsedDocument(text=enriched_text, metadata=meta))
             page_num += 1
     return docs
 
