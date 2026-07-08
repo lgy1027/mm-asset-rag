@@ -1,10 +1,25 @@
-"""Hybrid retrieval across Qdrant text + image collections."""
+"""Hybrid retrieval across Qdrant text + image collections.
+
+The three routes (``qdrant_text`` / ``qdrant_text_to_image`` /
+``qdrant_image_to_image``) are fused with a **rank-based RRF**
+(Reciprocal Rank Fusion) strategy: each route's hits are sorted by
+their raw score, assigned a 1-based ``rank``, and merged per
+``asset_id`` using ``score_rrf = Σ weight * 1/(RRF_K + rank)``. This
+decouples the fusion from the raw score scales of each route (CLIP
+cosines live in 0.15-0.40, dense embeddings in 0.0-1.0, BM25 scores
+can be unbounded) — the historical ``score / max`` normalisation
+coupled the routes' scales and let one hot route silence the others.
+
+``RRF_K`` is imported from ``qdrant_backend`` so the cross-route
+fusion and the in-Qdrant prefetch fusion share the same constant.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from .backends.qdrant_backend import (
+    RRF_K,
     qdrant_image_to_image_search,
     qdrant_text_search,
     qdrant_text_to_image_search,
@@ -12,32 +27,6 @@ from .backends.qdrant_backend import (
 from .embedders import get_default_reranker
 from .schema import SearchHit
 from .settings import get_settings
-
-
-def normalize_scores(hits: list[SearchHit]) -> list[SearchHit]:
-    """Return new ``SearchHit`` objects with scores divided by ``max(hits)``.
-
-    Pure function: the input list is not mutated. This avoids surprising
-    side effects on the upstream ``qdrant_*_search`` result list, which
-    is shared across ``hybrid_search`` invocations.
-    """
-    if not hits:
-        return []
-    max_score = max(hit.score for hit in hits) or 1.0
-    return [
-        SearchHit(
-            route=hit.route,
-            score=hit.score / max_score,
-            asset_id=hit.asset_id,
-            title=hit.title,
-            source_type=hit.source_type,
-            source_path=hit.source_path,
-            evidence=hit.evidence,
-            metadata=dict(hit.metadata),
-            images=hit.images,
-        )
-        for hit in hits
-    ]
 
 
 def _merge_routes(existing: list[str] | None, new_route: str) -> list[str]:
@@ -68,35 +57,62 @@ def _merge_images(existing: list, new: list) -> list:
     return out
 
 
+def _rrf_score(rank: int, weight: float) -> float:
+    """Weighted reciprocal-rank contribution for a single hit."""
+    return weight / (RRF_K + rank)
+
+
+def _rank_hits(hits: list[SearchHit]) -> list[tuple[SearchHit, int]]:
+    """Sort ``hits`` by descending raw ``score`` and assign 1-based ranks.
+
+    Ties are broken by ``asset_id`` so the ranking is deterministic when
+    many hits share a score (common for BM25 on short queries).
+    """
+    ordered = sorted(hits, key=lambda h: (-h.score, h.asset_id))
+    return [(hit, rank) for rank, hit in enumerate(ordered, start=1)]
+
+
 def merge_hits(
     groups: list[list[SearchHit]],
     weights: list[float],
     top_k: int,
     min_score: float = 0.0,
 ) -> list[SearchHit]:
-    """Combine per-route hits by ``asset_id`` using weighted scores.
+    """Combine per-route hits by ``asset_id`` using rank-based RRF.
+
+    Each group is independently ranked by its own raw ``score`` (so a
+    route with small scores can still contribute high ranks), then
+    every hit contributes ``weight / (RRF_K + rank)`` to its
+    ``asset_id``. Hits for the same ``asset_id`` across routes sum
+    their RRF contributions, which is exactly the standard
+    reciprocal-rank fusion formula extended with per-route weights.
 
     Pure function: returns a new list of ``SearchHit`` instances; the
     input groups are not mutated.
 
-    When ``min_score`` is positive, hits whose final weighted score is
-    below the floor are dropped after merging (and before the
-    ``top_k`` slice). This gives the merged ranking a confidence
-    floor — off-topic queries that nevertheless manage to scrape a few
-    low-score hits from each route return an empty list rather than a
-    noise top-5. ``min_score=0.0`` keeps every result (the default).
+    ``min_score`` is now a *soft* low-end guard on the final RRF score
+    (default ``0.0`` disables it). Because RRF scores are tiny by
+    design (a single top hit with ``weight=1`` scores ``1/61 ≈ 0.0164``),
+    any positive floor should be on the order of ``0.001``; the hard
+    score thresholds of the old normalised-score fusion no longer
+    apply. Keep ``0.0`` unless you need to trim tiny-tail noise.
     """
     merged: dict[str, SearchHit] = {}
     for group, weight in zip(groups, weights):
-        for hit in normalize_scores(group):
+        if weight <= 0:
+            continue
+        for hit, rank in _rank_hits(group):
             if hit.score <= 0:
+                # A zero-score hit carries no signal in its route; skip
+                # it so it neither contributes RRF weight nor crowds the
+                # per-route rank space for downstream hits.
                 continue
             key = hit.asset_id
-            weighted_score = hit.score * weight
+            contribution = _rrf_score(rank, weight)
             if key not in merged:
                 merged[key] = SearchHit(
                     route=hit.route,
-                    score=weighted_score,
+                    score=contribution,
                     asset_id=hit.asset_id,
                     title=hit.title,
                     source_type=hit.source_type,
@@ -109,7 +125,7 @@ def merge_hits(
                 current = merged[key]
                 merged[key] = SearchHit(
                     route=current.route,
-                    score=current.score + weighted_score,
+                    score=current.score + contribution,
                     asset_id=current.asset_id,
                     title=current.title,
                     source_type=current.source_type,
@@ -139,19 +155,25 @@ def hybrid_search(
 ) -> list[SearchHit]:
     """Run a hybrid search across text + (optionally) image routes.
 
+    The three routes are fused with rank-based RRF (see :func:`merge_hits`),
+    which removes the cross-route score-scale coupling that the previous
+    ``score / max`` normalisation introduced.
+
     ``min_score`` defaults to ``Settings.min_score`` (env-driven) and is
-    forwarded to :func:`merge_hits` to drop low-confidence results
-    after fusion. Pass an explicit value to override per call; pass
-    ``0.0`` to disable the floor for that call.
+    forwarded to :func:`merge_hits` as a soft low-end guard on the
+    final RRF score. The default ``0.0`` keeps every RRF hit; pass an
+    explicit value to override per call.
 
     When ``Settings.reranker_enabled`` is true, a two-stage pipeline runs:
     ``reranker_top_n`` candidates are fetched from each route and merged,
     then a cross-encoder (``bge-reranker-v2-m3``) re-scores each
     ``(query, evidence)`` pair and the top ``reranker_top_k`` (or
     ``top_k`` if None) are returned. The pre-rerank hybrid score is
-    preserved in ``metadata["hybrid_score"]``. If the reranker fails to
-    load (missing dep / model), the search degrades to the single-stage
-    path transparently.
+    preserved in ``metadata["hybrid_score"]``. Image-source hits are
+    *not* re-scored by the text cross-encoder — their original CLIP
+    score is preserved (see ``Reranker.rerank``). If the reranker
+    fails to load (missing dep / model), the search degrades to the
+    single-stage path transparently.
     """
     settings = get_settings()
     reranker = get_default_reranker()

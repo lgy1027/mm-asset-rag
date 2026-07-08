@@ -19,13 +19,22 @@ def _make_client(
     *,
     exists: bool,
     existing_sparse_names: list[str] | None,
+    existing_vector_names: list[str] | None = None,
 ) -> MagicMock:
-    """Build a mock QdrantClient that reports the given sparse-vector config."""
+    """Build a mock QdrantClient that reports the given vector config.
+
+    ``existing_vector_names`` lists the named dense / multi-vectors the
+    collection carries (e.g. ``["dense"]``). Defaults to ``["dense"]`` so
+    the schema check sees the standard dense field.
+    """
     client = MagicMock()
     client.collection_exists.return_value = exists
     if exists and existing_sparse_names is not None:
         info = MagicMock()
         info.config.params.sparse_vectors = {name: MagicMock() for name in existing_sparse_names}
+        info.config.params.vectors = {
+            name: MagicMock() for name in (existing_vector_names or ["dense"])
+        }
         client.get_collection.return_value = info
     return client
 
@@ -92,3 +101,72 @@ def test_create_collection_recreate_path_drops_then_rebuilds(monkeypatch) -> Non
     qb._create_collection(client, "text", vector_size=2560, sparse=True, recreate=True)
     client.delete_collection.assert_called_once()
     client.get_collection.assert_not_called()  # no schema check needed
+
+
+# ─── embed_sparse / embed_colbert schema checks ───────────────────────────
+
+
+def test_create_collection_matches_when_embed_sparse_enabled(monkeypatch) -> None:
+    """When ``embed_sparse=True`` the existing collection must carry ``embed_sparse``."""
+    monkeypatch.setattr(qb, "get_settings", lambda: _settings())
+    client = _make_client(
+        exists=True,
+        existing_sparse_names=[qb.SPARSE_VECTOR_NAME, "bm25_zh", qb.EMBED_SPARSE_VECTOR_NAME],
+    )
+    # No raise.
+    qb._create_collection(
+        client, "text", vector_size=1024, sparse=True, embed_sparse=True
+    )
+    client.create_collection.assert_not_called()
+
+
+def test_create_collection_fails_when_embed_sparse_missing(monkeypatch) -> None:
+    """Collection built without ``embed_sparse`` fails fast when settings expect it."""
+    monkeypatch.setattr(qb, "get_settings", lambda: _settings())
+    client = _make_client(
+        exists=True,
+        existing_sparse_names=[qb.SPARSE_VECTOR_NAME, "bm25_zh"],  # no embed_sparse
+    )
+    with pytest.raises(RuntimeError, match="schema mismatch"):
+        qb._create_collection(
+            client, "text", vector_size=1024, sparse=True, embed_sparse=True
+        )
+
+
+def test_create_collection_matches_when_embed_colbert_enabled(monkeypatch) -> None:
+    """When ``embed_colbert=True`` the existing collection must carry ``embed_colbert``."""
+    monkeypatch.setattr(qb, "get_settings", lambda: _settings())
+    client = _make_client(
+        exists=True,
+        existing_sparse_names=[qb.SPARSE_VECTOR_NAME, "bm25_zh"],
+        existing_vector_names=["dense", qb.EMBED_COLBERT_VECTOR_NAME],
+    )
+    # No raise.
+    qb._create_collection(
+        client,
+        "text",
+        vector_size=1024,
+        sparse=True,
+        embed_colbert=True,
+        colbert_dim=1024,
+    )
+    client.create_collection.assert_not_called()
+
+
+def test_create_collection_fails_when_embed_colbert_missing(monkeypatch) -> None:
+    """Collection built without ``embed_colbert`` fails fast when settings expect it."""
+    monkeypatch.setattr(qb, "get_settings", lambda: _settings())
+    client = _make_client(
+        exists=True,
+        existing_sparse_names=[qb.SPARSE_VECTOR_NAME, "bm25_zh"],
+        existing_vector_names=["dense"],  # no embed_colbert
+    )
+    with pytest.raises(RuntimeError, match="schema mismatch"):
+        qb._create_collection(
+            client,
+            "text",
+            vector_size=1024,
+            sparse=True,
+            embed_colbert=True,
+            colbert_dim=1024,
+        )

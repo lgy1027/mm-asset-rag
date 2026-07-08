@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     embedding_retry_count: int = 5
     embedding_timeout: float = 120.0
     embedding_max_input_chars: int = 8192
+    # Sparse / ColBERT capability switches. ``auto`` (default) probes the
+    # active text embedder at runtime: ``SentenceTransformerTextEmbedder``
+    # exposes ``embed_text_sparse`` / ``embed_text_colbert`` only when the
+    # model is bge-m3 (or another model that supports
+    # ``return_sparse`` / ``return_colbert_vecs``); the OpenAI-compatible
+    # ``TextEmbedder`` never does, so the default OpenAI configuration has
+    # zero schema change and needs no reindex. Set to ``true`` / ``false``
+    # to force-enable / force-disable. Enabling either when the embedder
+    # supports it adds extra prefetch channels + collection sparse /
+    # multi-vector fields — a schema mismatch is raised so the deployer
+    # runs ``mmrag reindex`` to rebuild with the new vectors.
+    embedding_sparse_enabled: Literal["auto", "true", "false"] = "auto"
+    embedding_colbert_enabled: Literal["auto", "true", "false"] = "auto"
 
     # ─── Image embedding (CLIP, optional) ────────────────────────────────
     # Default is ``clip-ViT-B-32`` (English-only). For Chinese corpora,
@@ -84,7 +97,7 @@ class Settings(BaseSettings):
     qdrant_active_image_collection: str | None = None
     qdrant_upsert_batch_size: int = 16
     qdrant_bm25_model: str = "Qdrant/bm25"
-    qdrant_hybrid_prefetch_limit: int = 20
+    qdrant_hybrid_prefetch_limit: int = 50
 
     # ─── Retrieval tuning ────────────────────────────────────────────────
     # Weights used by ``retrieval.hybrid_search`` to merge the three
@@ -97,7 +110,13 @@ class Settings(BaseSettings):
     # text queries.
     hybrid_weight_text: float = 0.80
     hybrid_weight_text_to_image: float = 0.20
-    hybrid_weight_image_to_image: float = 0.0
+    # Image-to-image route weight. The fusion is now rank-based RRF
+    # (see ``retrieval.merge_hits``), so this is a per-route multiplier
+    # applied to ``1/(RRF_K + rank)``. A positive default lets
+    # ``hybrid_search`` actually consult the CLIP vector space when an
+    # ``image_path`` is supplied (previously 0.0 silently disabled the
+    # route). Set to ``0.0`` to skip the route entirely.
+    hybrid_weight_image_to_image: float = 0.15
     # Per-asset chunk cap applied during ``build_qdrant_text_index``.
     # Without a cap, dense embeddings skew toward the largest PDFs
     # (clip / flamingo / gpt3 contribute 48 / 54 / 75 chunks each on the
@@ -130,32 +149,36 @@ class Settings(BaseSettings):
     # Set to ``[]`` to disable the pre-filter entirely.
     image_prefilter_fields: list[str] = ["tags", "asset_id", "asset_title"]
     image_prefilter_min_token_len: int = 3
-    # Confidence floor for the merged hybrid result. After ``merge_hits``
-    # weights and normalises per-route scores, any result whose weighted
-    # score falls below ``min_score`` is dropped. ``0.0`` keeps every
-    # result. The default ``0.30`` was tuned on the bundled corpus
-    # (v3 eval): positive recall is preserved while 6/8 negative
-    # queries return an empty list. ``0.20`` is the recommended lower
-    # bound for sparse corpora; raise to ``0.40-0.60`` for very
-    # noisy open-domain RAG.
-    min_score: float = 0.30
+    # Soft floor for the merged hybrid result. As of the RRF refactor
+    # ``merge_hits`` fuses routes by rank (``1/(RRF_K + rank)``) rather
+    # than by normalised score, so a hard score cut-off would mis-cut
+    # relevant-but-non-top assets whose RRF score is on a different
+    # scale. This value now acts as an optional low-end guard: hits
+    # whose final RRF score falls below it are dropped after fusion.
+    # The default ``0.0`` disables the guard — keep all RRF top-k. Set a
+    # small positive value (e.g. ``0.001``) only to trim tiny-tail
+    # noise on very large candidate pools.
+    min_score: float = 0.0
 
     # ─── Two-stage reranker ───────────────────────────────────────────────
     # bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a
     # candidate pool with dense + BM25, then score each (query, doc) pair
     # with a cross-encoder. Catches high-score false positives that the
     # global ``min_score`` floor cannot (v6b: 1.20 only dropped 1/8
-    # negatives while losing 4 positives). opt-in — disabled by default
-    # because it adds ~50-200ms latency per query and the model is ~600MB
-    # on first download. Runs locally via ``sentence_transformers.CrossEncoder``
-    # (same dep as the bge-m3 embedder); no ollama / API. When enabled,
-    # ``hybrid_search`` fetches ``reranker_top_n`` candidates, reranks, and
-    # returns ``reranker_top_k`` (or the caller's top_k if None).
+    # negatives while losing 4 positives). Enabled by default — it adds
+    # ~50-200ms latency per query and the model is ~2GB on first
+    # download (``BAAI/bge-reranker-v2-m3``), but the precision lift on
+    # the eval corpus is worth the latency. Runs locally via
+    # ``sentence_transformers.CrossEncoder`` (same dep as the bge-m3
+    # embedder); no ollama / API. When enabled, ``hybrid_search`` fetches
+    # ``reranker_top_n`` candidates, reranks, and returns
+    # ``reranker_top_k`` (or the caller's top_k if None).
     # ``reranker_top_n`` should be ≤ ``qdrant_hybrid_prefetch_limit`` (default
-    # 20) or the candidate pool is bounded by the prefetch.
-    reranker_enabled: bool = False
+    # 50) or the candidate pool is bounded by the prefetch. Disable with
+    # ``RERANKER_ENABLED=false`` when latency / download cost is a concern.
+    reranker_enabled: bool = True
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
-    reranker_top_n: int = 20
+    reranker_top_n: int = 30
     reranker_top_k: int | None = None
 
     # ─── Chinese BM25 ─────────────────────────────────────────────────────

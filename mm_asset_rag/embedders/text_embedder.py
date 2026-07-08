@@ -211,6 +211,92 @@ class SentenceTransformerTextEmbedder:
         )
         return [[float(v) for v in row.tolist()] for row in vectors]
 
+    # ─── Optional sparse / ColBERT capabilities ──────────────────────────
+    # These are *model-dependent*: only bge-m3 (and a few others) expose
+    # lexical sparse vectors and late-interaction ColBERT vectors through
+    # sentence-transformers' ``encode(return_sparse=True,
+    # return_colbert_vecs=True)``. ``qdrant_backend`` probes with
+    # ``getattr(embedder, "embed_text_sparse", None)`` so the default
+    # OpenAI-compatible :class:`TextEmbedder` (which does not implement
+    # these) is unaffected — its text collection schema stays dense + BM25
+    # + BM25-zh, no reindex.
+
+    def _supports_sparse_colbert(self) -> bool:
+        """True iff the configured model is known to support sparse + ColBERT.
+
+        Currently only bge-m3 models expose both. We check by name rather
+        than probing at runtime because probing requires a model load
+        (and a non-supporting model raises on the kwargs).
+        """
+        return "bge-m3" in (self.model or "").lower()
+
+    def embed_text_sparse(self, text: str) -> object | None:
+        """Return a Qdrant ``SparseVector``-compatible dict, or ``None``.
+
+        ``None`` signals "this embedder does not support sparse vectors"
+        — the caller must skip the sparse prefetch / vector field. The
+        return value is a plain ``dict`` with ``indices`` / ``values``
+        lists (qdrant-client accepts this shape) so this module does not
+        need to import ``qdrant_client.models`` at module top-level.
+        """
+        if not self._supports_sparse_colbert():
+            return None
+        model = self._load()
+        truncated = text if len(text) <= self.max_input_chars else text[: self.max_input_chars]
+        result = model.encode(
+            [truncated],
+            batch_size=1,
+            return_sparse=True,
+            show_progress_bar=False,
+        )
+        # sentence-transformers returns a dict-like for sparse:
+        # {"sparse": {"indices": [...], "values": [...]}} when
+        # ``return_sparse=True``. The exact container varies by
+        # version; normalise to a plain dict for qdrant-client.
+        sparse = None
+        if isinstance(result, dict) or (hasattr(result, "get") and callable(result.get)):
+            sparse = result.get("sparse")  # type: ignore[union-attr]
+        if sparse is None:
+            return None
+        if isinstance(sparse, list):
+            sparse = sparse[0] if sparse else None
+        if sparse is None:
+            return None
+        indices = list(sparse.get("indices", []))
+        values = list(sparse.get("values", []))
+        if not indices:
+            return None
+        return {"indices": [int(i) for i in indices], "values": [float(v) for v in values]}
+
+    def embed_text_colbert(self, text: str) -> list[list[float]] | None:
+        """Return ColBERT late-interaction token vectors, or ``None``.
+
+        ``None`` signals "not supported by this embedder". The caller
+        must skip the ColBERT multi-vector prefetch / field. The return
+        is a list of token vectors (each a list[float]).
+        """
+        if not self._supports_sparse_colbert():
+            return None
+        model = self._load()
+        truncated = text if len(text) <= self.max_input_chars else text[: self.max_input_chars]
+        result = model.encode(
+            [truncated],
+            batch_size=1,
+            return_colbert_vecs=True,
+            show_progress_bar=False,
+        )
+        colbert = None
+        if isinstance(result, dict) or (hasattr(result, "get") and callable(result.get)):
+            colbert = result.get("colbert_vecs")  # type: ignore[union-attr]
+        if colbert is None:
+            return None
+        if isinstance(colbert, list) and colbert:
+            first = colbert[0]
+            if first is None:
+                return None
+            return [[float(v) for v in row] for row in first]
+        return None
+
 
 def build_default_text_embedder() -> TextEmbedder | SentenceTransformerTextEmbedder:
     """Factory: pick the right embedder for ``Settings.embedding_backend``.

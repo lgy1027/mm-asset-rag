@@ -6,6 +6,8 @@ pure functions, no Qdrant / no embedding model required.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from mm_asset_rag.backends.qdrant_backend import (
     _STOP_TOKENS,
     _bm25_okapi_scores,
@@ -320,3 +322,166 @@ def test_get_qdrant_client_resets_after_reset(tmp_path, monkeypatch) -> None:
     c2 = qdrant_backend.get_qdrant_client()
     assert c1 is not c2
     qdrant_backend.reset_qdrant_client_cache()
+
+
+# ─── Embedder sparse / ColBERT capability probes ────────────────────────────
+# The probes are model-agnostic: the OpenAI-compatible TextEmbedder returns
+# False for both (it does not implement the methods), while a stub that
+# implements them and returns non-None on a probe returns True.
+
+
+class _NoSparseEmbedder:
+    """Stand-in for the OpenAI TextEmbedder — no sparse/colbert methods."""
+
+    def embed_text(self, text: str) -> list[float]:
+        return [0.0, 0.0, 0.0]
+
+
+class _BgeM3StubEmbedder:
+    """Stand-in for a bge-m3 embedder — implements sparse + colbert."""
+
+    def embed_text(self, text: str) -> list[float]:
+        return [0.0, 0.0, 0.0]
+
+    def embed_text_sparse(self, text: str):
+        return {"indices": [1, 2], "values": [0.5, 0.5]}
+
+    def embed_text_colbert(self, text: str):
+        return [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]]
+
+
+class _BgeM3StubReturningNoneEmbedder:
+    """A bge-m3 embedder whose probe returns None (model not actually m3)."""
+
+    def embed_text(self, text: str) -> list[float]:
+        return [0.0, 0.0, 0.0]
+
+    def embed_text_sparse(self, text: str):
+        return None
+
+    def embed_text_colbert(self, text: str):
+        return None
+
+
+def test_embedder_sparse_capability_openai_embedder_is_false() -> None:
+    """The OpenAI-compatible embedder (no ``embed_text_sparse``) → False."""
+    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
+
+    assert _embedder_sparse_capability(_NoSparseEmbedder()) is False
+
+
+def test_embedder_colbert_capability_openai_embedder_is_false() -> None:
+    from mm_asset_rag.backends.qdrant_backend import _embedder_colbert_capability
+
+    assert _embedder_colbert_capability(_NoSparseEmbedder()) is False
+
+
+def test_embedder_sparse_capability_bge_m3_stub_is_true(monkeypatch) -> None:
+    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
+
+    # auto (default) → probe returns non-None → True
+    assert _embedder_sparse_capability(_BgeM3StubEmbedder()) is True
+
+
+def test_embedder_colbert_capability_bge_m3_stub_is_true(monkeypatch) -> None:
+    from mm_asset_rag.backends.qdrant_backend import _embedder_colbert_capability
+
+    assert _embedder_colbert_capability(_BgeM3StubEmbedder()) is True
+
+
+def test_embedder_sparse_capability_probe_returns_none_is_false(monkeypatch) -> None:
+    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
+
+    # The method exists but returns None on the probe → not supported.
+    assert _embedder_sparse_capability(_BgeM3StubReturningNoneEmbedder()) is False
+
+
+def test_embedder_sparse_capability_force_false(monkeypatch) -> None:
+    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
+
+    monkeypatch.setenv("EMBEDDING_SPARSE_ENABLED", "false")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    assert _embedder_sparse_capability(_BgeM3StubEmbedder()) is False
+
+
+def test_embedder_colbert_capability_force_false(monkeypatch) -> None:
+    from mm_asset_rag.backends.qdrant_backend import _embedder_colbert_capability
+
+    monkeypatch.setenv("EMBEDDING_COLBERT_ENABLED", "false")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    assert _embedder_colbert_capability(_BgeM3StubEmbedder()) is False
+
+
+def test_embedder_sparse_capability_force_true_on_unsupported_is_false(monkeypatch) -> None:
+    """Force-true on an embedder without the method is still False."""
+    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
+
+    monkeypatch.setenv("EMBEDDING_SPARSE_ENABLED", "true")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    assert _embedder_sparse_capability(_NoSparseEmbedder()) is False
+
+
+# ─── text_to_image prefilter no longer hard-cuts ───────────────────────────
+# The pre-filter index is still built, but a zero-overlap query no longer
+# returns an empty list — CLIP recall is allowed to proceed. Verify the
+# helper is still available (for a future boosting step) but the
+# ``qdrant_text_to_image_search`` path does not short-circuit on it.
+
+
+def test_has_any_token_overlap_still_available() -> None:
+    """``_has_any_token_overlap`` remains for a future boosting step."""
+    index = {"img1": {"fish", "logo"}}
+    assert _has_any_token_overlap(_tokenize_for_prefilter("logo"), index) is True
+    assert _has_any_token_overlap(_tokenize_for_prefilter("schrödinger"), index) is False
+
+
+def test_text_to_image_does_not_short_circuit_on_zero_overlap(
+    monkeypatch, fake_qdrant_client
+) -> None:
+    """A query with zero token overlap must still call Qdrant (CLIP recall).
+
+    The previous behaviour returned [] immediately; now CLIP recall is
+    allowed to proceed and the relevance-threshold floor is the sole
+    precision control.
+    """
+    from mm_asset_rag.backends import qdrant_backend
+
+    # Build a tag index that has no overlap with the query.
+    monkeypatch.setattr(
+        qdrant_backend,
+        "_load_image_tag_index",
+        lambda: {"img1": {"mountain"}},
+    )
+    monkeypatch.setattr(
+        qdrant_backend,
+        "_tokenize_for_prefilter",
+        lambda text: {"schrödinger"},
+    )
+
+    # The fake qdrant client returns empty points by default; we just
+    # verify ``query_points`` was called (not short-circuited).
+    fake_qdrant_client.query_points.return_value = MagicMock(points=[])
+
+    monkeypatch.setattr(
+        qdrant_backend, "get_qdrant_client", lambda: fake_qdrant_client
+    )
+    monkeypatch.setattr(
+        qdrant_backend, "image_collection", lambda dim: "multimodal_image_512d"
+    )
+
+    class _Provider:
+        def embed_text(self, text):
+            return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(qdrant_backend, "get_default_image_embedder", lambda: _Provider())
+
+    out = qdrant_backend.qdrant_text_to_image_search("schrödinger equation", top_k=5)
+    # Did not short-circuit: query_points was called.
+    assert fake_qdrant_client.query_points.called
+    assert out == []
