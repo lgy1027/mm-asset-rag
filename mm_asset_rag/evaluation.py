@@ -80,7 +80,9 @@ def _load_bare_to_all_fulls() -> dict[str, list[str]]:
     hash per bare title), this preserves all duplicates so the matcher
     accepts the retriever returning *any* hash of the same source —
     relevant when re-parsing produces a new SHA but the document
-    content is unchanged.
+    content is unchanged. Keys are :func:`strip_trailing_hash`-normalised
+    (hash stripped + casefolded) so a case-different expected id still
+    resolves to the full-variant set.
     """
     index_path = get_asset_index_path()
     if not index_path.exists():
@@ -99,8 +101,9 @@ def _load_bare_to_all_fulls() -> dict[str, list[str]]:
             full = row.get("asset_id", "")
             if not full:
                 continue
-            m = re.match(r"^(.+)_([0-9a-f]{8})$", full)
-            bare = m.group(1) if m else full
+            bare = strip_trailing_hash(full)
+            if not bare:
+                continue
             bare_to_all.setdefault(bare, [])
             if full not in bare_to_all[bare]:
                 bare_to_all[bare].append(full)
@@ -316,24 +319,49 @@ def _title_of(asset_id: str) -> str:
     return asset_id
 
 
+def strip_trailing_hash(asset_id: str) -> str:
+    """Normalise an asset id for eval matching.
+
+    Drops a trailing ``_<8-hex>`` content-hash suffix (the per-parse
+    SHA that distinguishes re-parses of the same source) and casefolds
+    the remainder so ``Rich feature hierarchies`` matches
+    ``Rich Feature Hierarchies for Accurate Object Detection And Semantic Segmentation_b857cf69``.
+    Returns the original string (casefolded) when no hash suffix is
+    present, so bare model names like ``Alexnet`` still compare cleanly.
+    """
+    if not asset_id:
+        return ""
+    if "_" in asset_id:
+        head, _, tail = asset_id.rpartition("_")
+        if len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
+            return head.casefold()
+    return asset_id.casefold()
+
+
 def _match(actual: list[str], expected: list[str]) -> int | None:
     """Return 1-based rank of the first hit, or ``None`` if missed.
 
-    Three-tier prefix-tolerant matching (most permissive last):
+    Matching is normalised + bidirectional-substring:
 
-    1. ``exp in act or act in exp`` — the legacy substring check.
-    2. ``_title_of(act) == _title_of(exp)`` — strips trailing
-       ``_<8-hex-hash>`` so two hashes of the same document count as
-       one (the retriever returning ``Foo_caaa534b`` matches expected
-       ``Foo_0c1c2b23``).
+    1. Both ids are run through :func:`strip_trailing_hash` (drop the
+       ``_<8-hex>`` hash suffix + ``casefold``) so a re-parse with a
+       different SHA and a different casing still counts as the same
+       document (the R-CNN failure: the retriever returned
+       ``Rich Feature Hierarchies for Accurate Object Detection And Semantic Segmentation_b857cf69``
+       but the expected was ``Rich feature hierarchies`` — case-sensitive
+       substring + hash mismatch marked it a miss).
+    2. A hit is ``norm_expected in norm_actual or norm_actual in norm_expected``
+       — symmetric containment covers bare→full and full→bare pairs.
     """
     for rank, act in enumerate(actual, start=1):
+        norm_act = strip_trailing_hash(act)
         for exp in expected:
             if not exp:
                 continue
-            if exp in act or act in exp:
-                return rank
-            if _title_of(act) and _title_of(act) == _title_of(exp):
+            norm_exp = strip_trailing_hash(exp)
+            if not norm_exp:
+                continue
+            if norm_exp in norm_act or norm_act in norm_exp:
                 return rank
     return None
 
@@ -358,7 +386,7 @@ def run_eval(top_k: int = 5) -> list[EvalResult]:
             # count as misses.
             expected: list[str] = []
             for item in case["expected_asset_ids"]:
-                bare = _title_of(str(item))
+                bare = strip_trailing_hash(str(item))
                 if bare in bare_to_all_fulls:
                     for f in bare_to_all_fulls[bare]:
                         if f not in expected:
@@ -506,13 +534,32 @@ def run_image_to_image_eval(cases: list[dict] | None = None, top_k: int = 5) -> 
     return results
 
 
+def _normalize_id_list(ids: list[str]) -> list[str]:
+    """Normalise an id list for aggregate_metrics' strict set match.
+
+    ``aggregate_metrics`` (in :mod:`mm_asset_rag.metrics`) uses exact
+    set membership, so a re-parse with a different ``_<8-hex>`` suffix
+    would otherwise count as a miss. We strip the hash + casefold here
+    (keeping it in the eval harness only — metrics itself stays
+    exact-set semantics for non-eval consumers).
+    """
+    out: list[str] = []
+    for aid in ids:
+        norm = strip_trailing_hash(aid)
+        if norm and norm not in out:
+            out.append(norm)
+    return out
+
+
 def write_eval_report(results: list[EvalResult], path=None) -> None:
     """Write per-query results + aggregate metrics to ``eval_report.json``.
 
     The aggregate block uses :func:`mm_asset_rag.metrics.aggregate_metrics`
     which computes hit_rate / precision / recall / f1 / ndcg at k=1,3,5,10
     plus MRR and MAP. Metrics are reported for the full set and per
-    language group.
+    language group. Ids are normalised via :func:`strip_trailing_hash`
+    before being handed to metrics so re-parses with a different content
+    hash don't dilute the aggregate scores.
     """
     target = path or get_eval_report()
 
@@ -526,7 +573,13 @@ def write_eval_report(results: list[EvalResult], path=None) -> None:
         if not rs:
             return {}
         return aggregate_metrics(
-            [{"actual_ids": r.actual_asset_ids, "expected_ids": r.expected_asset_ids} for r in rs]
+            [
+                {
+                    "actual_ids": _normalize_id_list(r.actual_asset_ids),
+                    "expected_ids": _normalize_id_list(r.expected_asset_ids),
+                }
+                for r in rs
+            ]
         )
 
     by_group: dict[str, list[EvalResult]] = {"all": list(results), "en": [], "zh": []}

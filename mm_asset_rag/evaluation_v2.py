@@ -324,14 +324,34 @@ def _title_of(asset_id: str) -> str:
     return asset_id
 
 
+def strip_trailing_hash(asset_id: str) -> str:
+    """Normalise an asset id for eval matching.
+
+    Drops a trailing ``_<8-hex>`` content-hash suffix and casefolds the
+    remainder so ``Rich feature hierarchies`` matches
+    ``Rich Feature Hierarchies for Accurate Object Detection And Semantic Segmentation_b857cf69``.
+    Mirrors the v1 helper so both eval harnesses apply the same
+    normalisation.
+    """
+    if not asset_id:
+        return ""
+    if "_" in asset_id:
+        head, _, tail = asset_id.rpartition("_")
+        if len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
+            return head.casefold()
+    return asset_id.casefold()
+
+
 def _match(actual: list[str], expected: list[str]) -> int | None:
     for rank, act in enumerate(actual, start=1):
-        act_title = _title_of(act)
+        norm_act = strip_trailing_hash(act)
         for exp in expected:
-            exp_title = _title_of(exp)
-            if not exp_title:
+            if not exp:
                 continue
-            if exp_title in act_title or act_title in exp_title:
+            norm_exp = strip_trailing_hash(exp)
+            if not norm_exp:
+                continue
+            if norm_exp in norm_act or norm_act in norm_exp:
                 return rank
     return None
 
@@ -465,6 +485,22 @@ def run_image_to_image_eval_v2(top_k: int = 5) -> list[V2Result]:
     return out
 
 
+def _normalize_id_list(ids: list[str]) -> list[str]:
+    """Normalise an id list for aggregate_metrics' strict set match.
+
+    Strips the ``_<8-hex>`` hash suffix + casefolds so a re-parse with
+    a different content hash doesn't dilute the aggregate scores. Kept
+    in the eval harness so :mod:`mm_asset_rag.metrics` stays exact-set
+    for non-eval consumers.
+    """
+    out: list[str] = []
+    for aid in ids:
+        norm = strip_trailing_hash(aid)
+        if norm and norm not in out:
+            out.append(norm)
+    return out
+
+
 def write_eval_report_v2(results_by_group: dict[str, list[V2Result]], path=None) -> None:
     """Write per-query results + per-group aggregate metrics to JSON."""
     target = path or get_eval_report().with_name("eval_report_v2.json")
@@ -473,7 +509,13 @@ def write_eval_report_v2(results_by_group: dict[str, list[V2Result]], path=None)
         if not rs:
             return {}
         return aggregate_metrics(
-            [{"actual_ids": r.actual_asset_ids, "expected_ids": r.expected_asset_ids} for r in rs]
+            [
+                {
+                    "actual_ids": _normalize_id_list(r.actual_asset_ids),
+                    "expected_ids": _normalize_id_list(r.expected_asset_ids),
+                }
+                for r in rs
+            ]
         )
 
     payload = {

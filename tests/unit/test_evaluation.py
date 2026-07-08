@@ -11,6 +11,7 @@ from mm_asset_rag.evaluation import (
     EVAL_CASES,
     EvalResult,
     run_eval,
+    strip_trailing_hash,
     write_eval_report,
 )
 from mm_asset_rag.schema import SearchHit
@@ -162,3 +163,68 @@ def test_write_eval_report(tmp_path: Path) -> None:
     assert "all" in payload["metrics"]
     assert "en" in payload["metrics"]
     assert "zh" in payload["metrics"]
+
+
+# ── strip_trailing_hash + casefold normalisation ─────────────────────────
+
+
+def test_strip_trailing_hash_drops_8_hex_suffix() -> None:
+    assert strip_trailing_hash("Alexnet_0c1c2b23") == "alexnet"
+    # casefold applies to the title portion.
+    assert strip_trailing_hash("AlexNet_caaa534b") == "alexnet"
+    # Non-hex tail (length 8 but not hex) → keep whole, casefold only.
+    assert strip_trailing_hash("foo_longtail") == "foo_longtail"
+    # No underscore → casefold the whole id.
+    assert strip_trailing_hash("CLIP") == "clip"
+    assert strip_trailing_hash("") == ""
+
+
+def test_match_case_insensitive_partial_title() -> None:
+    """The R-CNN failure: retriever returns the correct paper with a
+    different casing + content hash, expected is a partial bare title.
+    After normalisation the matcher must count this as a hit.
+    """
+    from mm_asset_rag.evaluation import _match
+
+    actual = [
+        "Rich Feature Hierarchies for Accurate Object Detection And Semantic Segmentation_b857cf69"
+    ]
+    expected = ["Rich feature hierarchies"]
+    assert _match(actual, expected) == 1
+
+
+def test_match_casefold_hash_variant() -> None:
+    """Same content re-parsed under a new hash + different casing still
+    counts as the same document."""
+    from mm_asset_rag.evaluation import _match
+
+    assert _match(["ALEXNET_0c1c2b23"], ["Alexnet_caaa534b"]) == 1
+
+
+def test_match_still_misses_unrelated() -> None:
+    from mm_asset_rag.evaluation import _match
+
+    assert _match(["Caltech Panda 01_3443a5d5"], ["Caltech Dolphin"]) is None
+    # Empty expected never hits.
+    assert _match(["anything"], []) is None
+
+
+def test_write_eval_report_normalises_ids_for_metrics(tmp_path: Path) -> None:
+    """aggregate_metrics gets hash-stripped + casefolded ids so a
+    re-parse with a different sha counts in the strict-set metric."""
+    results = [
+        EvalResult(
+            query="q",
+            expected_asset_ids=["Alexnet_caaa534b"],
+            actual_asset_ids=["Alexnet_0c1c2b23"],
+            hit=True,
+            rank=1,
+            group="en",
+        )
+    ]
+    target = tmp_path / "report.json"
+    write_eval_report(results, path=target)
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    # hit_rate@1 in the aggregate block should be 1.0 once the two
+    # hash variants normalise to the same bare title.
+    assert payload["metrics"]["all"]["hit_rate"]["1"] == 1.0
