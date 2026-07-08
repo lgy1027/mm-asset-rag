@@ -238,17 +238,26 @@ def enrich_docs_with_context(
                     docs[idx].metadata["context"] = ctx
                     cache[key] = ctx
 
-    # 3. Persist cache for reuse.
-    if cache_path is not None:
+    # 3. Persist cache for reuse — but only if we actually produced any
+    #    context (summary or per-chunk). When the LLM is unconfigured or every
+    #    call failed, there is nothing worth caching; skipping the write keeps
+    #    the parse dir clean (matches pre-contextual behavior, e.g. for image
+    #    single-chunk assets / no-credentials runs). Nothing here raises.
+    has_context = bool(summary) or any(d.metadata.get("context") for d in docs)
+    if cache_path is not None and has_context:
         from pathlib import Path
 
         cache_path = Path(cache_path)
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with cache_path.open("w", encoding="utf-8") as f:
-            f.write(
-                json.dumps({"key": "__summary__", "context": summary}, ensure_ascii=False) + "\n"
-            )
-            for idx, d in enumerate(docs):
-                key = _key_for(idx, d)
-                ctx = d.metadata.get("context", "")
-                f.write(json.dumps({"key": key, "context": ctx}, ensure_ascii=False) + "\n")
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with cache_path.open("w", encoding="utf-8") as f:
+                f.write(
+                    json.dumps({"key": "__summary__", "context": summary}, ensure_ascii=False)
+                    + "\n"
+                )
+                for idx, d in enumerate(docs):
+                    key = _key_for(idx, d)
+                    ctx = d.metadata.get("context", "")
+                    f.write(json.dumps({"key": key, "context": ctx}, ensure_ascii=False) + "\n")
+        except Exception:
+            pass

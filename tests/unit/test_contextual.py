@@ -189,3 +189,61 @@ def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, 
         assert "这是关于DDPM去噪扩散的前缀" not in p.payload["text"]
         assert p.payload["text"].startswith("正文内容")
         assert p.payload["context"] == "这是关于DDPM去噪扩散的前缀"
+
+
+def test_contextual_enabled_defaults_true(tmp_home) -> None:
+    """``Settings.contextual_enabled`` defaults to True so contextual runs
+    without explicit opt-in (the latency/precision trade-off favors precision).
+    Set ``CONTEXTUAL_ENABLED=false`` to opt out."""
+    from mm_asset_rag.settings import get_settings
+
+    assert get_settings().contextual_enabled is True
+
+    # Env var can opt out (backward-compatible escape hatch).
+    import os
+
+    os.environ["CONTEXTUAL_ENABLED"] = "false"
+    get_settings.cache_clear()
+    try:
+        assert get_settings().contextual_enabled is False
+    finally:
+        del os.environ["CONTEXTUAL_ENABLED"]
+    get_settings.cache_clear()
+
+
+def test_enrich_noop_without_credentials_writes_no_cache(tmp_home, monkeypatch) -> None:
+    """When OPENAI_* is unconfigured, enrich is a full no-op: no LLM call, no
+    exception, and no cache file written (keeps the parse dir clean)."""
+    docs = [_doc("片段一", chunk_index=0), _doc("片段二", chunk_index=1)]
+    cache_path = tmp_home / "parsed" / "a1" / "context.jsonl"
+
+    # No credentials anywhere — neither env nor settings.
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    # Should not raise and should not create a cache file.
+    enrich_docs_with_context(docs, asset_title="t", cache_path=cache_path)
+
+    assert not cache_path.exists()
+    for d in docs:
+        assert not d.metadata.get("context")
+
+
+def test_enrich_degrades_silently_on_request_failure(tmp_home, monkeypatch) -> None:
+    """A raised exception from requests.post degrades to empty context — never
+    propagates — and writes no cache when nothing was produced."""
+    docs = [_doc("片段", chunk_index=0)]
+    cache_path = tmp_home / "parsed" / "a2" / "context.jsonl"
+
+    with (
+        patch(
+            "mm_asset_rag.contextual._llm_credentials",
+            return_value=("https://example.com/v1", "sk-test", "test-m3"),
+        ),
+        patch("mm_asset_rag.contextual.requests.post", side_effect=Exception("boom")),
+    ):
+        enrich_docs_with_context(docs, asset_title="t", cache_path=cache_path)
+
+    assert not cache_path.exists()
+    assert not docs[0].metadata.get("context")
