@@ -228,7 +228,36 @@ ZH_PAPER_QUERIES: list[dict] = [
         "expected_asset_ids": ["Attention Is All You Need"],
     },
     {"query": "图像分类 深度卷积神经网络 AlexNet", "expected_asset_ids": ["Alexnet"]},
+    # More cross-language (Chinese query → English paper) cases. These stress
+    # the multilingual dense + BM25 channels with shorter, more colloquial
+    # phrasings than the title-anchored cases above.
+    {"query": "去噪扩散概率模型", "expected_asset_ids": ["Ddpm"]},
+    {"query": "残差网络 怎么解决梯度消失", "expected_asset_ids": ["Resnet"]},
+    {"query": "目标检测 端到端 Transformer 候选框", "expected_asset_ids": ["Detr"]},
+    {"query": "高效移动端卷积网络 反向残差线性瓶颈", "expected_asset_ids": ["Mobilenetv2"]},
+    {"query": "词向量 Word2Vec 连续词袋模型", "expected_asset_ids": ["Word2Vec"]},
+    {"query": "变分自编码器 VAE", "expected_asset_ids": ["Vae"]},
+    {"query": "分割一切 SAM 图像分割基础模型", "expected_asset_ids": ["Segment Anything"]},
+    {"query": "低秩适配 LoRA 大模型微调", "expected_asset_ids": ["Lora"]},
 ]
+
+# ── Chinese queries on the Chinese (联宝 / AI-tutorial) corpus ─────────
+# These exercise BM25-zh + recursive chunking on real long Chinese
+# documents (WeChat-exported news + AI walkthroughs). Queries are phrased
+# the way a user actually asks — by sub-topic, not by title.
+ZH_DOC_QUERIES: list[dict] = [
+    {"query": "联宝科技可发电键盘专利 压电薄膜", "expected_asset_ids": ["创新联宝 会发电的键盘"]},
+    {"query": "联宝中试基地 省级备案 科技成果转化", "expected_asset_ids": ["联宝科技中试基地获省级备案"]},
+    {"query": "CES 2026 联想可拉伸屏幕 未来PC", "expected_asset_ids": ["CES 2026再绽光芒"]},
+    {"query": "联宝科技 合肥新春第一会 新质生产力", "expected_asset_ids": ["受邀参加合肥"]},
+    {"query": "一台笔记本到一群机器人 联宝转型", "expected_asset_ids": ["媒眼看联宝"]},
+    {"query": "安徽外贸破万亿 联宝贡献", "expected_asset_ids": ["安徽外贸再创新高"]},
+    {"query": "联宝科技 2026 财年启幕 ESG", "expected_asset_ids": ["敢AI敢为"]},
+    {"query": "联宝 ESG 年度答卷 绿色转型", "expected_asset_ids": ["ESG年度答卷"]},
+    {"query": "Obsidian AI Skill 本地知识库", "expected_asset_ids": ["Obsidian 的 10 大 AI Skill"]},
+    {"query": "Codex 全景指南 OpenAI 编程模型", "expected_asset_ids": ["Codex 全景指南"]},
+]
+
 
 # ── Original 3-case regression (kept for backwards compat) ────────────
 LEGACY_QUERIES: list[dict] = [
@@ -245,7 +274,7 @@ LEGACY_QUERIES: list[dict] = [
     {"query": "有没有包含文档版面理解或 OCR 的资料？", "expected_asset_ids": ["LayoutLM"]},
 ]
 
-EVAL_CASES: list[dict] = EN_PAPER_QUERIES + ZH_PAPER_QUERIES
+EVAL_CASES: list[dict] = EN_PAPER_QUERIES + ZH_PAPER_QUERIES + ZH_DOC_QUERIES
 
 # ── Text-to-image (CLIP) queries on the Caltech-101 image set ──────────
 # Each case is a free-text category name; the prefix-tolerant matcher
@@ -365,7 +394,11 @@ def run_eval(top_k: int = 5) -> list[EvalResult]:
     """
     bare_to_all_fulls = _load_bare_to_all_fulls()
     results: list[EvalResult] = []
-    for group, cases in (("en", EN_PAPER_QUERIES), ("zh", ZH_PAPER_QUERIES)):
+    for group, cases in (
+        ("en", EN_PAPER_QUERIES),
+        ("zh", ZH_PAPER_QUERIES),
+        ("zh_doc", ZH_DOC_QUERIES),
+    ):
         for case in cases:
             hits = hybrid_search(str(case["query"]), top_k=top_k)
             actual = [hit.asset_id for hit in hits]
