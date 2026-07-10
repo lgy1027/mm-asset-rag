@@ -230,3 +230,86 @@ def test_sniff_pdf_no_metadata_uses_stem_title(tmp_path: Path) -> None:
     doc.save(str(p))
     doc.close()
     assert sniff(p).title == "Research Notes"
+
+
+# ─── sniff: document formats (docx/pptx/xlsx/html/md) ─────────────────
+
+
+def _write_minimal_office(tmp_path: Path, name: str) -> Path:
+    """Write a minimal valid Office Open XML (ZIP) container.
+
+    A real docx/pptx/xlsx is a zip with ``[Content_Types].xml``; the
+    sniff guard only checks ``zipfile.is_zipfile``, so a zip with that
+    member is enough to classify. The extension on the filename drives
+    the source_type."""
+    import zipfile
+
+    p = tmp_path / name
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types></Types>")
+    return p
+
+
+def test_sniff_docx(tmp_path: Path) -> None:
+    p = _write_minimal_office(tmp_path, "report.docx")
+    s = sniff(p)
+    assert s.source_type == "document"
+    assert s.title == "Report"
+
+
+def test_sniff_pptx(tmp_path: Path) -> None:
+    p = _write_minimal_office(tmp_path, "slides.pptx")
+    s = sniff(p)
+    assert s.source_type == "document"
+
+
+def test_sniff_xlsx(tmp_path: Path) -> None:
+    p = _write_minimal_office(tmp_path, "data.xlsx")
+    s = sniff(p)
+    assert s.source_type == "document"
+
+
+def test_sniff_office_zip_without_content_types_still_classifies(tmp_path: Path) -> None:
+    """The sniff guard checks ``is_zipfile`` + extension, not the
+    ``[Content_Types].xml`` member — so any valid zip with a .docx name
+    classifies as ``document``. Content validity is the parser's job (a
+    malformed office file fails at parse time, not sniff time). This
+    test pins that contract: sniff trusts the name, parser guards content."""
+    import zipfile
+
+    p = tmp_path / "not_really.docx"
+    with zipfile.ZipFile(p, "w") as zf:
+        zf.writestr("readme.txt", "not an office file")
+    s = sniff(p)
+    assert s.source_type == "document"
+
+
+def test_sniff_non_zip_with_office_extension_rejected(tmp_path: Path) -> None:
+    """A non-zip file with a .docx name is rejected as unknown — the
+    ``is_zipfile`` guard catches a plain-text file masquerading by name."""
+    p = tmp_path / "fake.docx"
+    p.write_text("not a zip at all", encoding="utf-8")
+    s = sniff(p)
+    assert s.source_type == "unknown"
+
+
+def test_sniff_html(tmp_path: Path) -> None:
+    p = tmp_path / "page.html"
+    p.write_text("<!DOCTYPE html><html><body>hi</body></html>", encoding="utf-8")
+    s = sniff(p)
+    assert s.source_type == "document"
+    assert s.title == "Page"
+
+
+def test_sniff_markdown(tmp_path: Path) -> None:
+    p = tmp_path / "notes.md"
+    p.write_text("# Notes\nbody", encoding="utf-8")
+    s = sniff(p)
+    assert s.source_type == "document"
+
+
+def test_sniff_text(tmp_path: Path) -> None:
+    p = tmp_path / "readme.txt"
+    p.write_text("plain text", encoding="utf-8")
+    s = sniff(p)
+    assert s.source_type == "document"

@@ -250,6 +250,10 @@ def _suffix_for(source_path: Path, source_type: str) -> str:
         return ".pdf"
     if source_type == "image":
         return suffix if suffix in _IMAGE_SUFFIXES else ".png"
+    if source_type == "document":
+        # Preserve the original office/text extension so the docling
+        # adapter can pick the right backend (.docx vs .pptx vs .html …).
+        return suffix or ".bin"
     return suffix or ".bin"
 
 

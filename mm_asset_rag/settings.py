@@ -331,7 +331,7 @@ class Settings(BaseSettings):
     # NOTE: pdf_parser / enable_ocr / enable_vlm / image_provider / auto_index
     # are kept as legacy fields for backward compat with old deployments, but
     # the modern upload pipeline auto-decides everything from sniff + VLM.
-    pdf_parser: Literal["auto", "pymupdf", "paddleocr_vl"] = "auto"
+    pdf_parser: Literal["auto", "pymupdf", "paddleocr_vl", "docling"] = "auto"
     enable_ocr: bool = False
     enable_vlm: bool = False
     image_provider: Literal["lite", "sentence_transformers"] = "lite"

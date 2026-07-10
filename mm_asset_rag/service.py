@@ -1008,7 +1008,12 @@ class IngestService:
         options = ParseOptions(assets=list(assets))
         if isinstance(raw, dict):
             pdf_parser = raw.get("pdf_parser")
-            if isinstance(pdf_parser, str) and pdf_parser in {"auto", "pymupdf", "paddleocr_vl"}:
+            if isinstance(pdf_parser, str) and pdf_parser in {
+                "auto",
+                "pymupdf",
+                "paddleocr_vl",
+                "docling",
+            }:
                 options.pdf_parser = pdf_parser
             if isinstance(raw.get("enable_ocr"), bool):
                 options.enable_ocr = raw["enable_ocr"]
@@ -1157,6 +1162,12 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
                         enable_ocr=options.enable_ocr,
                         enable_vlm=options.enable_vlm,
                     )
+                elif asset.source_type == "document":
+                    # Office/text formats (docx/pptx/xlsx/html/…) — parsed
+                    # by the docling adapter. docling is an optional extra;
+                    # a missing install surfaces as a parse failure here.
+                    parser = get_parser("document", "docling")
+                    docs = parser.parse(asset)
                 else:
                     docs = []
             except Exception as exc:

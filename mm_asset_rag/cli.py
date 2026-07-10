@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     parse_cmd = subparsers.add_parser("parse", help="Parse and index PDF/image files")
     parse_cmd.add_argument("files", nargs="+", help="PDF/image files to ingest")
     parse_cmd.add_argument(
-        "--pdf-parser", choices=["auto", "pymupdf", "paddleocr_vl"], default="auto"
+        "--pdf-parser", choices=["auto", "pymupdf", "paddleocr_vl", "docling"], default="auto"
     )
     parse_cmd.add_argument("--ocr", action="store_true", help="Run local OCR HTTP for images")
     parse_cmd.add_argument(

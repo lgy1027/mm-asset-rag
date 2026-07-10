@@ -13,12 +13,18 @@ from __future__ import annotations
 
 from ..registry import register_parser
 from .image_parser import parse_image
-from .pdf_parser import parse_pdf, parse_pdf_with_pymupdf, parse_with_paddleocr_vl
+from .pdf_parser import (
+    parse_pdf,
+    parse_pdf_with_pymupdf,
+    parse_with_docling,
+    parse_with_paddleocr_vl,
+)
 
 __all__ = [
     "parse_image",
     "parse_pdf",
     "parse_pdf_with_pymupdf",
+    "parse_with_docling",
     "parse_with_paddleocr_vl",
 ]
 
@@ -78,9 +84,44 @@ class _ImageParser:
         )
 
 
+class _DoclingPdfParser:
+    """docling as a PDF backend (``--pdf-parser docling``).
+
+    Registered under ``source_type="pdf"`` so ``parse_pdf(parser="docling")``
+    has a registry entry. The real work is in ``parse_with_docling``; the
+    lazy docling import means this registers fine even when the
+    ``[docling]`` extra isn't installed (the error surfaces at parse time).
+    """
+
+    name = "docling"
+    source_type = "pdf"
+
+    def parse(self, asset, **options):
+        _ = options
+        return parse_with_docling(asset)
+
+
+class _DoclingDocumentParser:
+    """docling for office/text formats (docx / pptx / xlsx / html / md).
+
+    Registered under ``source_type="document"`` — the source_type ``sniff``
+    assigns to those formats. Same adapter as the PDF one; both call
+    ``parse_with_docling``.
+    """
+
+    name = "docling"
+    source_type = "document"
+
+    def parse(self, asset, **options):
+        _ = options
+        return parse_with_docling(asset)
+
+
 # Register all built-in parsers. Image parsing now flows through the same
 # registry contract as PDFs, so future modalities don't need special cases.
 register_parser(_PyMuPdfParser())
 register_parser(_PaddleOcrVlParser())
 register_parser(_AutoPdfParser())
+register_parser(_DoclingPdfParser())
+register_parser(_DoclingDocumentParser())
 register_parser(_ImageParser())

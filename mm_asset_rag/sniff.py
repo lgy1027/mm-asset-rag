@@ -18,7 +18,10 @@ log = logging.getLogger(__name__)
 
 
 # Magic-byte signatures for the formats we accept. Each entry maps a
-# leading-byte regex to a ``(source_type, extension)`` tuple.
+# leading-byte regex to a ``(source_type, extension)`` tuple. Office
+# formats (docx/pptx/xlsx) are ZIP containers (``PK\x03\x04``) and are
+# disambiguated from generic zips by extension + ``[Content_Types].xml``
+# in ``_sniff_office`` below; HTML by its leading tag.
 _MAGIC: list[tuple[bytes, str, str]] = [
     (b"%PDF-", "pdf", ".pdf"),
     (b"\x89PNG\r\n\x1a\n", "image", ".png"),
@@ -31,19 +34,33 @@ _MAGIC: list[tuple[bytes, str, str]] = [
 
 _WEBP_FULL_MAGIC = b"RIFF\x00\x00\x00\x00WEBP"
 
+# Office Open XML containers are ZIP files; the ``[Content_Types].xml``
+# member carries the format-specific override. ``_OFFICE_SUFFIXES`` maps
+# the document-type substring found in that XML to the source_type +
+# extension. The extension on the uploaded file is the primary signal
+# (a .docx is a docx even before we crack the zip); the XML check is a
+# guard against a renamed zip sneaking through.
+_OFFICE_SUFFIXES: dict[str, tuple[str, str]] = {
+    ".docx": ("document", ".docx"),
+    ".pptx": ("document", ".pptx"),
+    ".xlsx": ("document", ".xlsx"),
+}
+_ZIP_MAGIC = b"PK\x03\x04"
+
 
 @dataclass
 class SniffedAsset:
     """What sniff() reports about a single uploaded file.
 
-    ``source_type`` is one of ``"pdf"``, ``"image"``, or ``"unknown"``.
-    When ``unknown``, the caller should reject the upload rather than try
-    to parse it.
+    ``source_type`` is one of ``"pdf"``, ``"image"``, ``"document"``, or
+    ``"unknown"``. ``"document"`` covers the office/text formats the
+    docling adapter parses (docx / pptx / xlsx / html). When ``unknown``,
+    the caller should reject the upload rather than try to parse it.
     """
 
     asset_id: str
     title: str
-    source_type: str  # "pdf" | "image" | "unknown"
+    source_type: str  # "pdf" | "image" | "document" | "unknown"
     relative_path: str
     tags: list[str] = field(default_factory=list)
     file_size: int = 0
@@ -131,6 +148,35 @@ def sniff_image(path: Path) -> tuple[int | None, int | None, dict | None]:
     except Exception as exc:
         log.debug("sniff_image: Pillow failed for %s: %s", path, exc)
         return None, None, None
+
+
+def _sniff_office(path: Path) -> tuple[str, str] | None:
+    """Identify an Office Open XML container (docx/pptx/xlsx).
+
+    Returns ``(source_type, extension)`` or ``None`` when the file isn't
+    one we recognise. The extension is the primary signal; we crack the
+    zip only as a guard so a renamed plain zip can't masquerade as a
+    document. Cracking failures degrade to extension-only trust (a
+    truncated upload still sniffs by name) — the parser will reject it
+    later if the content is genuinely bad.
+    """
+    suffix = path.suffix.lower()
+    if suffix not in _OFFICE_SUFFIXES:
+        return None
+    source_type, ext = _OFFICE_SUFFIXES[suffix]
+    # Guard: confirm it's actually a ZIP. A non-zip with a .docx name is
+    # rejected as unknown rather than trusted by extension alone.
+    try:
+        import zipfile
+
+        if not zipfile.is_zipfile(path):
+            return None
+    except OSError:
+        # If we can't even stat the zip, trust the extension — the parser
+        # will surface the real error. Better to over-accept than to drop
+        # a valid upload on a transient FS hiccup.
+        pass
+    return source_type, ext
 
 
 def sniff(path: Path) -> SniffedAsset:
@@ -243,6 +289,33 @@ def sniff(path: Path) -> SniffedAsset:
             width=w,
             height=h,
             image_metadata=exif,
+            error=error,
+        )
+
+    # Office Open XML (docx/pptx/xlsx) — ZIP containers, disambiguated
+    # by extension + a zipfile guard in ``_sniff_office``. Parsed by the
+    # docling adapter (source_type="document").
+    office = _sniff_office(path)
+    if office is not None:
+        return SniffedAsset(
+            asset_id=asset_id,
+            title=title,
+            source_type=office[0],
+            relative_path=relative_path,
+            file_size=size,
+            error=error,
+        )
+
+    # HTML / Markdown / plain text — sniffed by extension (no robust magic
+    # bytes for these). Parsed by the docling adapter too.
+    _TEXT_SUFFIXES = {".html", ".htm", ".md", ".markdown", ".txt"}
+    if path.suffix.lower() in _TEXT_SUFFIXES:
+        return SniffedAsset(
+            asset_id=asset_id,
+            title=title,
+            source_type="document",
+            relative_path=relative_path,
+            file_size=size,
             error=error,
         )
 

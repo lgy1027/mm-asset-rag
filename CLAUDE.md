@@ -14,6 +14,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 # Setup
 pip install -e ".[dev,clip]"          # [clip] optional; SentenceTransformers image embedder
+pip install -e ".[docling]"           # [docling] optional; multi-format parser (docx/pptx/html/…)
 
 # Tests
 pytest tests/unit -q                  # offline suite; what CI runs
