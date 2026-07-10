@@ -265,6 +265,20 @@ class Settings(BaseSettings):
     pdf_extract_images: bool = True
     pdf_image_min_dim: int = 80
 
+    # ─── Scanned-PDF fallback (auto parser) ─────────────────────────────
+    # The ``auto`` PDF parser runs fast local PyMuPDF first, then falls
+    # back to an OCR backend when the result looks like a scan (image-only,
+    # near-zero text). ``pdf_scan_text_threshold`` is the avg non-empty
+    # chars/page below which a document is treated as scanned — corpus-
+    # agnostic (pure char density, no domain words). ``pdf_scan_fallback_parser``
+    # picks the OCR backend: ``paddleocr_vl`` (default, online API, needs
+    # PADDLEOCR_VL_API_TOKEN) or ``docling`` (local, needs the [docling]
+    # extra). Disable with ``pdf_scan_fallback_enabled=false`` to always
+    # stay on PyMuPDF (the pre-IR ``auto`` behaviour).
+    pdf_scan_fallback_enabled: bool = True
+    pdf_scan_text_threshold: int = 10
+    pdf_scan_fallback_parser: str = "paddleocr_vl"
+
     # ─── Tier-3 multimodal answer (opt-in) ───────────────────────────────
     # When on, ``answer.llm_answer`` / ``stream_answer_chunks`` inject the
     # hit's associated images (base64 data URLs) into the chat request as

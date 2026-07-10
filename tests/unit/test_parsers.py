@@ -160,10 +160,15 @@ def test_parse_image_emits_chunk_when_only_title_present(tmp_home: Path) -> None
     assert "Linux logo" in docs[0].text
 
 
-def test_parse_pdf_auto_uses_settings_token(
+def test_parse_pdf_auto_falls_back_to_paddle_on_scan(
     pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """auto now runs PyMuPDF first and falls back to PaddleOCR-VL only when
+    the result looks scanned (near-zero text). The fallback needs the
+    PADDLEOCR_VL_API_TOKEN — same token dependency as before, but gated on
+    text density rather than always-on."""
     from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.parsers.document_ir import DocumentIR
     from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
@@ -175,9 +180,44 @@ def test_parse_pdf_auto_uses_settings_token(
         return []
 
     monkeypatch.setattr(pdf_parser, "parse_with_paddleocr_vl", fake_paddle)
-    monkeypatch.setattr(pdf_parser, "parse_pdf_with_pymupdf", lambda asset: [])
+
+    # Force PyMuPDF to look scanned: build_ir_pymupdf returns an IR whose
+    # blocks carry almost no text, so looks_scanned() is True → fallback.
+    def fake_build_ir_pymupdf(asset: Asset):
+        from mm_asset_rag.parsers.document_ir import Block
+
+        return DocumentIR(
+            blocks=[Block(text="x", page=0)],  # 1 char << 50/page threshold
+            images=[],
+            asset=asset,
+            parser="pymupdf",
+        )
+
+    monkeypatch.setattr(pdf_parser, "build_ir_pymupdf", fake_build_ir_pymupdf)
     parse_pdf(pdf_asset, parser="auto")
     assert called == {"parser": "paddle"}
+
+
+def test_parse_pdf_auto_stays_on_pymupdf_for_text_pdf(
+    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A text-rich PDF stays on PyMuPDF even when a PaddleOCR token is
+    configured — the old auto behaviour OCR'd every PDF unnecessarily."""
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
+    get_settings.cache_clear()
+    called = {"paddle": 0}
+
+    def fake_paddle(asset: Asset):
+        called["paddle"] += 1
+        return []
+
+    monkeypatch.setattr(pdf_parser, "parse_with_paddleocr_vl", fake_paddle)
+    # Real pdf_asset has real text → not scanned → no fallback.
+    parse_pdf(pdf_asset, parser="auto")
+    assert called == {"paddle": 0}
 
 
 def test_submit_paddleocr_vl_job_uses_settings(

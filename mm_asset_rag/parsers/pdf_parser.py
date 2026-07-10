@@ -26,25 +26,26 @@ from ..assets import Asset
 from ..paths import get_parsed_dir
 from ..schema import ParsedDocument
 from ..settings import get_settings
+from .document_ir import Block, DocumentIR, ImageRef, PageHint
 
 # ─── PyMuPDF ──────────────────────────────────────────────────────────────
 
 
-def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
-    """Local fallback parser for text-based PDFs.
+def build_ir_pymupdf(asset: Asset) -> DocumentIR:
+    """Local PyMuPDF extraction → ``DocumentIR`` (text blocks + images).
 
-    Each page is split by detected heading boundaries (ATX ``#``,
-    font-size heuristic, standalone short line). A page that yields
-    multiple sections becomes multiple chunks, each with a
-    ``metadata.section`` field carrying the heading text. The keyword
-    enrichment footer (Chinese jieba TextRank) is appended to every
-    chunk's text so the BM25 channel can match short user queries
-    like ``联宝 ESG`` against long PDF bodies.
+    The "format → IR" half of the parse. Walks ``page.get_text("dict")``
+    once per page to build text blocks (each line's bbox + font size feeds
+    the heading heuristic downstream) and calls ``extract_page_images`` +
+    ``detect_figure_captions`` to collect images with their captions.
+    Chunking, image↔chunk association, keyword enrichment and metadata
+    assembly happen in the shared ``ir_to_documents`` layer, not here —
+    so this function does only what PyMuPDF uniquely knows: page geometry
+    and font sizes.
     """
-    from .chunk_splitter import _make_token_counter, split_with_recursion
+    from .chunk_splitter import _make_token_counter  # noqa: F401  (kept for callers)
     from .pdf_images import (
         LineItem,
-        associate_images,
         detect_figure_captions,
         extract_page_images,
     )
@@ -54,21 +55,19 @@ def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
     output_dir = get_parsed_dir() / asset.asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
     images_dir = output_dir / "images"
-    docs: list[ParsedDocument] = []
-    # Token counter is built once per parse (tokenizer load is expensive);
-    # falls back to char approximation when CHUNK_TOKENIZER is unset or
-    # unavailable. Corpus- and model-agnostic.
-    _tok, count_tokens = _make_token_counter(settings.chunk_tokenizer)
+    blocks: list[Block] = []
+    images: list[ImageRef] = []
+    markdown_paths: list[str] = []
+    page_hints: dict[int, PageHint] = {}
 
     with fitz.open(asset.file_path) as pdf:
         for page_index, page in enumerate(pdf):
             page_dict = page.get_text("dict")
-            # Build three parallel lists from one dict walk:
-            #   font_sizes[i] — avg span size of line i (heading heuristic)
-            #   line_bboxes[i] — bbox of line i (chunk bbox → figure fallback)
-            #   line_items[i] — LineItem for caption detection
-            # All indexed by dict-line order, matching the parallel-list
-            # contract ``split_by_heading`` already relies on for font_sizes.
+            # Build per-line geometry + font info in one dict walk. The
+            # heading detection itself runs later (split_with_recursion →
+            # split_by_heading); here we only preserve the raw per-line
+            # text + bbox + avg font size so the splitter's font-size and
+            # standalone-short-line heuristics keep working.
             font_sizes: list[float] = []
             line_bboxes: list = []
             line_items: list[LineItem] = []
@@ -92,8 +91,18 @@ def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
                 continue
             markdown_path = output_dir / f"page_{page_index}.md"
             markdown_path.write_text(text, encoding="utf-8")
+            markdown_paths.append(str(markdown_path))
 
-            # Extract embedded images + resolve figure captions for this page.
+            # One Block per page carrying the whole-page text. The heading
+            # boundaries and per-line bboxes are passed via page_hints so
+            # split_with_recursion keeps working unchanged — the splitter's
+            # font-size / standalone-short-line heuristics need the parallel
+            # per-line lists, which don't fit the Block shape.
+            blocks.append(Block(text=text, page=page_index, bbox=None))
+            page_hints[page_index] = PageHint(font_sizes=font_sizes, line_bboxes=line_bboxes)
+
+            # Extract embedded images + resolve figure captions for this
+            # page. Captions are detected from line_items + image bboxes.
             page_images = []
             page_figures: dict = {}
             if extract_images:
@@ -102,71 +111,40 @@ def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
                 )
                 if page_images:
                     page_figures = detect_figure_captions(line_items, page_images)
-
-            sections = split_with_recursion(
-                text,
-                font_sizes=font_sizes,
-                line_bboxes=line_bboxes,
-                target_tokens=settings.chunk_target_tokens,
-                max_tokens=settings.chunk_max_tokens,
-                overlap_tokens=settings.chunk_overlap_tokens,
-                count_tokens=count_tokens,
-            )
-            for chunk_index, section in enumerate(sections):
-                # Skip sections with no body — empty chunks (e.g. a
-                # bare "1" heading with no following text) would
-                # otherwise pollute the BM25 channel with a placeholder
-                # payload that drags down dense ranking.
-                if not section.body.strip():
-                    continue
-                enriched_text = _maybe_enrich_with_keywords(section.body)
-                chunk_images: list = []
-                if extract_images and page_images:
-                    chunk_images = associate_images(
-                        section.body, section.bbox, page_images, page_figures
-                    )
-                meta = {
-                    "asset_id": asset.asset_id,
-                    "asset_title": asset.title,
-                    "source_type": asset.source_type,
-                    "source_path": asset.relative_path,
-                    "source_url": asset.source_url,
-                    "page": page_index,
-                    "chunk_index": chunk_index,
-                    "section": section.heading,
-                    "parser": "pymupdf",
-                    "markdown_path": str(markdown_path),
-                    "tags": asset.tags,
-                }
-                if chunk_images:
-                    meta["images"] = chunk_images
-                docs.append(
-                    ParsedDocument(
-                        text=enriched_text,
-                        metadata=meta,
+            for pi in page_images:
+                fig = next(
+                    (f for f in page_figures.values() if f.image_path == pi.path),
+                    None,
+                )
+                images.append(
+                    ImageRef(
+                        path=pi.path,
+                        page=pi.page,
+                        bbox=pi.bbox,
+                        figure_id=fig.number if fig else None,
+                        caption=fig.caption if fig else "",
                     )
                 )
-    return docs
 
-
-def _maybe_enrich_with_keywords(text: str) -> str:
-    """Append a "关键词: ..." footer to a chunk when Settings enables it.
-
-    The footer is a deterministic injection point — BM25 tokenises it
-    like any other text, but the leading label makes it easy to spot
-    in retrieval debug output. Pure function (no I/O) so it's cheap
-    to call inside the per-page loop.
-    """
-    from ..settings import get_settings
-    from ..text_keywords import enrich_chunk_text, extract_keywords
-
-    s = get_settings()
-    if not s.enrich_chunk_with_keywords:
-        return text
-    kws = extract_keywords(
-        text, top_k=s.enrich_chunk_keyword_top_k, language=s.enrich_chunk_language
+    return DocumentIR(
+        blocks=blocks,
+        images=images,
+        asset=asset,
+        parser="pymupdf",
+        markdown_paths=markdown_paths,
+        page_hints=page_hints,
     )
-    return enrich_chunk_text(text, kws)
+
+
+def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
+    """PyMuPDF parse — ``build_ir_pymupdf`` + shared ``ir_to_documents``.
+
+    Thin wrapper kept so existing callers (registry, tests) keep working
+    after the IR refactor; the real work moved to the IR layer.
+    """
+    from .document_ir import ir_to_documents
+
+    return ir_to_documents(build_ir_pymupdf(asset))
 
 
 # ─── PaddleOCR-VL ──────────────────────────────────────────────────────────
@@ -312,27 +290,22 @@ def _download_ocr_images(page_result: dict, images_dir: Path) -> dict[str, str]:
     return mapping
 
 
-def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
-    """Real PaddleOCR-VL OCR via the online API.
+def build_ir_paddleocr_vl(asset: Asset) -> DocumentIR:
+    """Remote PaddleOCR-VL OCR → ``DocumentIR`` (markdown blocks + images).
 
-    The asset's ``source_url`` is preferred when set, so the file is
+    The "format → IR" half. Submits/polls/downloads the OCR JSONL (with
+    ``raw.jsonl`` caching), rewrites remote image URLs to local paths,
+    and turns each page's markdown into one ``Block``. Chunking, image↔
+    chunk association (span-based, re-scanned per sub-chunk) and metadata
+    assembly happen in ``ir_to_documents`` — so this function does only
+    what the remote OCR uniquely knows: layout-aware markdown + remote
+    image URLs. The ``source_url`` is preferred for submit so the file is
     uploaded once to PaddleOCR's storage instead of streamed through us.
     """
     output_dir = get_parsed_dir() / asset.asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
     images_dir = output_dir / "images"
     raw_jsonl_path = output_dir / "raw.jsonl"
-    # Build the chunk-sizing tuple once (tokenizer load is expensive);
-    # reused per page below.
-    from .chunk_splitter import _make_token_counter
-
-    _s = get_settings()
-    _chunk_settings = (
-        _s.chunk_target_tokens,
-        _s.chunk_max_tokens,
-        _s.chunk_overlap_tokens,
-        _make_token_counter(_s.chunk_tokenizer)[1],
-    )
 
     if raw_jsonl_path.exists() and raw_jsonl_path.stat().st_size > 0:
         jsonl_text = raw_jsonl_path.read_text(encoding="utf-8")
@@ -362,7 +335,8 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
         jsonl_text = response.text
         raw_jsonl_path.write_text(jsonl_text, encoding="utf-8")
 
-    docs: list[ParsedDocument] = []
+    blocks: list[Block] = []
+    markdown_paths: list[str] = []
     page_num = 0
     for line in jsonl_text.splitlines():
         if not line.strip():
@@ -377,6 +351,8 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
 
             # Download any embedded images for this page and rewrite
             # the markdown body's remote URLs to local relative paths.
+            # The markdown text (with local paths) is what gets chunked,
+            # so extract_markdown_image_refs finds local ``![]()`` spans.
             url_to_local = _download_ocr_images(parsed_page, images_dir)
             if url_to_local:
                 for remote_url, local_rel in url_to_local.items():
@@ -384,65 +360,91 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
 
             markdown_path = output_dir / f"page_{page_num}.md"
             markdown_path.write_text(markdown_text, encoding="utf-8")
-            # Recursive chunk-sizing: a PaddleOCR page is a long markdown
-            # blob; capping it to the token budget keeps BM25 signal
-            # concentrated and the cross-encoder reranker off long-body
-            # token frequency. Same splitter the PyMuPDF path uses.
-            from .chunk_splitter import recursive_split
-            from .pdf_images import extract_markdown_image_refs, scan_figure_refs
-
-            pieces = recursive_split(
-                markdown_text,
-                target_tokens=_chunk_settings[0],
-                max_tokens=_chunk_settings[1],
-                overlap_tokens=_chunk_settings[2],
-                count_tokens=_chunk_settings[3],
-            )
-            for chunk_index, piece in enumerate(pieces):
-                piece = piece.strip()
-                if not piece:
-                    continue
-                enriched_text = _maybe_enrich_with_keywords(piece)
-                # Images are assigned per-sub-chunk by re-scanning the
-                # sub-chunk's own text for ``![]()`` refs — a ref belongs
-                # to whichever sub-chunk it physically appears in.
-                # (Overlap may attach a ref to two adjacent sub-chunks;
-                # the answer layer's per-hit image cap de-dupes.)
-                sub_refs = extract_markdown_image_refs(piece)
-                ref_numbers = sorted(scan_figure_refs(piece))
-                chunk_images: list = []
-                for i, (_, _, ref_path) in enumerate(sub_refs):
-                    fig_id = ref_numbers[i] if i < len(ref_numbers) else None
-                    chunk_images.append(
-                        {"path": ref_path, "figure_id": fig_id, "caption": "", "page": page_num}
-                    )
-                meta = {
-                    "asset_id": asset.asset_id,
-                    "asset_title": asset.title,
-                    "source_type": asset.source_type,
-                    "source_path": asset.relative_path,
-                    "source_url": asset.source_url,
-                    "page": page_num,
-                    "chunk_index": chunk_index,
-                    "parser": "paddleocr-vl-api",
-                    "markdown_path": str(markdown_path),
-                    "images_dir": str(images_dir) if images_dir.exists() else "",
-                    "tags": asset.tags,
-                }
-                if chunk_images:
-                    meta["images"] = chunk_images
-                docs.append(ParsedDocument(text=enriched_text, metadata=meta))
+            markdown_paths.append(str(markdown_path))
+            # One Block per page. The markdown already carries ATX headings
+            # which recursive_split's separator hierarchy respects; no
+            # page_hints needed (the splitter runs on the markdown text
+            # alone, unlike PyMuPDF which feeds per-line font sizes).
+            blocks.append(Block(text=markdown_text, page=page_num, bbox=None))
             page_num += 1
-    return docs
+
+    return DocumentIR(
+        blocks=blocks,
+        images=[],  # PaddleOCR images are resolved per-sub-chunk by span
+        # in ir_to_documents (the ref must physically appear in the chunk
+        # text, which only exists after splitting) — not collected here.
+        asset=asset,
+        parser="paddleocr-vl-api",
+        markdown_paths=markdown_paths,
+        images_dir=str(images_dir) if images_dir.exists() else "",
+    )
+
+
+def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
+    """PaddleOCR-VL parse — ``build_ir_paddleocr_vl`` + shared ``ir_to_documents``.
+
+    Thin wrapper kept so existing callers (registry, tests) keep working
+    after the IR refactor; the real work moved to the IR layer.
+    """
+    from .document_ir import ir_to_documents
+
+    return ir_to_documents(build_ir_paddleocr_vl(asset))
 
 
 def parse_pdf(asset: Asset, parser: str) -> list[ParsedDocument]:
+    """Dispatch a PDF parse by backend name.
+
+    ``auto`` (the default) now does scanned-PDF detection: it runs the
+    fast local PyMuPDF extraction first, and if the resulting text density
+    is below ``Settings.pdf_scan_text_threshold`` (image-only / scanned
+    pages) it falls back to an OCR backend chosen by
+    ``Settings.pdf_scan_fallback_parser`` (default ``paddleocr_vl``,
+    optionally ``docling`` when the extra is installed). This replaces the
+    old "token-configured → always OCR, else always local" behaviour,
+    which sent text PDFs through OCR unnecessarily and silently dropped
+    scanned PDFs to zero chunks when no token was configured.
+    """
+    from .document_ir import ir_to_documents, looks_scanned
+
     if parser == "paddleocr_vl":
         return parse_with_paddleocr_vl(asset)
     if parser == "pymupdf":
         return parse_pdf_with_pymupdf(asset)
     if parser == "auto":
-        if get_settings().paddleocr_vl_api_token:
-            return parse_with_paddleocr_vl(asset)
-        return parse_pdf_with_pymupdf(asset)
+        settings = get_settings()
+        ir = build_ir_pymupdf(asset)
+        if settings.pdf_scan_fallback_enabled and looks_scanned(
+            ir, text_threshold_per_page=settings.pdf_scan_text_threshold
+        ):
+            fallback = settings.pdf_scan_fallback_parser
+            if fallback == "docling":
+                return parse_with_docling(asset)
+            # Default fallback: PaddleOCR-VL. Only fall back when its API
+            # token is configured — otherwise we'd raise where the old
+            # code silently produced zero chunks. A bare token-less scan
+            # stays on the (empty) PyMuPDF output to preserve behaviour.
+            if settings.paddleocr_vl_api_token:
+                return parse_with_paddleocr_vl(asset)
+        return ir_to_documents(ir)
+    if parser == "docling":
+        return parse_with_docling(asset)
     raise ValueError(f"Unsupported PDF parser: {parser}")
+
+
+def parse_with_docling(asset: Asset) -> list[ParsedDocument]:
+    """docling parse — lazy, raises a friendly error when the extra is missing.
+
+    Stage 2 of the plan installs the ``[docling]`` extra and fills in the
+    real ``build_ir_docling`` adapter. This stub keeps the dispatch wired
+    (and the scanned-PDF fallback selectable) so stage 1 can land the IR
+    layer without the heavy docling dependency.
+    """
+    try:
+        from .docling_parser import build_ir_docling  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover - stage 2 provides the module
+        raise RuntimeError(
+            'docling parsing requires the [docling] extra: pip install -e ".[docling]"'
+        ) from exc
+    from .document_ir import ir_to_documents
+
+    return ir_to_documents(build_ir_docling(asset))
