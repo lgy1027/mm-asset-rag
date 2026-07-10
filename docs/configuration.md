@@ -199,6 +199,31 @@ The upload preview pipeline can call a VLM once per file to extract title / desc
 | `VLM_MAX_TOKENS` | `2000` | Caption token budget |
 | `VLM_TIMEOUT` | `120.0` | Caption timeout |
 
+## PDF parser selection
+
+The PDF parser is chosen by `PDF_PARSER` (CLI `--pdf-parser`):
+
+| Value | Backend | Notes |
+| --- | --- | --- |
+| `auto` | PyMuPDF → fallback | Default. Fast local parse first, falls back to OCR when the result looks scanned (see below) |
+| `pymupdf` | PyMuPDF | Local, text-only. Drops embedded figures unless `PDF_EXTRACT_IMAGES` is on |
+| `paddleocr_vl` | PaddleOCR-VL | Online API; needs `PADDLEOCR_VL_API_TOKEN`. Best for scanned / image-only PDFs |
+| `docling` | docling | Local multi-format parser; needs the `[docling]` extra. Pulls torch / transformers |
+
+`pymupdf` remains a hard dependency; `paddleocr_vl` is online; `docling` is an optional extra (`pip install -e ".[docling]"`). Without the extra, `--pdf-parser docling` raises a friendly install hint at parse time rather than an `ImportError` at startup.
+
+### Scanned-PDF fallback (auto parser)
+
+The `auto` parser runs fast local PyMuPDF first, then falls back to an OCR backend when the result looks like a scan (image-only, near-zero text). `PDF_SCAN_TEXT_THRESHOLD` is the total non-empty chars/page budget below which a document is treated as scanned — corpus-agnostic (pure char density, no domain words): `total_chars < threshold * page_count`. `PDF_SCAN_FALLBACK_PARSER` picks the OCR backend: `paddleocr_vl` (default, online API, needs `PADDLEOCR_VL_API_TOKEN`) or `docling` (local, needs the `[docling]` extra). Disable with `PDF_SCAN_FALLBACK_ENABLED=false` to always stay on PyMuPDF (the pre-IR `auto` behaviour).
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `PDF_SCAN_FALLBACK_ENABLED` | `true` | Master switch for the scanned-PDF fallback in `auto` mode |
+| `PDF_SCAN_TEXT_THRESHOLD` | `10` | Avg non-empty chars/page below which a PDF is treated as scanned |
+| `PDF_SCAN_FALLBACK_PARSER` | `paddleocr_vl` | Fallback backend: `paddleocr_vl` or `docling` |
+
+The threshold default of `10` is tuned for genuinely scanned (image-only) PDFs, which yield ~0 extractable chars. A text PDF with a single short page (~45 chars) stays on PyMuPDF since `45 ≥ 10 * 1`. Raise it if your corpus has dense-figure PDFs whose thin text layers should trigger OCR.
+
 ## PaddleOCR-VL
 
 | Variable | Default | Purpose |

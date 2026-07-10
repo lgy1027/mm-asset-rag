@@ -12,7 +12,8 @@ POST /upload/preview (multipart files)
   ├─ write an internal cache manifest with relative cached_name values
   ├─ sniff magic bytes and local metadata
   │    ├─ PDF: %PDF-, page count, /Info title/author/subject
-  │    └─ image: PNG/JPEG/GIF/BMP/WEBP signatures, dimensions, EXIF
+  │    ├─ image: PNG/JPEG/GIF/BMP/WEBP signatures, dimensions, EXIF
+  │    └─ document: office ZIP (docx/pptx/xlsx) or HTML/Markdown/text by extension
   ├─ optional VLM auto-metadata
   │    ├─ title
   │    ├─ description
@@ -45,14 +46,18 @@ VLM metadata is useful but not authoritative. The preview card lets users correc
 
 Supported types:
 
-| Type | Detection |
-| --- | --- |
-| PDF | `%PDF-` magic bytes + PyMuPDF metadata |
-| PNG | PNG signature |
-| JPEG | `0xff 0xd8 0xff` |
-| GIF | `GIF87a` / `GIF89a` |
-| BMP | `BM` |
-| WEBP | `RIFF....WEBP` |
+| Type | Detection | `source_type` |
+| --- | --- | --- |
+| PDF | `%PDF-` magic bytes + PyMuPDF metadata | `pdf` |
+| PNG | PNG signature | `image` |
+| JPEG | `0xff 0xd8 0xff` | `image` |
+| GIF | `GIF87a` / `GIF89a` | `image` |
+| BMP | `BM` | `image` |
+| WEBP | `RIFF....WEBP` | `image` |
+| DOCX / PPTX / XLSX | Office Open XML ZIP container (`PK\x03\x04`) by extension + `zipfile.is_zipfile` guard | `document` |
+| HTML / Markdown / text | by extension (`.html` / `.htm` / `.md` / `.markdown` / `.txt`) | `document` |
+
+`document` types are recognised by sniff and parsed by the docling adapter (`pip install -e ".[docling]"`), but the confirm step currently only moves `pdf` / `image` files into `assets/` — `document` files are skipped at confirm until the upload pipeline is extended to route them to a target directory.
 
 ## VLM auto-metadata
 
