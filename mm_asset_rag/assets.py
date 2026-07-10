@@ -23,10 +23,10 @@ if TYPE_CHECKING:
 class Asset:
     """A unit of content the pipeline can parse and index.
 
-    ``source_type`` is ``"pdf"`` or ``"image"``. ``relative_path`` is
-    always relative to ``asset_dir`` (which defaults to
-    ``$MM_ASSET_RAG_HOME/assets``) so the same Asset object survives
-    a move of the home directory.
+    ``source_type`` is ``"pdf"``, ``"image"``, or ``"document"`` (office /
+    text formats the docling adapter parses). ``relative_path`` is always
+    relative to ``asset_dir`` (which defaults to ``$MM_ASSET_RAG_HOME/assets``)
+    so the same Asset object survives a move of the home directory.
     """
 
     asset_id: str

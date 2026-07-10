@@ -142,7 +142,9 @@ class AssetPreview:
 
     @property
     def is_supported(self) -> bool:
-        return self.sniff.source_type in {"pdf", "image"} and self.rejected_reason is None
+        return (
+            self.sniff.source_type in {"pdf", "image", "document"} and self.rejected_reason is None
+        )
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────
@@ -168,6 +170,11 @@ def _target_subdir(source_type: str) -> str:
         return "pdfs"
     if source_type == "image":
         return "images"
+    if source_type == "document":
+        # Office / text formats (docx / pptx / xlsx / html / md / txt) —
+        # kept under ``documents/`` so the docling adapter's preserved
+        # extension (``.docx`` vs ``.pptx`` …) drives backend selection.
+        return "documents"
     raise ValueError(f"unsupported source_type: {source_type!r}")
 
 
@@ -513,7 +520,7 @@ class UploadPipeline:
                 continue
 
             sniffed = sniff(source_path)
-            if sniffed.source_type not in {"pdf", "image"}:
+            if sniffed.source_type not in {"pdf", "image", "document"}:
                 continue
             resource_reason = _resource_rejected_reason(sniffed)
             if resource_reason is not None:

@@ -240,6 +240,43 @@ def test_confirm_moves_files_into_assets(
     assert not (home / ".preview-cache" / cache_id).exists()
 
 
+def test_confirm_moves_document_into_assets_documents(
+    pipeline: UploadPipeline,
+    home: Path,
+    tmp_path: Path,
+) -> None:
+    """A docx (source_type=document) is supported end-to-end: preview
+    marks it supported, confirm routes it to ``assets/documents/`` with
+    the original extension preserved (so the docling adapter can pick
+    its backend by extension)."""
+    import zipfile
+
+    docx = tmp_path / "report.docx"
+    with zipfile.ZipFile(docx, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types></Types>")
+
+    previews = pipeline.preview([(docx.name, docx)])
+    assert len(previews) == 1
+    p = previews[0]
+    assert p.sniff.source_type == "document"
+    assert p.is_supported  # document is now a first-class supported type
+
+    cache_id = _get_cache_id(home)
+    import json as _json
+
+    manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
+    preview_id = next(iter(manifest))
+    assets = pipeline.confirm(cache_id, [UserEdits(preview_id=preview_id)])
+
+    assert len(assets) == 1
+    a = assets[0]
+    assert a.source_type == "document"
+    # Routed under assets/documents/ with the .docx extension preserved.
+    target = home / "assets" / "documents" / a.relative_path.split("/")[-1]
+    assert target.exists()
+    assert target.suffix == ".docx"
+
+
 def test_confirm_with_user_edits(
     monkeypatch: pytest.MonkeyPatch,
     pipeline: UploadPipeline,

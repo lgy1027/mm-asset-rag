@@ -1058,7 +1058,7 @@ class IngestService:
             except Exception as exc:
                 print(f"[retry] sniff failed for {file_path}: {exc}")
                 continue
-            if sniffed.source_type not in {"pdf", "image"}:
+            if sniffed.source_type not in {"pdf", "image", "document"}:
                 continue
             rebuilt.append(
                 from_sniffed(

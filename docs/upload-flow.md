@@ -25,7 +25,7 @@ POST /upload/confirm (cache_id + edited previews)
   ├─ validate cache_id and cached files stay inside that preview cache
   ├─ apply user edits
   ├─ skip user-rejected / unsupported / over-limit files
-  ├─ move confirmed files to assets/pdfs or assets/images
+  ├─ move confirmed files to assets/pdfs, assets/images, or assets/documents
   ├─ construct Asset objects directly (no manifest)
   ├─ parse into documents.jsonl
   └─ upsert into Qdrant text/image collections
@@ -57,7 +57,7 @@ Supported types:
 | DOCX / PPTX / XLSX | Office Open XML ZIP container (`PK\x03\x04`) by extension + `zipfile.is_zipfile` guard | `document` |
 | HTML / Markdown / text | by extension (`.html` / `.htm` / `.md` / `.markdown` / `.txt`) | `document` |
 
-`document` types are recognised by sniff and parsed by the docling adapter (`pip install -e ".[docling]"`), but the confirm step currently only moves `pdf` / `image` files into `assets/` — `document` files are skipped at confirm until the upload pipeline is extended to route them to a target directory.
+`document` types are recognised by sniff, routed to `assets/documents/` at confirm (the original extension is preserved so docling picks the right backend), and parsed by the docling adapter (`pip install -e ".[docling]"`). Without the extra installed, the upload still confirms but parsing raises a friendly install hint. document files skip VLM auto-meta (no first-page render / image path) and fall back to the sniff-derived filename title.
 
 ## VLM auto-metadata
 

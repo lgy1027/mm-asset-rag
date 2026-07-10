@@ -10,7 +10,8 @@ All mutable data lives under `MM_ASSET_RAG_HOME` (default `~/.mm_asset_rag`):
 $MM_ASSET_RAG_HOME/
 ├── assets/
 │   ├── pdfs/                # confirmed uploaded PDFs
-│   └── images/              # confirmed uploaded images
+│   ├── images/              # confirmed uploaded images
+│   └── documents/           # confirmed office/text (docx/pptx/xlsx/html/md/txt)
 ├── .preview-cache/<id>/     # short-lived upload preview files
 ├── parsed/<asset_id>/       # PDF page markdown / image OCR JSON
 ├── captions/<asset_id>.json # VLM captions
