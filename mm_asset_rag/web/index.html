@@ -160,9 +160,9 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
 
       <h2>Upload</h2>
       <div class="panel">
-        <label>PDFs &amp; images (drag or click)</label>
+        <label>PDFs, images &amp; documents (drag or click)</label>
         <input type="file" id="fileInput" multiple
-               accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp,.gif" />
+               accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp,.gif,.docx,.pptx,.xlsx,.html,.htm,.md,.markdown,.txt" />
         <div class="file-list" id="fileList"></div>
         <div class="row" style="margin-top:8px">
           <span style="font-size:11px;color:var(--muted)">
@@ -292,6 +292,14 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
     }
 
+    // Short, uppercased format label for a document's file extension —
+    // docx/pptx/xlsx/html/md/txt all share source_type="document", so the
+    // preview card shows the extension to tell them apart (DOCX vs PPTX).
+    function _docLabel(relativePath) {
+      const ext = (relativePath || "").toLowerCase().match(/\.([a-z0-9]+)$/);
+      return ext ? ext[1].toUpperCase() : "DOCUMENT";
+    }
+
     // Cache-bust wrapper: most SPA routes are JSON, and a stale
     // 200-from-disk-cache response would show wrong asset counts or a
     // missing task. We pin one ``?v=`` query for the lifetime of the
@@ -398,11 +406,16 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       previewList.innerHTML = previews.map((p) => {
         const sn = p.sniff || {};
         const disabled = sn.source_type === "unknown" ? "checked" : "";
-        const kind = sn.source_type === "pdf" ? "PDF" : sn.source_type === "image" ? "IMAGE" : "UNSUPPORTED";
+        const kind = sn.source_type === "pdf" ? "PDF"
+          : sn.source_type === "image" ? "IMAGE"
+          : sn.source_type === "document" ? "DOC"
+          : "UNSUPPORTED";
         const tags = (p.effective_tags || []).join(", ");
         const detail = sn.source_type === "pdf"
           ? `${sn.page_count || "?"} page(s)`
-          : sn.source_type === "image" ? `${sn.width || "?"}×${sn.height || "?"}` : (p.rejected_reason || "unsupported");
+          : sn.source_type === "image" ? `${sn.width || "?"}×${sn.height || "?"}`
+          : sn.source_type === "document" ? _docLabel(sn.relative_path)
+          : (p.rejected_reason || "unsupported");
         const dupBadge = p.existing_asset_id
           ? `<span class="pill warn" style="margin-left:6px">已存在 asset ${escapeHtml(p.existing_asset_id)}</span>`
           : "";

@@ -162,6 +162,81 @@ def test_build_ir_docling_saves_pictures(tmp_home, monkeypatch) -> None:
     img_abs = Path(ir.markdown_paths[0]).parent / ir.images[0].path
     assert img_abs.exists()
     assert img_abs.read_bytes() == b"\x89PNG-fake"
+    # The picture's saved path is injected as a ``![](images/...)`` ref
+    # into the last block on its page — without it ir_to_documents'
+    # extract_markdown_image_refs would never find the image, leaving it
+    # invisible to retrieval / answer-time image attachment.
+    assert f"![]({ir.images[0].path})" in ir.blocks[-1].text
+    # images_dir is now populated so the answer layer can locate the dir.
+    assert ir.images_dir.endswith("images")
+
+
+def test_build_ir_docling_picture_ref_reaches_chunk_meta(tmp_path, tmp_home, monkeypatch) -> None:
+    """End-to-end: a picture's ref survives ir_to_documents and lands in the
+    chunk's ``meta["images"]`` — the regression this test guards.
+
+    Before the ref-injection fix, docling saved the picture to ``images/``
+    but never put a ``![](images/...)`` ref into any block's text, so
+    ``extract_markdown_image_refs`` found nothing and the chunk carried no
+    images. This test exercises the full IR → chunk path to catch that.
+    """
+
+    class FakePIL:
+        def save(self, path: Path, format: str = "PNG") -> None:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(b"\x89PNG-fake")
+
+    picture = SimpleNamespace(
+        prov=[_prov(1, None)],
+        get_image=MagicMock(return_value=FakePIL()),
+        self_ref="pic0",
+    )
+    _install_docling_stub(
+        monkeypatch,
+        texts=[_text_item("a paragraph of body text long enough to chunk", label="paragraph")],
+        pictures=[picture],
+    )
+
+    from mm_asset_rag.parsers.document_ir import ir_to_documents
+
+    ir = build_ir_docling(_asset(tmp_home))
+    docs = ir_to_documents(ir)
+    assert docs, "expected at least one chunk"
+    # At least one chunk must carry the picture in its images metadata.
+    chunk_image_paths = [img["path"] for d in docs for img in (d.metadata.get("images") or [])]
+    assert any(p.startswith("images/docling_") for p in chunk_image_paths), (
+        f"picture did not reach any chunk meta.images: {chunk_image_paths}"
+    )
+
+
+def test_build_ir_docling_picture_on_image_only_page_gets_standalone_block(
+    tmp_path, tmp_home, monkeypatch
+) -> None:
+    """A picture on a page with no text/table block still gets a block
+    (image-only PPTX slide) so the picture is not silently dropped."""
+
+    class FakePIL:
+        def save(self, path: Path, format: str = "PNG") -> None:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(b"\x89PNG-fake")
+
+    # Text on page 1; picture on page 2 (which has no text block).
+    picture = SimpleNamespace(
+        prov=[_prov(2, None)],
+        get_image=MagicMock(return_value=FakePIL()),
+        self_ref="pic0",
+    )
+    _install_docling_stub(
+        monkeypatch,
+        texts=[_text_item("body on page 1", label="paragraph", page_no=1)],
+        pictures=[picture],
+    )
+
+    ir = build_ir_docling(_asset(tmp_home))
+    # A standalone block was added for the page-2 picture.
+    page2_blocks = [b for b in ir.blocks if b.page == 1]
+    assert len(page2_blocks) == 1
+    assert f"![]({ir.images[0].path})" in page2_blocks[0].text
 
 
 def test_build_ir_docling_skips_unrenderable_pictures(tmp_path, tmp_home, monkeypatch) -> None:

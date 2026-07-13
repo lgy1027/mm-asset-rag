@@ -41,6 +41,15 @@ def build_ir_docling(asset: Asset) -> DocumentIR:
     provenance. Falls back to a whole-document markdown export when the
     structured walk yields nothing (some formats only populate the
     markdown view).
+
+    Each picture's saved path is also appended as a ``![](images/...)``
+    line to the last block on its page (or a dedicated block when the
+    page has none) — the shared ``ir_to_documents`` layer associates
+    chunk ↔ image by re-scanning each sub-chunk's body for these refs
+    (``extract_markdown_image_refs``), the same mechanism the
+    PaddleOCR-VL path uses. Without the injected ref a picture would be
+    saved but never reach any chunk's ``meta["images"]``, so it would be
+    invisible to retrieval / answer-time image attachment.
     """
     try:
         from docling.document_converter import DocumentConverter
@@ -91,12 +100,27 @@ def build_ir_docling(asset: Asset) -> DocumentIR:
         blocks.append(Block(text=md, page=page, bbox=bbox))
 
     # ── Pictures → saved image files + ImageRefs ────────────────────────
+    # The ref line is injected into a block below, after we know which
+    # blocks exist on each page (so a picture attaches to the last block
+    # of its page rather than always to block[0]).
+    page_refs: dict[int | None, list[str]] = {}
     for idx, item in enumerate(doc.pictures):
         page, bbox = _prov(item, doc)
         path = _save_picture(item, doc, images_dir, idx)
         if path is None:
             continue
         images.append(ImageRef(path=path, page=page, bbox=bbox))
+        page_refs.setdefault(page, []).append(path)
+
+    # Inject each page's picture refs into that page's last block (or a
+    # standalone block when the page has no text/table block yet — e.g. an
+    # image-only page in a PPTX). The ``images/``-prefixed path matches
+    # ``extract_markdown_image_refs``'s regex, so ir_to_documents finds it
+    # and attaches the image to whichever sub-chunk physically contains
+    # the ref line (overlap may attach it to two adjacent sub-chunks; the
+    # answer layer's per-hit image cap de-dupes).
+    if page_refs:
+        _inject_picture_refs(blocks, page_refs)
 
     # ── Fallback: structured walk yielded nothing → whole-doc markdown ─
     if not blocks:
@@ -117,7 +141,40 @@ def build_ir_docling(asset: Asset) -> DocumentIR:
         asset=asset,
         parser="docling",
         markdown_paths=markdown_paths,
+        images_dir=str(images_dir) if images_dir.exists() else "",
     )
+
+
+def _inject_picture_refs(blocks: list[Block], page_refs: dict[int | None, list[str]]) -> None:
+    """Append ``![](images/...)`` ref lines to the last block of each page.
+
+    ``page_refs`` maps a 0-indexed page (or ``None`` for items with no
+    provenance, e.g. some HTML/Markdown sources) to the list of saved
+    picture paths for that page. A page with no existing block gets a new
+    standalone block carrying just the refs (a picture with no caption is
+    still worth indexing — it attaches to the page's chunk). Existing
+    blocks are mutated in place; new ones are appended (page order is
+    preserved because the text/table walks above already appended in
+    reading order, and picture-only pages are rare).
+
+    The ref is a markdown image with an empty alt so a renderer shows only
+    the picture; the ``images/`` prefix is what ``extract_markdown_image_refs``
+    keys off of.
+    """
+    # Last block index per page (None falls back to the page-less bucket).
+    last_block_on_page: dict[int | None, int] = {}
+    for i, block in enumerate(blocks):
+        last_block_on_page[block.page] = i  # keep the highest index seen
+
+    for page, paths in page_refs.items():
+        ref_block = "\n\n" + "\n\n".join(f"![]({p})" for p in paths)
+        idx = last_block_on_page.get(page)
+        if idx is not None:
+            blocks[idx].text += ref_block
+        else:
+            # No block on this page (image-only page). Add a standalone
+            # block so the picture still associates with a chunk.
+            blocks.append(Block(text=ref_block.lstrip("\n"), page=page, bbox=None))
 
 
 def _prov(item, doc) -> tuple[int | None, BBox | None]:
