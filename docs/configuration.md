@@ -213,6 +213,17 @@ The PDF parser is chosen by `PDF_PARSER` (CLI `--pdf-parser`):
 
 `pymupdf` remains a hard dependency; `paddleocr_vl` is online; `docling` is an optional extra (`pip install -e ".[docling]"`). Without the extra, `--pdf-parser docling` raises a friendly install hint at parse time rather than an `ImportError` at startup.
 
+## Document parser selection
+
+Office / text documents (`docx` / `pptx` / `xlsx` / `html` / `md` / `txt` — the `document` source type `sniff` assigns) are parsed by the backend chosen with `DOCUMENT_PARSER` (CLI `--document-parser`):
+
+| Value | Backend | Notes |
+| --- | --- | --- |
+| `markitdown` | MarkItDown | Default. Core dependency (pure Python, no ML stack). docx/pptx/xlsx converters ship via the `markitdown[docx,pptx,xlsx]` extra bundled in core |
+| `docling` | docling | Optional heavy backend (torch / transformers). Needs the `[docling]` extra. Layout-aware; use when MarkItDown's structural extraction isn't enough |
+
+Both backends produce the same `DocumentIR`, so chunking / image association / contextual enrichment are identical downstream. MarkItDown decodes docx/pptx base64-embedded images to `parsed/<id>/images/` and rewrites the refs, so embedded images attach to their chunk and reach the answer layer — same on-disk layout as the docling / PaddleOCR paths. (HTML relative-path images are passed through as-is in v1; they don't associate but don't error.)
+
 ### Scanned-PDF fallback (auto parser)
 
 The `auto` parser runs fast local PyMuPDF first, then falls back to an OCR backend when the result looks like a scan (image-only, near-zero text). `PDF_SCAN_TEXT_THRESHOLD` is the total non-empty chars/page budget below which a document is treated as scanned — corpus-agnostic (pure char density, no domain words): `total_chars < threshold * page_count`. `PDF_SCAN_FALLBACK_PARSER` picks the OCR backend: `paddleocr_vl` (default, online API, needs `PADDLEOCR_VL_API_TOKEN`) or `docling` (local, needs the `[docling]` extra). Disable with `PDF_SCAN_FALLBACK_ENABLED=false` to always stay on PyMuPDF (the pre-IR `auto` behaviour).

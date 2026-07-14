@@ -36,6 +36,7 @@ def test_defaults_applied_when_no_env(monkeypatch):
 
     s = Settings(_env_file=None)  # bypass .env so only defaults apply
     assert s.pdf_parser == "auto"
+    assert s.document_parser == "markitdown"
     assert s.enable_ocr is False
     assert s.enable_vlm is False
     assert s.image_provider == "lite"

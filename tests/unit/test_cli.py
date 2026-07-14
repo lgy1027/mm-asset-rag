@@ -20,8 +20,17 @@ def test_cli_parse_subcommand_defaults() -> None:
     assert args.command == "parse"
     assert args.files == ["paper.pdf", "image.png"]
     assert args.pdf_parser == "auto"
+    assert args.document_parser == "markitdown"
     assert args.ocr is False
     assert args.vlm is False
+
+
+def test_cli_parse_subcommand_accepts_document_parser_choice() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["parse", "doc.docx", "--document-parser", "docling"])
+    assert args.document_parser == "docling"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["parse", "doc.docx", "--document-parser", "bogus"])
 
 
 def test_cli_index_subcommand_removed() -> None:

@@ -332,6 +332,9 @@ class Settings(BaseSettings):
     # are kept as legacy fields for backward compat with old deployments, but
     # the modern upload pipeline auto-decides everything from sniff + VLM.
     pdf_parser: Literal["auto", "pymupdf", "paddleocr_vl", "docling"] = "auto"
+    # document backend: markitdown (default, core dep, no ML stack) or
+    # docling (optional [docling] extra, heavy torch/transformers stack).
+    document_parser: Literal["markitdown", "docling"] = "markitdown"
     enable_ocr: bool = False
     enable_vlm: bool = False
     image_provider: Literal["lite", "sentence_transformers"] = "lite"

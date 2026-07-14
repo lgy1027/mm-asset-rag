@@ -213,6 +213,7 @@ class ParseOptions:
 
     assets: list[Asset] = field(default_factory=list)
     pdf_parser: str = "auto"
+    document_parser: str = "markitdown"
     enable_ocr: bool = False
     enable_vlm: bool = False
     image_provider: str = "lite"
@@ -997,6 +998,7 @@ class IngestService:
         """
         return {
             "pdf_parser": options.pdf_parser,
+            "document_parser": options.document_parser,
             "enable_ocr": options.enable_ocr,
             "enable_vlm": options.enable_vlm,
             "image_provider": options.image_provider,
@@ -1015,6 +1017,12 @@ class IngestService:
                 "docling",
             }:
                 options.pdf_parser = pdf_parser
+            document_parser = raw.get("document_parser")
+            if isinstance(document_parser, str) and document_parser in {
+                "markitdown",
+                "docling",
+            }:
+                options.document_parser = document_parser
             if isinstance(raw.get("enable_ocr"), bool):
                 options.enable_ocr = raw["enable_ocr"]
             if isinstance(raw.get("enable_vlm"), bool):
@@ -1163,10 +1171,11 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
                         enable_vlm=options.enable_vlm,
                     )
                 elif asset.source_type == "document":
-                    # Office/text formats (docx/pptx/xlsx/html/…) — parsed
-                    # by the docling adapter. docling is an optional extra;
-                    # a missing install surfaces as a parse failure here.
-                    parser = get_parser("document", "docling")
+                    # Office/text formats (docx/pptx/xlsx/html/…). Default
+                    # backend is MarkItDown (core dep, no ML stack); docling
+                    # is the optional heavy alternative. A missing install
+                    # surfaces as a parse failure here.
+                    parser = get_parser("document", options.document_parser)
                     docs = parser.parse(asset)
                 else:
                     docs = []

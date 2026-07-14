@@ -69,6 +69,7 @@ def command_parse(args: argparse.Namespace) -> None:
     options = ParseOptions(
         assets=assets,
         pdf_parser=args.pdf_parser,
+        document_parser=args.document_parser,
         enable_ocr=args.ocr,
         enable_vlm=args.vlm,
         contextual=args.contextual,
@@ -221,6 +222,13 @@ def build_parser() -> argparse.ArgumentParser:
     parse_cmd.add_argument("files", nargs="+", help="PDF/image files to ingest")
     parse_cmd.add_argument(
         "--pdf-parser", choices=["auto", "pymupdf", "paddleocr_vl", "docling"], default="auto"
+    )
+    parse_cmd.add_argument(
+        "--document-parser",
+        choices=["markitdown", "docling"],
+        default="markitdown",
+        help="Backend for office/text documents (docx/pptx/xlsx/html/md): "
+        "markitdown (default, core dep) or docling (needs [docling] extra).",
     )
     parse_cmd.add_argument("--ocr", action="store_true", help="Run local OCR HTTP for images")
     parse_cmd.add_argument(

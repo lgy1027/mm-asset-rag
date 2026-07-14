@@ -57,7 +57,7 @@ Supported types:
 | DOCX / PPTX / XLSX | Office Open XML ZIP container (`PK\x03\x04`) by extension + `zipfile.is_zipfile` guard | `document` |
 | HTML / Markdown / text | by extension (`.html` / `.htm` / `.md` / `.markdown` / `.txt`) | `document` |
 
-`document` types are recognised by sniff, routed to `assets/documents/` at confirm (the original extension is preserved so docling picks the right backend), and parsed by the docling adapter (`pip install -e ".[docling]"`). Without the extra installed, the upload still confirms but parsing raises a friendly install hint. document files skip VLM auto-meta (no first-page render / image path) and fall back to the sniff-derived filename title.
+`document` types are recognised by sniff, routed to `assets/documents/` at confirm (the original extension is preserved so the parser picks the right backend by extension), and parsed by MarkItDown by default (`DOCUMENT_PARSER=markitdown`, a core dependency — works out of the box). The optional docling backend (`DOCUMENT_PARSER=docling`, `pip install -e ".[docling]"`) is layout-aware but pulls torch/transformers. Embedded images in docx/pptx are decoded to `parsed/<id>/images/` and associated with their chunk; document files skip VLM auto-meta (no first-page render / image path) and fall back to the sniff-derived filename title.
 
 ## VLM auto-metadata
 

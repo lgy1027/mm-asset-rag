@@ -36,6 +36,12 @@ dependencies = [
     "uvicorn>=0.27",
     "python-multipart>=0.0.9",
     "jieba>=0.42",
+    # Office/text document parsing (docx/pptx/xlsx/html/md). MarkItDown is
+    # the default document backend (pure Python, no ML stack); the format
+    # converters ride along via the [docx,pptx,xlsx] extras so a bare
+    # install parses Office docs out of the box. docling remains available
+    # as the optional heavy backend via the [docling] extra.
+    "markitdown[docx,pptx,xlsx]>=0.1.6",
 ]
 
 [project.optional-dependencies]

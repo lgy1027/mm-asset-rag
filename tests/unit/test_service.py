@@ -123,24 +123,30 @@ def test_load_history_tolerates_legacy_jsonl(tmp_home: Path) -> None:
 
 
 def test_parse_options_serialisation_roundtrip() -> None:
-    options = ParseOptions(assets=[], pdf_parser="pymupdf", enable_ocr=True, enable_vlm=False)
+    options = ParseOptions(
+        assets=[], pdf_parser="pymupdf", document_parser="docling", enable_ocr=True, enable_vlm=False
+    )
     snap = IngestService._serialise_options(options)
     assert snap == {
         "pdf_parser": "pymupdf",
+        "document_parser": "docling",
         "enable_ocr": True,
         "enable_vlm": False,
         "image_provider": "lite",
     }
     restored = IngestService._deserialise_options(snap, assets=[])
     assert restored.pdf_parser == "pymupdf"
+    assert restored.document_parser == "docling"
     assert restored.enable_ocr is True
     assert restored.enable_vlm is False
 
 
 def test_parse_options_serialisation_drops_invalid_values() -> None:
-    snap = {"pdf_parser": "bogus", "image_provider": "weird"}
+    snap = {"pdf_parser": "bogus", "document_parser": "weird", "image_provider": "weird"}
     options = IngestService._deserialise_options(snap, assets=[])
     assert options.pdf_parser == "auto"
+    # Invalid document_parser falls back to the default, not the bogus value.
+    assert options.document_parser == "markitdown"
     assert options.image_provider == "lite"
 
 

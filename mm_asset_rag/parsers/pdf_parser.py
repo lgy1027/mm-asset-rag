@@ -434,17 +434,36 @@ def parse_pdf(asset: Asset, parser: str) -> list[ParsedDocument]:
 def parse_with_docling(asset: Asset) -> list[ParsedDocument]:
     """docling parse — lazy, raises a friendly error when the extra is missing.
 
-    Stage 2 of the plan installs the ``[docling]`` extra and fills in the
-    real ``build_ir_docling`` adapter. This stub keeps the dispatch wired
-    (and the scanned-PDF fallback selectable) so stage 1 can land the IR
-    layer without the heavy docling dependency.
+    docling is the optional heavy backend (torch / transformers); the
+    ``[docling]`` extra must be installed. The lazy import means dispatch
+    is wired even without the extra — the error surfaces at parse time.
     """
     try:
         from .docling_parser import build_ir_docling  # type: ignore[import-not-found]
-    except ImportError as exc:  # pragma: no cover - stage 2 provides the module
+    except ImportError as exc:  # pragma: no cover - exercised via parse_with_docling
         raise RuntimeError(
             'docling parsing requires the [docling] extra: pip install -e ".[docling]"'
         ) from exc
     from .document_ir import ir_to_documents
 
     return ir_to_documents(build_ir_docling(asset))
+
+
+def parse_with_markitdown(asset: Asset) -> list[ParsedDocument]:
+    """MarkItDown parse — ``build_ir_markitdown`` + shared ``ir_to_documents``.
+
+    MarkItDown is the default ``document`` backend (core dependency, so
+    normally importable). The lazy import + friendly error mirrors
+    ``parse_with_docling`` so a stripped install still reports the install
+    hint rather than a bare ``ImportError``.
+    """
+    try:
+        from .markitdown_parser import build_ir_markitdown
+    except ImportError as exc:  # pragma: no cover - core dep, exercised via test
+        raise RuntimeError(
+            "MarkItDown parsing requires the markitdown package: "
+            'pip install -e "."  (or pip install "markitdown[docx,pptx,xlsx]")'
+        ) from exc
+    from .document_ir import ir_to_documents
+
+    return ir_to_documents(build_ir_markitdown(asset))
