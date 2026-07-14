@@ -172,8 +172,8 @@ def _target_subdir(source_type: str) -> str:
         return "images"
     if source_type == "document":
         # Office / text formats (docx / pptx / xlsx / html / md / txt) —
-        # kept under ``documents/`` so the docling adapter's preserved
-        # extension (``.docx`` vs ``.pptx`` …) drives backend selection.
+        # kept under ``documents/`` so the parser's preserved extension
+        # (``.docx`` vs ``.pptx`` …) drives backend selection.
         return "documents"
     raise ValueError(f"unsupported source_type: {source_type!r}")
 
@@ -258,8 +258,8 @@ def _suffix_for(source_path: Path, source_type: str) -> str:
     if source_type == "image":
         return suffix if suffix in _IMAGE_SUFFIXES else ".png"
     if source_type == "document":
-        # Preserve the original office/text extension so the docling
-        # adapter can pick the right backend (.docx vs .pptx vs .html …).
+        # Preserve the original office/text extension so the parser
+        # can pick the right backend (.docx vs .pptx vs .html …).
         return suffix or ".bin"
     return suffix or ".bin"
 

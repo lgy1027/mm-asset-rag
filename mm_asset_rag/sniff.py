@@ -54,7 +54,7 @@ class SniffedAsset:
 
     ``source_type`` is one of ``"pdf"``, ``"image"``, ``"document"``, or
     ``"unknown"``. ``"document"`` covers the office/text formats the
-    docling adapter parses (docx / pptx / xlsx / html). When ``unknown``,
+    document parser handles (docx / pptx / xlsx / html). When ``unknown``,
     the caller should reject the upload rather than try to parse it.
     """
 
@@ -294,7 +294,7 @@ def sniff(path: Path) -> SniffedAsset:
 
     # Office Open XML (docx/pptx/xlsx) — ZIP containers, disambiguated
     # by extension + a zipfile guard in ``_sniff_office``. Parsed by the
-    # docling adapter (source_type="document").
+    # document parser (source_type="document").
     office = _sniff_office(path)
     if office is not None:
         return SniffedAsset(
@@ -307,7 +307,7 @@ def sniff(path: Path) -> SniffedAsset:
         )
 
     # HTML / Markdown / plain text — sniffed by extension (no robust magic
-    # bytes for these). Parsed by the docling adapter too.
+    # bytes for these). Parsed by the document parser too.
     _TEXT_SUFFIXES = {".html", ".htm", ".md", ".markdown", ".txt"}
     if path.suffix.lower() in _TEXT_SUFFIXES:
         return SniffedAsset(
