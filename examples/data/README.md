@@ -1,51 +1,44 @@
 # Sample data
 
-This directory contains the sample assets used by the LlamaIndex multimodal
-RAG tutorial chapters (11–13) — 10 PDFs + 23 images + an `asset_manifest.json`
-describing 30 records. About **67 MB** total.
+This directory holds optional sample assets for manually exercising the
+upload-first pipeline. **The binary assets themselves are not tracked in
+git** — they bloat every clone and the project is upload-first (users
+bring their own files). Only this README is committed; restore the
+samples locally if you need them (see below).
 
-## Origin
+## What used to live here
 
-Extracted from `lgy1027/ai-tutorial` (`llamaindex/data/media_project/chapter11_assets/`).
-Original sources include arXiv PDFs (RAG, CLIP, BERT, LLaMA, …) and a mix of
-diagrams and dataset samples. See `asset_manifest.json` `source_url` fields
-for the original URLs.
+A `chapter11_assets/` subset (10 PDFs + Caltech-101 image labels, ~170 MB)
+was tracked in earlier history. It has been removed from the index so
+`.gitignore`'s `/examples/data/` rule takes effect. The files may still
+exist on disk if you pulled them before the cleanup; they are purely
+local now.
 
-## Layout
+## Restore / add your own samples
 
-```
-examples/data/
-└── chapter11_assets/
-    ├── asset_manifest.json   # 30 records, each with id / type / path / tags
-    ├── pdfs/                 # 10 PDF documents
-    └── images/               # 23 PNG / JPG images
-```
-
-## Usage
-
-Point the runtime at this directory with:
+The project no longer ships a default corpus. To run `mmrag eval` or the
+`examples/api_client.py` script against real data, upload your own files
+through the web UI or CLI:
 
 ```bash
-export MM_ASSET_RAG_HOME=/path/to/mm-asset-rag
-cp examples/data/chapter11_assets/asset_manifest.json $MM_ASSET_RAG_HOME/assets/asset_manifest.json
-mkdir -p $MM_ASSET_RAG_HOME/assets/pdfs $MM_ASSET_RAG_HOME/assets/images
-cp examples/data/chapter11_assets/pdfs/*   $MM_ASSET_RAG_HOME/assets/pdfs/
-cp examples/data/chapter11_assets/images/* $MM_ASSET_RAG_HOME/assets/images/
-mmrag parse --pdf-parser pymupdf
-mmrag index
-mmrag search "which document covers retrieval-augmented generation?"
-```
+# CLI equivalent of the web upload flow: preview → confirm → parse + index
+mmrag parse ./your.pdf ./your.jpg
 
-Or in a single `MM_ASSET_RAG_HOME` directly without copying (preferred):
-
-```bash
-mkdir -p $MM_ASSET_RAG_HOME
-ln -s "$(pwd)/examples/data/chapter11_assets" $MM_ASSET_RAG_HOME/assets
-mmrag parse
-mmrag index
+mmrag search "your query"
+mmrag answer "your question"
 mmrag eval
 ```
 
-The third `EVAL_CASES` in `mm_asset_rag/evaluation.py` (`pdf_rag`, `pdf_clip`,
-`pdf_layoutlm`) target specific asset IDs in this manifest, so `mmrag eval`
-will only return useful hit/miss signals when this full set is in use.
+The `EVAL_CASES` in `mm_asset_rag/evaluation.py` target specific asset
+titles/ids, so `mmrag eval` returns useful hit/miss signals only when a
+matching corpus is indexed. Treat the bundled eval cases as a template
+to adapt to your own corpus, not as a fixed benchmark.
+
+## Layout (when populated locally)
+
+```
+examples/data/
+└── chapter11_assets/     # local-only, git-ignored
+    ├── pdfs/             # sample PDF documents
+    └── images/           # sample PNG / JPG images
+```

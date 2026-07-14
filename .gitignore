@@ -51,13 +51,21 @@ htmlcov/
 /documents.jsonl
 /run_report.json
 /eval_report.json
+# Background-task history + asset index (runtime SQLite / append-only
+# logs written to $MM_ASSET_RAG_HOME). Listed here defensively in case
+# anyone points MM_ASSET_RAG_HOME at a path inside the repo.
+/tasks.db
+/tasks.db-journal
+/tasks.jsonl
+/tasks.jsonl.last
+/asset_index.jsonl
 
 # Sample assets and developer fixtures kept locally for manual testing.
 # The full `examples/data/chapter11_assets/` subtree (sample PDFs +
-# photos) is intentionally not tracked: it bloats every clone and is
-# no longer required now that the project is upload-first. Restore
-# locally with `git checkout HEAD -- examples/data/` if you need it.
-# Also covers any PDFs that future `scripts/*` might download.
+# photos, ~170 MB) is intentionally not tracked: it bloats every clone
+# and is not required now that the project is upload-first. It was
+# removed from the index so this rule now takes effect; the files may
+# still exist on disk locally if pulled before the cleanup.
 /examples/data/
 
 # IDE

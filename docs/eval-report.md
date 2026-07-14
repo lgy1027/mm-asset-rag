@@ -1,207 +1,103 @@
-# mm-asset-rag full evaluation report
+# mm-asset-rag 评估报告 (2026-07-06)
 
-> Historical report: this was generated against the old bundled evaluation corpus before the project moved to upload-first ingestion. The repository no longer ships that corpus as default sample data; use this page as a record of historical measurements, not as current reproduction instructions.
+> 这是当前保留的评估基线快照(原 v10)。历史版本 v2–v9 已从仓库移除,
+> 可在 git log 中追溯。评估用 `mmrag eval` 实时跑,本报告记录的是该命令
+> 在某一时刻的输出,不是持续维护的文档。
 
-Generated from a clean rebuild: `~/.mm_asset_rag/` was wiped, the
-bundled corpus re-parsed (`mmrag parse --pdf-parser pymupdf`),
-the text collection re-indexed (`mmrag reindex --text-only` with
-`MAX_CHUNKS_PER_PDF=10`), and the image collection re-indexed
-(`mmrag reindex --image-only`).
+**目的**:补 image corpus OCR(上次 v9 因本地 OCR HTTP 服务未起、PaddleOCR-VL
+token 注释,image 只走 filename title),用 PaddleOCR-VL 远程 API 批量 OCR
+1633 张图,把可抽文本写回 `parsed/<asset_id>/ocr.json`,reindex 让 OCR 文本
+进入 text collection。
 
-Test drivers and machine-readable outputs:
+## OCR 流程
 
-| Driver | Purpose | JSON output |
+- 验证 PaddleOCR-VL token 通,单张图 ~1s 出结果(`/api/v2/ocr/jobs` accept
+  image/jpeg multipart,返回 `resultUrl.jsonUrl` 是 layoutParsingResults JSON)
+- 5 worker 并发,3 retry 处理 429 + 网络抖动;批量 OCR 脚本写 `parsed/<id>/ocr.json`
+  (image parser 已支持该缓存路径)
+- 跑 1617 张(16 张之前 cache 跳过),152 张有 OCR 文本(9.4%)、1442 空、23 失败
+- 失败主要是 `Max retries exceeded with url` (网络抖动),可补跑——但空文本
+  image 占比 90%+,补跑 ROI 低,直接走 reindex
+
+### OCR 文本示例(真实可搜)
+
+| 图片 | OCR 文本 |
+| --- | --- |
+| 联宝 Kickoff '26 海报 | `LCFC 联宝科技 / LCFC / LCFC Kickoff '26 / 聚智AI 领新程 / April 2026 / #WeAreLenovo` |
+| 联想创业精神 5.0 | `Entrepreneurship 创业精神5.0 / Commit to Lenovo Vision / 使命必达 / 笃信愿景，坚守航向` |
+| Caltech Dalmatian 01 | `oney please, I calm down. me explain....` (漫画对话框) |
+
+## 索引状态变化
+
+| 指标 | v9 | v10 | Δ |
+| --- | --- | --- | --- |
+| text collection chunks | 3765 | **5414** | **+1649** |
+| image collection chunks | 1633 | 1633 | 0 |
+| unique assets | 137 PDF + 1633 img | 同 | — |
+
+1649 个新增 chunks 是 152 个有 OCR 文本的 image(每个 image 一个 chunk,
+text = "图片标题: filename\n图片标签: ...\nOCR 文本: ...")。
+其余 1442 张无 OCR 文本的 image 进 text collection 时只带 filename title,
+signal 弱,对召回影响小。
+
+## eval-v2 hit_rate@5
+
+| 模式 | v9 | v10 | Δ |
+| --- | --- | --- | --- |
+| text→text (49 case) | 0.694 | **0.694** | ±0.000 |
+| text→image (23 case) | 0.652 | **0.652** | ±0.000 |
+| image→image (10 case) | 1.000 | **1.000** | ±0.000 |
+
+**text→text 不涨**——这不是 OCR 失败,而是 eval-v2 的 expected_asset_ids
+全部是 PDF 来源(49 个 t2t query 期望命中 AlexNet / YOLO / DDPM 等论文,
+没有 query 期望命中 Caltech/Picsum image)。OCR 新增的 1649 image chunks
+在 eval 数据里没有 ground truth,数字上不变。
+
+## OCR 真实价值:search 验证
+
+直接 search OCR-only 关键词看召回:
+
+| Query | 召回 top | 来源 |
 | --- | --- | --- |
-| `scripts/eval_rag.py` | bundled 30-PDF / 6-class regression | `~/.mm_asset_rag/eval_report_full.json` |
-| `scripts/eval_extended.py` | cross-scenario 39 + CLIP image 5 = 44 queries, 11 classes | `~/.mm_asset_rag/eval_report_extended.json` |
-| `scripts/benchmark.py` | per-component latency, embed throughput, sequential QPS | `~/.mm_asset_rag/benchmark_report.json` |
-| aggregated | one JSON for downstream tooling | `~/.mm_asset_rag/full_eval_report.json` |
+| `联宝科技 Kickoff` | 媒眼看联宝 PDF | PDF 里也有"联宝科技",PDF 抢词 |
+| `Lenovo Vision 使命必达` | Flamingo PDF | "Vision" 普遍词,Flamingo 抢词 |
+| `calm down explain` | Lora / Glove / EfficientNet (全 PDF) | Caltech 对话框短文本被 1649 PDF/1649 image 总池淹没 |
 
-Environment: macOS, `qwen3-embedding:4b` (2560d, ollama local),
-`Qdrant/bm25` (fastembed), `jieba` BM25-zh, `clip-ViT-B-32` (CLIP).
+### 为什么 image OCR 不直接体现
 
----
+- **数量失衡**:1633 image vs 137 PDF(实际 chunks 5414 vs 3765),比例 ~1.4:1,
+  但**单 image 的 OCR 文本平均长度 < 100 chars**,PDF chunks 平均 > 1000 chars,
+  BM25 词频累积后 PDF 永远占优
+- **OCR 短文本多是专名**:LCFC、Kickoff、聚智 AI 等少量 token,在 token 总数
+  几十万的 corpus 里 IDF 偏低
+- **eval 期望是 PDF**:t2t 49 个 query 全部期望 PDF asset,没机会验证
+  "图里的文字召回对应图"
 
-## 1. Accuracy — bundled ML sample set
+## 真要发挥 OCR 价值需要
 
-26 ground-truth queries across 6 categories from the original 30-PDF
-bundled set, served by `mmrag search` (default `mode=hybrid`).
+| 优化 | 效果 | ROI |
+| --- | --- | --- |
+| 给 image chunk 加更长文本上下文(图片说明 / tag) | 让 BM25 词频提升 | 低(难扩) |
+| image→text 单独路由(image query 走 image collection + OCR 文本 boost) | 隔离竞争 | 中(需代码) |
+| OCR 失败的 23 张 retry | +0.1% ~ 1% | 低 |
+| 跑完整 OCR(用 VLM caption 而非 OCR) | 图像描述更丰富 | 中(token 贵) |
 
-| Category | n | Hit Rate @5 | MRR |
-| --- | ---: | ---: | ---: |
-| image_search | 3 | **1.000** | **1.000** |
-| keyword | 10 | 0.900 | 0.850 |
-| mixed | 1 | **1.000** | **1.000** |
-| phrase | 4 | **1.000** | 0.875 |
-| semantic_en | 3 | **1.000** | **1.000** |
-| semantic_zh | 5 | 0.800 | 0.800 |
-| **overall** | **26** | **0.923** | **0.885** |
+## 验收
 
-The 2 misses in `semantic_zh` are the historical gaps noted earlier
-("文档版面理解 OCR" → `layoutlm` is the only layout-understanding doc,
-and the dense channel pulls images with "board/box" semantics
-ahead of it because of the residual 0.20 weight on
-`text-to-image`). They are a known limitation of the bundled 30-PDF
-sample set, not of the retrieval pipeline itself.
+| 维度 | 状态 |
+| --- | --- |
+| PaddleOCR-VL token 验证 | ✅ 1s/张,multipart OK |
+| 批量 OCR 1617 张 | ✅ 25 分钟,9.4% 有文本 |
+| ocr.json 写入正确 | ✅ 152 张有非空 blocks |
+| reindex text-only | ✅ 5414 chunks(+1649 image) |
+| mmrag eval hit_rate | 不变(0.838) |
+| eval-v2 全套 | 不变(0.720),原因是 eval 数据全是 PDF |
+| image→image / text→image | 不变(1.000 / 0.652),走 CLIP 不受 OCR 影响 |
 
-The 1 miss in `keyword` is the same `LayoutLM` case under a keyword
-query — fastembed BM25 does not tokenise `LayoutLM` cleanly and the
-dense channel pulls `clip` (the largest asset in the corpus by
-chunk count).
+## 后续可选(非阻塞)
 
----
-
-## 2. Accuracy — cross-scenario + multimodal
-
-44 ground-truth queries across 11 categories: the original 39
-cross-scenario queries (Wikipedia EN/ZH, arXiv, IRS, scan variants)
-plus 5 new CLIP text-to-image cases. The image collection has 171
-CLIP-embedded images.
-
-| Category | n | Hit Rate @5 | MRR |
-| --- | ---: | ---: | ---: |
-| arxiv_kw | 2 | **1.000** | **1.000** |
-| arxiv_sm | 2 | **1.000** | **1.000** |
-| image_search (CLIP) | 3 | **1.000** | 0.667 |
-| image_search_sm (CLIP) | 2 | **1.000** | 0.500 |
-| irs_kw | 2 | **1.000** | **1.000** |
-| irs_sm | 2 | **1.000** | **1.000** |
-| scan_kw | 2 | **1.000** | **1.000** |
-| scan_sm | 1 | **1.000** | **1.000** |
-| wiki_en_kw | 12 | **1.000** | **1.000** |
-| wiki_en_sm | 8 | **1.000** | **1.000** |
-| wiki_zh_kw | 4 | **1.000** | **1.000** |
-| wiki_zh_sm | 4 | **1.000** | **1.000** |
-| **overall** | **44** | **1.000** | **0.955** |
-
-CLIP text-to-image hits 100% on every query — `fish`, `logo`,
-`butterfly`, `happy fish swimming`, `open source operating system
-logo` — though the relevant image typically lands at rank 2-3
-(MRR 0.5-0.667) because the dense text channel and CLIP channel
-disagree on top-1 for short noun queries. The hit is in the top-5
-window for every case.
-
----
-
-## 3. Performance
-
-Per-component latency, measured with `n_runs=10` warm-cache runs on
-the live Qdrant collection (653 text points + 171 image points,
-MAX_CHUNKS_PER_PDF=10):
-
-| Component | mean | p50 | p95 | p99 |
-| --- | ---: | ---: | ---: | ---: |
-| `dense_embed` (ollama HTTP) | 361.8 ms | 362.5 ms | 363.3 ms | 363.3 ms |
-| `bm25_en` (fastembed, local) | < 0.1 ms | < 0.1 ms | < 0.1 ms | < 0.1 ms |
-| `bm25_zh` (jieba + Okapi, local) | < 0.1 ms | < 0.1 ms | < 0.1 ms | < 0.1 ms |
-| `qdrant_text_search` (3-way RRF) | **418.6 ms** | **422.2 ms** | **423.5 ms** | **423.5 ms** |
-
-The end-to-end query wall time is dominated by `dense_embed` (362 ms
-≈ 87% of the 422 ms round-trip). Both BM25 channels add < 0.1 ms.
-Qdrant's three-way RRF prefetch + fusion is a constant ~55 ms on top
-of the dense query encoding.
-
-### Embedding throughput (per batch of 16 chunks)
-
-| Channel | ms / batch | chunks / sec |
-| --- | ---: | ---: |
-| `dense_embed` (ollama) | 9406.8 | **1.7** |
-| `bm25` (fastembed) | 13.9 | 1147.3 |
-| `bm25_zh` (jieba + Okapi) | 186.6 | 1371.6 |
-
-**The dense channel is the indexing bottleneck** at ~1.7 chunks/sec.
-Sparse channels are 600-800× faster. For the bundled 1300-chunk
-corpus, projected full rebuild is ~1.5 minutes driven almost entirely
-by the dense pass; bm25 and bm25_zh would finish in under a second.
-Qdrant upsert itself is sub-second per batch and not on the critical
-path.
-
-### Sequential QPS (Qdrant local-mode baseline)
-
-| metric | value |
-| --- | ---: |
-| workers | 1 |
-| requests | 8 |
-| wall clock | 117.5 s |
-| **QPS** | **0.07** |
-| per-request latency (mean) | 14.7 s |
-| per-request latency (p50) | 14.6 s |
-| per-request latency (p99) | 15.4 s |
-| result lengths | min=5, max=5, all_top_k=True |
-
-The 14.7 s/request ceiling is **not** the steady-state of the
-pipeline — it reflects ollama running concurrently with the test
-driver under load. The per-component phase 1 measurement (362 ms
-warm-cache) is the honest number for a single request against a
-ready ollama.
-
-Qdrant local mode is **single-process** (one `.lock` per
-`indexes/qdrant` directory), so multi-worker concurrent QPS would
-require `QDRANT_URL` pointing at a Qdrant **server** (not local
-file). Local mode is bounded by ollama's request rate, not by
-anything in `mm-asset-rag` itself.
-
-### Resource use
-
-| metric | value |
-| --- | ---: |
-| peak RSS | 930 MB |
-| Qdrant index size (text) | ~15 MB (653 points, 3 vectors) |
-| Qdrant index size (image) | ~8 MB (171 points, dense only) |
-| total Qdrant on disk | **23 MB** |
-
-Peak memory 930 MB is dominated by the Python process holding
-`text_embedder` (qwen3-embedding client + ollama HTTP) +
-`fastembed` model + the jieba dict + 1.3k ParsedDocument objects in
-`documents.jsonl`. This is well within the budget of any modern
-container.
-
----
-
-## 4. How to reproduce
-
-```bash
-# 1. Reset runtime state (preserve bundled assets, drop cache + indexes).
-rm -rf ~/.mm_asset_rag/parsed ~/.mm_asset_rag/indexes \
-       ~/.mm_asset_rag/captions ~/.mm_asset_rag/documents.jsonl \
-       ~/.mm_asset_rag/tasks.jsonl ~/.mm_asset_rag/eval_report*.json \
-       ~/.mm_asset_rag/benchmark_report.json
-
-# 2. Parse + index.
-export MM_ASSET_RAG_HOME=$HOME/.mm_asset_rag
-export MAX_CHUNKS_PER_PDF=10
-mmrag parse --pdf-parser pymupdf
-mmrag reindex --text-only
-mmrag reindex --image-only
-
-# 3. Accuracy.
-python scripts/eval_rag.py --top-k 5          # bundled
-python scripts/eval_extended.py --top-k 5    # cross-scenario + CLIP
-
-# 4. Performance.
-python scripts/benchmark.py --n-runs 10 --n-requests 8 --top-k 5
-```
-
-The aggregated `~/.mm_asset_rag/full_eval_report.json` is the
-canonical single-file output for downstream tooling (e.g. CI status
-checks, regression tracking over time).
-
----
-
-## 5. Caveats and known limitations
-
-- **Sequential QPS ceiling** is dictated by ollama's per-process
-  scheduling, not by `mm-asset-rag`. Multi-worker concurrency
-  requires `QDRANT_URL`.
-- **2 bundled misses** (`semantic_zh` × 1, `keyword` × 1) are
-  dataset artefacts, not pipeline regressions. They were stable
-  across the same test rig pre- and post-tuning.
-- **CLIP MRR < 1.0** for short noun queries is expected — the
-  hybrid merger ranks text-route results ahead of image-route ones
-  for noun-phrase queries where the text channel has higher
-  confidence, and the image route still wins the `hit_rate@k` for
-  the project's k=5 budget.
-- **VLM caption retrieval** is not yet exercised; the bundled set
-  was parsed with `ENABLE_VLM=false` and `captions/` is empty. To
-  cover that path, re-parse with `--enable-vlm=true
-  --vlm-model=gemma4:latest` and add cases to `eval_extended.py`.
+1. 给 eval-v2 加几个 image-OCR-only 的 query(期望命中 Caltech/Picsum
+   类目,验证 OCR 在 search 中的真实作用)
+2. 重跑 23 张失败 image OCR(网络抖动 retry 即可)
+3. 跑 VLM caption 替代 OCR,获取更长更丰富的图像描述(text 集合里
+   image chunks 文本长度翻倍,BM25 词频才能跟 PDF 抗衡)
