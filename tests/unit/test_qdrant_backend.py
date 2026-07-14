@@ -210,6 +210,78 @@ def test_filter_by_relevance_keeps_empty_input() -> None:
     assert _filter_by_relevance([], 0.22) == []
 
 
+# ─── qdrant_text_search source_type filter ───────────────────────────────
+# The default (include_image_sources=False) filter must exclude image-source
+# chunks but keep pdf AND document. An earlier implementation used
+# ``must=[source_type == "pdf"]``, which silently dropped every document
+# (docx/pptx/…) chunk — a freshly uploaded docx was indexed but never
+# returned by search. This pins the must_not(image) form.
+
+
+def test_qdrant_text_search_filter_excludes_image_keeps_pdf_and_document(monkeypatch) -> None:
+    """The default text-search filter is ``must_not source_type == image``.
+
+    We capture the ``filter`` argument passed to ``_hybrid_text_query`` and
+    assert it carries a ``must_not`` clause matching ``image`` (not a
+    ``must`` clause matching ``pdf``). This is the regression the fix guards:
+    before the fix, a document chunk could never be returned.
+    """
+    from mm_asset_rag.backends import qdrant_backend
+
+    captured: dict = {}
+
+    def _fake_hybrid(*args, **kwargs):
+        captured["filter"] = kwargs.get("text_filter")
+        return []
+
+    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _fake_hybrid)
+    # Stub the embedder + bm25 helpers so no network / model is touched.
+    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+    )
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
+    )
+    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+
+    qdrant_backend.qdrant_text_search("query", top_k=5, include_image_sources=False)
+
+    flt = captured["filter"]
+    assert flt is not None, "default search must apply a source_type filter"
+    # The filter excludes image — must_not, not must(pdf).
+    assert flt.must_not, "filter should be must_not(image), not must(pdf)"
+    cond = flt.must_not[0]
+    assert cond.key == "source_type"
+    assert cond.match.value == "image"
+
+
+def test_qdrant_text_search_no_filter_when_include_image_sources(monkeypatch) -> None:
+    """``include_image_sources=True`` disables the source_type filter entirely."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    captured: dict = {}
+
+    def _fake_hybrid(*args, **kwargs):
+        captured["filter"] = kwargs.get("text_filter")
+        return []
+
+    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _fake_hybrid)
+    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+    )
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
+    )
+    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+
+    qdrant_backend.qdrant_text_search("query", top_k=5, include_image_sources=True)
+    assert captured["filter"] is None
+
+
 # ─── Sparse pre-filter for image search ─────────────────────────────────
 # The pre-filter is a pure-Python token-overlap check on user-controlled
 # payload fields. These tests cover the helpers without touching Qdrant.
@@ -334,6 +406,9 @@ class _NoSparseEmbedder:
     """Stand-in for the OpenAI TextEmbedder — no sparse/colbert methods."""
 
     def embed_text(self, text: str) -> list[float]:
+        return [0.0, 0.0, 0.0]
+
+    def embed(self, text: str) -> list[float]:
         return [0.0, 0.0, 0.0]
 
 

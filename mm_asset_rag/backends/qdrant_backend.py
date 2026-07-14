@@ -1081,8 +1081,16 @@ def qdrant_text_search(
 
     text_filter: models.Filter | None = None
     if not include_image_sources:
+        # Exclude image-source chunks only — they carry placeholder text
+        # ("图片标题: …") that pollutes text→text recall. The earlier
+        # ``must=[source_type == "pdf"]`` form silently dropped every
+        # non-PDF source_type (document, …), so a freshly uploaded docx
+        # was indexed but never returned by search. ``must_not`` keeps
+        # pdf + document and only filters out image.
         text_filter = models.Filter(
-            must=[models.FieldCondition(key="source_type", match=models.MatchValue(value="pdf"))]
+            must_not=[
+                models.FieldCondition(key="source_type", match=models.MatchValue(value="image"))
+            ]
         )
 
     # Determine the active collection name (Qdrant active-text env var wins).
