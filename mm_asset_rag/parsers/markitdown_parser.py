@@ -94,8 +94,20 @@ def build_ir_markitdown(asset: Asset) -> DocumentIR:
             'pip install -e "."  (or pip install "markitdown[docx,pptx,xlsx]")'
         ) from exc
 
-    md = MarkItDown().convert(asset.file_path, keep_data_uris=True)
-    markdown_text = getattr(md, "text_content", "") or ""
+    # MarkItDown's per-format converters can throw on individual files (e.g.
+    # its PptxConverter raises ``ValueError: no embedded image`` for some
+    # pptx layouts, surfaced as ``FileConversionException``). That is an
+    # upstream quirk, not a reason to abort the whole ingest — a single
+    # unparseable office file should yield zero chunks (like the other
+    # adapters' empty-parse path), not crash the parse task. We degrade
+    # to an empty markdown string; the block/image/export logic below is
+    # all no-ops on empty input.
+    try:
+        md = MarkItDown().convert(asset.file_path, keep_data_uris=True)
+    except Exception as exc:  # FileConversionException + anything from a converter
+        print(f"markitdown convert failed for {asset.asset_id} ({asset.relative_path}): {exc}")
+        md = None
+    markdown_text = (getattr(md, "text_content", "") or "") if md is not None else ""
 
     output_dir = get_parsed_dir() / asset.asset_id
     output_dir.mkdir(parents=True, exist_ok=True)

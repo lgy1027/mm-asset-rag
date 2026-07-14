@@ -123,6 +123,25 @@ def test_build_ir_markitdown_writes_export_markdown(tmp_home, monkeypatch) -> No
     assert Path(ir.markdown_paths[0]).exists()
 
 
+def test_build_ir_markitdown_survives_converter_exception(tmp_home, monkeypatch) -> None:
+    """A converter exception (e.g. PptxConverter ``no embedded image``) degrades
+    to an empty parse instead of crashing the ingest task.
+
+    MarkItDown's per-format converters can throw on individual files; that
+    upstream quirk must not abort the whole document parse. The adapter
+    should yield an IR with no blocks/images (the same shape as an empty
+    document) so the parse loop records zero chunks and moves on."""
+    converter = MagicMock()
+    converter.convert.side_effect = RuntimeError("no embedded image")
+    fake_module = SimpleNamespace(MarkItDown=lambda: converter)
+    monkeypatch.setitem(sys.modules, "markitdown", fake_module)
+
+    ir = build_ir_markitdown(_asset(tmp_home))
+    assert ir.blocks == []
+    assert ir.images == []
+    assert ir.markdown_paths == []
+
+
 # ─── the defining behaviour: data-URL image decode + ref rewrite ────────────
 
 
