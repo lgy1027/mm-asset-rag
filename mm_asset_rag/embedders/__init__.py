@@ -11,7 +11,6 @@ Adding a new modality (audio, video frame, …) is a three-line change:
 
 from __future__ import annotations
 
-import contextlib
 from threading import Lock
 
 from ..registry import get_embedder, register_embedder
@@ -53,28 +52,45 @@ _REGISTER_LOCK = Lock()
 def _ensure_text_registered() -> None:
     from ..registry import embedders as _embedders
 
-    with _REGISTER_LOCK, contextlib.suppress(EmbeddingConfigError):
+    with _REGISTER_LOCK:
         if _DEFAULT_TEXT_KEY in _embedders:
             return
-        # ``suppress`` is correct here: the absence of an embedding
-        # backend is a non-fatal runtime condition (the deployer
-        # hasn't set credentials). Downstream callers that actually
-        # try to embed something will get the same ``EmbeddingConfigError``
-        # at use time, with full context — far better than crashing
-        # the whole package import. ``build_default_text_embedder``
-        # picks OpenAI or sentence-transformers based on Settings.
-        _embedders.register(_DEFAULT_TEXT_KEY, build_default_text_embedder(), replace=False)
+        # The absence of an embedding backend is a non-fatal runtime
+        # condition (the deployer hasn't set credentials), so we do not
+        # let it crash package import. But we no longer *silently*
+        # swallow ``EmbeddingConfigError``: a daemon thread's first
+        # ``build_default_text_embedder()`` can transiently fail on a
+        # race (credentials read before ``.env`` settled, an import
+        # lock, etc.), and a silent suppress leaves the registry empty
+        # so the downstream ``get_embedder`` raises an opaque
+        # ``KeyError: ... not registered; available: []`` with no clue
+        # why. Logging the real reason here makes that failure legible
+        # the next time it happens — and ``get_default_text_embedder``
+        # below retries the ensure once to ride over the transient race.
+        try:
+            _embedders.register(_DEFAULT_TEXT_KEY, build_default_text_embedder(), replace=False)
+        except EmbeddingConfigError as exc:
+            print(f"[embedders] default text embedder not registered: {exc}")
+        except ValueError:
+            # Another thread won the race and registered first under the
+            # same key (``replace=False``); that is the desired end state.
+            pass
 
 
 def _ensure_image_registered() -> None:
     from ..registry import embedders as _embedders
 
-    with _REGISTER_LOCK, contextlib.suppress(ImageEmbeddingUnavailable):
+    with _REGISTER_LOCK:
         if _DEFAULT_IMAGE_KEY in _embedders:
             return
-        # See note in ``_ensure_text_registered`` about why we
-        # suppress the missing-CLIP / missing-Pillow error.
-        _embedders.register(_DEFAULT_IMAGE_KEY, ImageEmbedder(), replace=False)
+        # See note in ``_ensure_text_registered``: log instead of
+        # silently suppressing the missing-CLIP / missing-Pillow error.
+        try:
+            _embedders.register(_DEFAULT_IMAGE_KEY, ImageEmbedder(), replace=False)
+        except ImageEmbeddingUnavailable as exc:
+            print(f"[embedders] default image embedder not registered: {exc}")
+        except ValueError:
+            pass
 
 
 def get_default_text_embedder() -> TextEmbedder:
@@ -85,15 +101,43 @@ def get_default_text_embedder() -> TextEmbedder:
     production code never needs to construct a ``TextEmbedder``
     directly. Tests can replace the default by registering a stub
     with ``embedders.register(("text", "default"), stub, replace=True)``.
+
+    If the first ``_ensure_text_registered()`` left the slot empty
+    (a transient race made ``build_default_text_embedder()`` raise
+    ``EmbeddingConfigError`` once), retry the ensure once before
+    surfacing the error — the transient failure usually does not
+    recur. If the slot is *still* empty after the retry, re-invoke
+    ``build_default_text_embedder()`` so its ``EmbeddingConfigError``
+    (the real, legible cause — missing credentials) propagates
+    instead of the opaque ``KeyError: ... not registered; available: []``.
     """
     _ensure_text_registered()
-    return get_embedder(*_DEFAULT_TEXT_KEY)  # type: ignore[return-value]
+    try:
+        return get_embedder(*_DEFAULT_TEXT_KEY)  # type: ignore[return-value]
+    except KeyError:
+        _ensure_text_registered()
+        try:
+            return get_embedder(*_DEFAULT_TEXT_KEY)  # type: ignore[return-value]
+        except KeyError:
+            # Registry still empty after a retry → build_default is
+            # genuinely failing (missing creds). Let its real error
+            # propagate so the caller sees *why*, not just "not registered".
+            return build_default_text_embedder()  # raises EmbeddingConfigError
 
 
 def get_default_image_embedder() -> ImageEmbedder:
     """Return the process-wide default :class:`ImageEmbedder`.
 
-    See :func:`get_default_text_embedder` for the slot convention.
+    See :func:`get_default_text_embedder` for the slot convention and
+    the one-shot retry on a transient empty registry.
     """
     _ensure_image_registered()
-    return get_embedder(*_DEFAULT_IMAGE_KEY)  # type: ignore[return-value]
+    try:
+        return get_embedder(*_DEFAULT_IMAGE_KEY)  # type: ignore[return-value]
+    except KeyError:
+        _ensure_image_registered()
+        try:
+            return get_embedder(*_DEFAULT_IMAGE_KEY)  # type: ignore[return-value]
+        except KeyError:
+            # Still empty after retry → CLIP/Pillow genuinely unavailable.
+            return ImageEmbedder()  # raises ImageEmbeddingUnavailable

@@ -209,3 +209,91 @@ def test_get_default_text_embedder_caches(tmp_path) -> None:
     assert a is b
     # Clean up so other tests don't see the stub.
     embedders._items.pop(("text", "default"), None)
+
+
+# ─── transient-race retry on get_default_text_embedder ────────────────────
+
+
+def test_get_default_text_embedder_retries_on_transient_race(monkeypatch, tmp_path) -> None:
+    """A transient ``build_default`` failure (the daemon-thread race that
+    surfaced as ``KeyError: ... not registered; available: []``) must not
+    kill the index step: ``get_default_text_embedder`` retries the ensure
+    once, and a second ``build_default`` that succeeds yields the embedder.
+    """
+    from mm_asset_rag import embedders as emb_mod
+    from mm_asset_rag.embedders import get_default_text_embedder
+    from mm_asset_rag.registry import embedders
+
+    embedders._items.pop(("text", "default"), None)
+
+    calls = {"n": 0}
+
+    class _Stub:
+        modality = "text"
+        name = "stub"
+
+        def dim(self) -> int:
+            return 4
+
+        def embed(self, content):
+            return [0.0] * 4
+
+        def embed_batch(self, contents):
+            return [[0.0] * 4 for _ in contents]
+
+    def _flaky_build():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise emb_mod.EmbeddingConfigError("transient race")
+        return _Stub()
+
+    monkeypatch.setattr(emb_mod, "build_default_text_embedder", _flaky_build)
+
+    e = get_default_text_embedder()
+    assert calls["n"] == 2  # first raised, retry succeeded
+    assert isinstance(e, _Stub)
+    embedders._items.pop(("text", "default"), None)
+
+
+def test_get_default_text_embedder_raises_config_error_when_creds_missing(
+    monkeypatch, tmp_path
+) -> None:
+    """When ``build_default`` genuinely fails (no creds) every call, the
+    retry path re-invokes it so its ``EmbeddingConfigError`` propagates —
+    preserving the pre-fix contract that callers see ``EmbeddingConfigError``,
+    not an opaque ``KeyError: ... available: []``."""
+    from mm_asset_rag import embedders as emb_mod
+    from mm_asset_rag.embedders import get_default_text_embedder
+    from mm_asset_rag.registry import embedders
+
+    embedders._items.pop(("text", "default"), None)
+
+    def _always_fails():
+        raise emb_mod.EmbeddingConfigError("no creds")
+
+    monkeypatch.setattr(emb_mod, "build_default_text_embedder", _always_fails)
+
+    with pytest.raises(emb_mod.EmbeddingConfigError):
+        get_default_text_embedder()
+    embedders._items.pop(("text", "default"), None)
+
+
+def test_ensure_text_registered_logs_on_config_error(monkeypatch, capsys, tmp_path) -> None:
+    """``_ensure_text_registered`` no longer silently swallows the
+    ``EmbeddingConfigError`` — it logs the reason so the failure is
+    legible, while still leaving the registry empty (non-fatal import)."""
+    from mm_asset_rag import embedders as emb_mod
+    from mm_asset_rag.registry import embedders
+
+    embedders._items.pop(("text", "default"), None)
+
+    def _fails():
+        raise emb_mod.EmbeddingConfigError("no creds")
+
+    monkeypatch.setattr(emb_mod, "build_default_text_embedder", _fails)
+
+    emb_mod._ensure_text_registered()
+    assert ("text", "default") not in embedders  # still empty
+    out = capsys.readouterr().out
+    assert "default text embedder not registered" in out
+    assert "no creds" in out
