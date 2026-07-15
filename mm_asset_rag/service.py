@@ -720,28 +720,7 @@ class IngestService:
                 if dry_run:
                     report.would_remove_documents = removed
                 else:
-                    tmp_path = docs_path.with_suffix(docs_path.suffix + ".tmp")
-                    kept = 0
-                    with (
-                        docs_path.open("r", encoding="utf-8") as src,
-                        tmp_path.open("w", encoding="utf-8") as dst,
-                    ):
-                        for line in src:
-                            stripped = line.strip()
-                            if not stripped:
-                                dst.write(line)
-                                continue
-                            try:
-                                obj = json.loads(stripped)
-                            except json.JSONDecodeError:
-                                dst.write(line)
-                                continue
-                            meta = obj.get("metadata") if isinstance(obj, dict) else None
-                            if isinstance(meta, dict) and str(meta.get("asset_id", "")) == asset_id:
-                                continue
-                            dst.write(line)
-                            kept += 1
-                    os.replace(tmp_path, docs_path)
+                    removed = _remove_asset_rows_from_documents_jsonl({asset_id})
                     report.documents_removed = removed
         except OSError as exc:
             report.errors.append(f"documents.jsonl rewrite failed: {exc}")
@@ -1108,6 +1087,46 @@ def _run_parse_task(service: IngestService, rec: TaskRecord, options: ParseOptio
         return
 
 
+def _remove_asset_rows_from_documents_jsonl(asset_ids: set[str]) -> int:
+    """Drop every ``documents.jsonl`` row whose ``metadata.asset_id`` is in ``asset_ids``.
+
+    Atomic (tmp file + ``os.replace``), returns the number of rows removed.
+    Robust to a missing file (returns 0) and to per-line JSON decode errors
+    (those lines are kept as-is rather than aborting the rewrite). Shared by
+    ``delete_asset`` (one asset) and the force-retry parse path (the assets
+    whose ``parsed/<id>/`` cache was just cleared, so the re-parse does not
+    append duplicate chunk rows next to the originals).
+    """
+    if not asset_ids:
+        return 0
+    docs_path = get_documents_jsonl()
+    if not docs_path.exists():
+        return 0
+    removed = 0
+    tmp_path = docs_path.with_suffix(docs_path.suffix + ".tmp")
+    with (
+        docs_path.open("r", encoding="utf-8") as src,
+        tmp_path.open("w", encoding="utf-8") as dst,
+    ):
+        for line in src:
+            stripped = line.strip()
+            if not stripped:
+                dst.write(line)
+                continue
+            try:
+                obj = json.loads(stripped)
+            except json.JSONDecodeError:
+                dst.write(line)
+                continue
+            meta = obj.get("metadata") if isinstance(obj, dict) else None
+            if isinstance(meta, dict) and str(meta.get("asset_id", "")) in asset_ids:
+                removed += 1
+                continue
+            dst.write(line)
+    os.replace(tmp_path, docs_path)
+    return removed
+
+
 def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) -> None:
     assets = list(options.assets)
 
@@ -1133,11 +1152,22 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
                 shutil.rmtree(parsed_dir_a, ignore_errors=True)
                 cleared.append(a.asset_id)
         if cleared:
+            # Drop these assets' old chunk rows from documents.jsonl too.
+            # ``_do_parse`` re-writes chunks by appending (``target.open("a")``
+            # below), so without this a force re-parse would *duplicate* the
+            # asset's rows — one set from the original parse still on disk,
+            # plus the fresh set. The dup chunks then double the asset's
+            # weight in retrieval and drag down ranking (observed: MRR
+            # 0.896 with dups vs 0.927 after dedup). qdrant point cleanup is
+            # left to ``mmrag reindex``; removing the jsonl rows is the fix
+            # for the parse-time pollution source.
+            removed = _remove_asset_rows_from_documents_jsonl(set(cleared))
             scope = "failed" if rec.failed_only else "all"
             service._patch(
                 rec,
                 current=(
-                    f"force: cleared {len(cleared)} {scope} parsed/ cache dir(s) before parse"
+                    f"force: cleared {len(cleared)} {scope} parsed/ cache dir(s) "
+                    f"({removed} documents.jsonl rows) before parse"
                 ),
             )
 

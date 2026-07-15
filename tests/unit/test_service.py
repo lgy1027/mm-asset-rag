@@ -124,7 +124,11 @@ def test_load_history_tolerates_legacy_jsonl(tmp_home: Path) -> None:
 
 def test_parse_options_serialisation_roundtrip() -> None:
     options = ParseOptions(
-        assets=[], pdf_parser="pymupdf", document_parser="docling", enable_ocr=True, enable_vlm=False
+        assets=[],
+        pdf_parser="pymupdf",
+        document_parser="docling",
+        enable_ocr=True,
+        enable_vlm=False,
     )
     snap = IngestService._serialise_options(options)
     assert snap == {
@@ -349,6 +353,99 @@ def test_force_retry_clears_parsed_cache(tmp_home: Path) -> None:
 
     assert not parsed_dir.exists()
     assert called == [asset.asset_id]
+
+
+def test_force_retry_dedupes_documents_jsonl(tmp_home: Path) -> None:
+    """A force re-parse clears ``parsed/<id>/`` cache *and* drops that
+    asset's old chunk rows from ``documents.jsonl``. Without the drop,
+    the re-parse appends a second set of rows next to the originals
+    (``target.open("a")``), doubling the asset's chunks and dragging
+    down retrieval ranking. The cache clear alone is not enough."""
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.paths import get_documents_jsonl, get_parsed_dir
+    from mm_asset_rag.schema import ParsedDocument
+    from mm_asset_rag.service import ParseOptions, _do_parse
+
+    asset = _make_asset(tmp_home, "force.png")
+    docs_path = get_documents_jsonl()
+    docs_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Pre-existing rows AND parsed/ cache from the *first* parse of this asset.
+    docs_path.write_text(
+        json.dumps({"text": "old chunk", "metadata": {"asset_id": asset.asset_id}}) + "\n",
+        encoding="utf-8",
+    )
+    parsed_dir = get_parsed_dir() / asset.asset_id
+    parsed_dir.mkdir(parents=True)
+    (parsed_dir / "raw.jsonl").write_text("{}", encoding="utf-8")
+    assert docs_path.exists()
+
+    rec = TaskRecord(
+        task_id="force02",
+        kind="parse",
+        status="running",
+        total=1,
+        force=True,
+    )
+    rec.uploaded_files = [asset.relative_path]
+
+    service = IngestService()
+
+    def fake_get_parser(kind, name):
+        class P:
+            def parse(self, asset_obj, **kwargs):
+                return [
+                    ParsedDocument(text="fresh chunk", metadata={"asset_id": asset_obj.asset_id})
+                ]
+
+        return P()
+
+    orig_parser = svc_mod.get_parser
+    svc_mod.get_parser = fake_get_parser
+    try:
+        _do_parse(service, rec, ParseOptions(assets=[asset]))
+    finally:
+        svc_mod.get_parser = orig_parser
+
+    # The old row must be gone; only the fresh row remains → no doubling.
+    rows = [
+        json.loads(line)
+        for line in docs_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    ours = [r for r in rows if r.get("metadata", {}).get("asset_id") == asset.asset_id]
+    assert len(ours) == 1
+    assert ours[0]["text"] == "fresh chunk"
+
+
+def test_remove_asset_rows_from_documents_jsonl(tmp_home: Path) -> None:
+    """The shared helper removes exactly the named assets' rows and
+    leaves unrelated rows intact, atomically."""
+    from mm_asset_rag.paths import get_documents_jsonl
+    from mm_asset_rag.service import _remove_asset_rows_from_documents_jsonl
+
+    docs_path = get_documents_jsonl()
+    docs_path.parent.mkdir(parents=True, exist_ok=True)
+    docs_path.write_text(
+        json.dumps({"text": "a", "metadata": {"asset_id": "keep_me"}})
+        + "\n"
+        + json.dumps({"text": "b", "metadata": {"asset_id": "drop_me"}})
+        + "\n"
+        + json.dumps({"text": "c", "metadata": {"asset_id": "drop_me_too"}})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    removed = _remove_asset_rows_from_documents_jsonl({"drop_me", "drop_me_too"})
+    assert removed == 2
+    rows = [
+        json.loads(line)
+        for line in docs_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [r["metadata"]["asset_id"] for r in rows] == ["keep_me"]
+    # Empty set / missing file → no-op.
+    assert _remove_asset_rows_from_documents_jsonl(set()) == 0
 
 
 def test_ingest_task_records_indexed_status_on_success(tmp_home: Path) -> None:
