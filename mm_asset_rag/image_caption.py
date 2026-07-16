@@ -104,20 +104,71 @@ def _write_cache(cache_path: Path, cache: dict[str, str]) -> None:
 
 
 def _caption_one(asset_id: str, image_rel_path: str) -> str:
-    """Generate a caption for one embedded figure. Returns ``""`` on any failure.
+    """Generate a concise retrieval caption for one embedded figure.
 
-    Delegates to :func:`parsers.image_parser.call_vlm_caption` (the same
-    OpenAI-compatible VLM transport the standalone-image path uses) so the
-    project has exactly one caption code path. Empty return on missing file,
-    missing VLM creds, or request failure — caller leaves the chunk untouched.
+    Returns ``""`` on any failure (missing file, missing VLM creds, request
+    error) so the caller leaves the chunk untouched.
+
+    Uses a *concise* prompt (~50 chars) rather than reusing
+    :func:`parsers.image_parser.call_vlm_caption`: that function's prompt
+    asks for a five-dimension detailed description (title / objects / text /
+    scene / answerable questions) which suits a standalone image the answer
+    layer cites verbatim, but produces ~1600-char essays that would bloat a
+    chunk's text and dilute its BM25 signal. An embedded figure's caption
+    here is retrieval bait — short, term-rich ("AI模型性能测试表格,含TTFT/TPOT指标")
+    — so the figure becomes searchable without distorting its chunk. The
+    transport (OpenAI-compatible vision chat) is identical; only the prompt
+    differs. Model-agnostic: any VLM returns a short description to a short
+    prompt.
     """
     abs_path = _image_abs_path(asset_id, image_rel_path)
     if abs_path is None:
         return ""
-    try:
-        from .parsers.image_parser import call_vlm_caption
+    import base64
 
-        return call_vlm_caption(abs_path).strip()
+    import requests
+
+    s = get_settings()
+    base_url, api_key, model = s.vlm_creds
+    if not base_url or not api_key or not model:
+        return ""
+    try:
+        image_base64 = base64.b64encode(abs_path.read_bytes()).decode("ascii")
+        suffix = abs_path.suffix.lower().replace(".", "") or "png"
+        mime = "jpeg" if suffix == "jpg" else suffix
+        payload = {
+            "model": model,
+            "temperature": s.vlm_temperature,
+            "max_tokens": 200,  # caps the concise caption; prompt already asks for short
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "用中文简洁描述这张图片,50字以内。突出可检索的对象名称、"
+                                "图中可见文字、场景和图表类型(如表格/流程图/示意图)。"
+                                "只输出描述本身,不要分点,不要解释。"
+                            ),
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/{mime};base64,{image_base64}"},
+                        },
+                    ],
+                }
+            ],
+        }
+        response = requests.post(
+            base_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=s.vlm_timeout,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        return str(content).strip()
     except Exception:
         return ""
 
