@@ -138,6 +138,17 @@ Anthropic-style chunk context: each chunk gets a short LLM-generated preamble si
 | `CONTEXTUAL_CHUNK_MAX_CHARS` | `8000` | Cap chunk text fed to the LLM |
 | `CONTEXTUAL_TIMEOUT` | `60` | Per-call HTTP timeout (seconds) |
 
+## Image caption for embedded figures (opt-in)
+
+Document-embedded figures (docx/pptx pictures via markitdown/docling, PDF figures via PyMuPDF) are saved to `parsed/<id>/images/` and associated with chunks, but their *content* is otherwise invisible to the text index — a slide whose only payload is a diagram is unsearchable. When enabled, each embedded figure with no existing caption gets a VLM-generated Chinese description appended to its chunk's text so the figure's semantics enter the dense + BM25 channels. The caption is also recorded in `metadata["images"][*]["caption"]` so the answer layer can cite it.
+
+This is the **text-route** path only: embedded figures are *not* sent to the CLIP image index — that channel stays reserved for standalone `images/` uploads (`source_type=image`). Works with any OpenAI-compatible VLM via `VLM_*`. Cost: ~1 VLM call per embedded figure at parse time. Generated before Contextual Retrieval so the contextual LLM sees caption-enriched chunks. Cached under `captions/<id>.jsonl` keyed by image path so `mmrag reindex` and force re-parse reuse it without re-calling the VLM (figure bytes are stable across re-parses). When `VLM_*` is unconfigured the step degrades to a no-op — safe to leave on.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `IMAGE_CAPTION_ENABLED` | `false` | opt-in master switch |
+| `IMAGE_CAPTION_CONCURRENCY` | `4` | Parallel figure-caption VLM calls |
+
 ## Two-stage reranker (opt-in)
 
 bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a candidate pool with dense + BM25, then score each `(query, doc)` pair with a cross-encoder. Catches high-score false positives that `MIN_SCORE` cannot. Runs locally via `sentence-transformers.CrossEncoder` (same dep as the bge-m3 embedder); no ollama / API. Adds ~50-200ms latency per query; first run downloads ~600MB.

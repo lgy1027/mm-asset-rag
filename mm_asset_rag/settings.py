@@ -393,6 +393,23 @@ class Settings(BaseSettings):
     contextual_chunk_max_chars: int = 8000
     contextual_timeout: float = 60.0
 
+    # ─── Image caption for embedded figures ──────────────────────────────
+    # Document-embedded figures (docx/pptx via markitdown/docling, PDF via
+    # PyMuPDF) are saved to disk and associated with chunks but their *content*
+    # is otherwise invisible to the text index — a slide whose only payload is
+    # a diagram is unsearchable. When enabled, each embedded figure with no
+    # existing caption gets a VLM-generated Chinese description appended to its
+    # chunk's text so the figure's semantics enter the dense + BM25 channels.
+    # This is the text-route path only: figures never enter the CLIP image
+    # index (that stays reserved for standalone ``images/`` uploads). Works
+    # with any OpenAI-compatible VLM via ``VLM_*``. Off by default — it costs
+    # ~1 VLM call per embedded figure. Cached under ``captions/<asset_id>.jsonl``
+    # keyed by image path so ``mmrag reindex`` and force re-parse reuse it
+    # without re-calling the VLM (figure bytes are stable). When ``VLM_*`` is
+    # unconfigured the step degrades to a no-op — safe to leave on.
+    image_caption_enabled: bool = False
+    image_caption_concurrency: int = 4
+
     # ─── Derived properties ───────────────────────────────────────────────
 
     @property

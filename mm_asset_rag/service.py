@@ -1216,6 +1216,26 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
                 service._patch(rec, processed=i, current=f"error {asset.asset_id}: {exc}")
                 continue
             with target.open("a", encoding="utf-8") as f:
+                # Image caption (text route): append a VLM-generated Chinese
+                # description for each embedded figure to its chunk's text so
+                # a figure-only slide / referenced diagram becomes searchable.
+                # Runs *before* Contextual Retrieval so the contextual LLM
+                # sees caption-enriched chunks. No-op when
+                # ``image_caption_enabled`` is off or ``VLM_*`` is unset (the
+                # function checks both). Cached under captions/<id>.jsonl
+                # (outside parsed/, so force re-parse reuses it).
+                if service._settings.image_caption_enabled and docs:
+                    from .image_caption import enrich_docs_with_image_captions
+                    from .paths import get_captions_dir as _gcd
+
+                    cap_cache = _gcd() / f"{asset.asset_id}.jsonl"
+                    service._patch(
+                        rec,
+                        current=f"image-caption: {asset.asset_id} ({len(docs)} chunks)",
+                    )
+                    enrich_docs_with_image_captions(
+                        docs, asset_id=asset.asset_id, cache_path=cap_cache
+                    )
                 # Contextual Retrieval: attach an LLM-generated context to each
                 # chunk before writing to documents.jsonl. On by default via
                 # ``Settings.contextual_enabled``; the per-task ``--contextual``
