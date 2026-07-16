@@ -115,6 +115,14 @@ _ZH_STOPWORDS: frozenset[str] = frozenset(
 )
 _WORD_RE = re.compile(r"[A-Za-z0-9]+|[一-鿿]+")
 
+# Markdown inline image reference: ``![alt](url)``. Used to strip embedded
+# image refs before keyword extraction. Matches any target — relative path
+# (``images/p0_i0.png``), data URL, or http(s) URL — so it is corpus-agnostic
+# and works for every parser that emits markdown (markitdown / docling /
+# PaddleOCR-VL). PyMuPDF bodies carry no such refs (images are associated by
+# bbox, not inline syntax), so the strip is a no-op there.
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+
 
 def _tokenize(text: str) -> list[str]:
     """Split on Latin alphanumeric runs and contiguous CJK blocks.
@@ -138,6 +146,25 @@ def _jieba_textrank():
     except ImportError:  # pragma: no cover — jieba is a hard dep
         return None
     return jieba.analyse
+
+
+def _strip_markdown_images(text: str) -> str:
+    """Remove ``![alt](url)`` refs so they don't leak into keywords.
+
+    An embedded-image ref is layout, not semantics: ``![](images/p0_i0.png)``
+    carries no searchable meaning, but ``extract_keywords_zh``'s bigram
+    fallback (and jieba, on path-like tokens) would otherwise surface
+    ``images`` / ``markitdown`` / ``png`` / a hash as keywords. Those tokens
+    then get injected as a "关键词: ..." footer and pollute the BM25 channel
+    for any chunk whose body is mostly an image ref — a common shape in
+    image-heavy office decks where a slide's text reduces to a lone figure.
+
+    Stripping before extraction is corpus- and parser-agnostic: bodies with
+    no refs are unchanged; the image↔chunk association in ``ir_to_documents``
+    reads the original ``body`` (not this stripped form), so this never drops
+    an association.
+    """
+    return _MD_IMAGE_RE.sub(" ", text or "")
 
 
 def extract_keywords_zh(text: str, top_k: int = 8) -> list[str]:

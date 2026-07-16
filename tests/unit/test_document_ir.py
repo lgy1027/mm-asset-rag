@@ -232,3 +232,73 @@ def test_ir_to_documents_pymupdf_associates_image_by_figure_ref(tmp_path: Path) 
     assert imgs[0]["path"] == "images/p0_i0.png"
     assert imgs[0]["figure_id"] == 1
     assert imgs[0]["caption"] == "示意图"
+
+
+# ─── keyword enrichment: image-ref noise guard ──────────────────────────────
+# A chunk whose body is mostly an embedded-image ref must not inject the
+# ref's path / hash tokens ("images", "markitdown", "png") as a "关键词:"
+# footer — those never match a user query and pollute the BM25 channel.
+# Corpus- and parser-agnostic: the guard keys off markdown image syntax,
+# not off any particular file or parser.
+
+
+def test_ir_to_documents_image_ref_only_chunk_has_no_keyword_footer(tmp_path: Path) -> None:
+    """A chunk whose body is only ``![](images/x.png)`` keeps the ref (for
+    image association) but gets no "关键词:" footer — the stripped source
+    has no semantics to extract."""
+    asset = _asset(tmp_path)
+    ir = DocumentIR(
+        blocks=[Block(text="![](images/markitdown_abc123.png)", page=0)],
+        images=[],
+        asset=asset,
+        parser="paddleocr-vl-api",
+        markdown_paths=["/tmp/page_0.md"],
+        images_dir="/tmp/images",
+    )
+    docs = ir_to_documents(ir)
+    assert len(docs) == 1
+    text = docs[0].text
+    # The original ref is preserved in the indexed text (association reads body).
+    assert "images/markitdown_abc123.png" in text
+    # No keyword footer injected — pre-fix this was "关键词: images markitdown png".
+    assert "关键词" not in text
+
+
+def test_ir_to_documents_prose_with_image_ref_keywords_from_prose(tmp_path: Path) -> None:
+    """Prose + an image ref: the keyword footer draws on the prose, never
+    the image path."""
+    asset = _asset(tmp_path)
+    body = "联宝科技灯塔工厂智能制造绿色工厂" * 5 + "\n\n![](images/markitdown_abc.png)"
+    ir = DocumentIR(
+        blocks=[Block(text=body, page=0)],
+        images=[],
+        asset=asset,
+        parser="paddleocr-vl-api",
+        markdown_paths=["/tmp/page_0.md"],
+        images_dir="/tmp/images",
+    )
+    docs = ir_to_documents(ir)
+    assert len(docs) >= 1
+    text = docs[0].text
+    assert "关键词" in text  # prose yielded real keywords
+    # Path / hash tokens never leak into the footer.
+    footer = text.split("关键词:", 1)[-1]
+    assert "images" not in footer
+    assert "markitdown" not in footer
+    assert "png" not in footer
+
+
+def test_ir_to_documents_plain_text_chunk_still_enriched(tmp_path: Path) -> None:
+    """A plain-text chunk (no image ref) is enriched exactly as before —
+    the noise guard is a no-op on ref-free bodies."""
+    asset = _asset(tmp_path)
+    ir = DocumentIR(
+        blocks=[Block(text="联宝科技安徽绿色工厂智能制造示范基地" * 5, page=0)],
+        images=[],
+        asset=asset,
+        parser="paddleocr-vl-api",
+        markdown_paths=["/tmp/page_0.md"],
+    )
+    docs = ir_to_documents(ir)
+    assert len(docs) >= 1
+    assert "关键词" in docs[0].text

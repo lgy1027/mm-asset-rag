@@ -312,14 +312,22 @@ def _maybe_enrich_with_keywords(text: str) -> str:
     Forwarded from pdf_parser to keep a single enrichment implementation;
     defined here (not imported) only to avoid a circular import with
     pdf_parser, which imports this module.
+
+    Embedded-image refs (``![](images/x.png)``) are stripped from the
+    keyword-extraction source so a chunk whose body is mostly a figure ref
+    does not inject path/hash tokens ("images", "markitdown", "png") as
+    keywords — those never match a user query and pollute the BM25 channel.
+    The chunk's own ``text`` keeps the ref so image↔chunk association (which
+    reads the body) is unaffected. Corpus- and parser-agnostic.
     """
     from ..settings import get_settings
-    from ..text_keywords import enrich_chunk_text, extract_keywords
+    from ..text_keywords import _strip_markdown_images, enrich_chunk_text, extract_keywords
 
     s = get_settings()
     if not s.enrich_chunk_with_keywords:
         return text
+    keyword_source = _strip_markdown_images(text)
     kws = extract_keywords(
-        text, top_k=s.enrich_chunk_keyword_top_k, language=s.enrich_chunk_language
+        keyword_source, top_k=s.enrich_chunk_keyword_top_k, language=s.enrich_chunk_language
     )
     return enrich_chunk_text(text, kws)
