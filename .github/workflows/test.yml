@@ -45,11 +45,14 @@ jobs:
         run: uv run pytest tests/unit -q --cov=mm_asset_rag --cov-report=xml --cov-report=term
 
       - name: Smoke-test scripts
-        # Each script under scripts/ must at least be importable and
-        # respond to --help. This catches syntax errors and missing
-        # dependencies without needing ollama / Qdrant / a real corpus.
+        # Each script under scripts/ that defines a CLI must at least be
+        # importable and respond to --help. This catches syntax errors and
+        # missing dependencies without needing ollama / Qdrant / a real
+        # corpus. Keep this list in sync with the .py files in scripts/
+        # (shell scripts don't speak --help). eval_rag / benchmark both
+        # keep their runtime imports lazy so --help works offline.
         run: |
-          for s in scripts/expand_corpus.py scripts/eval_extended.py scripts/prune_corpus.py scripts/eval_rag.py; do
+          for s in scripts/eval_rag.py scripts/benchmark.py; do
             echo "::group::$s --help"
             uv run python "$s" --help
             echo "::endgroup::"
