@@ -183,7 +183,13 @@ def test_get_default_text_embedder_caches(tmp_path) -> None:
     from mm_asset_rag.embedders import get_default_text_embedder
     from mm_asset_rag.registry import embedders, register_embedder
 
-    # Register a deterministic stub so we can compare identities.
+    # Register a deterministic stub so we can compare identities. The stub
+    # occupies the ``("text", "default")`` slot — which is what
+    # ``get_default_text_embedder`` looks up — so the test asserts the
+    # caching contract without depending on real embedding credentials
+    # (CI has none). A stub with ``name="stub"`` would register under
+    # ``("text", "stub")`` and the default lookup would fall through to
+    # ``build_default_text_embedder``, which needs creds and fails offline.
     class _Stub:
         modality = "text"
 
@@ -192,7 +198,7 @@ def test_get_default_text_embedder_caches(tmp_path) -> None:
 
         @property
         def name(self) -> str:
-            return "stub"
+            return "default"
 
         def dim(self) -> int:
             return 4

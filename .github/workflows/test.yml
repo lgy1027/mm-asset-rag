@@ -31,16 +31,18 @@ jobs:
       - name: Install package (locked)
         # ``uv sync`` reads ``uv.lock`` for reproducible installs across
         # CI runs and contributors. Bump ``uv.lock`` via ``uv lock --upgrade``
-        # locally before merging dependency changes.
+        # locally before merging dependency changes. Tools (ruff / pytest)
+        # land in ``.venv/bin``; subsequent steps invoke them via ``uv run``
+        # so the venv is resolved without a manual activate.
         run: uv sync --extra dev
 
       - name: Lint (ruff)
         run: |
-          ruff check .
-          ruff format --check .
+          uv run ruff check .
+          uv run ruff format --check .
 
       - name: Run unit tests
-        run: pytest tests/unit -q --cov=mm_asset_rag --cov-report=xml --cov-report=term
+        run: uv run pytest tests/unit -q --cov=mm_asset_rag --cov-report=xml --cov-report=term
 
       - name: Smoke-test scripts
         # Each script under scripts/ must at least be importable and
@@ -49,6 +51,6 @@ jobs:
         run: |
           for s in scripts/expand_corpus.py scripts/eval_extended.py scripts/prune_corpus.py scripts/eval_rag.py; do
             echo "::group::$s --help"
-            python "$s" --help
+            uv run python "$s" --help
             echo "::endgroup::"
           done

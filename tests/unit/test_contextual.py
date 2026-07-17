@@ -137,6 +137,7 @@ def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, 
     """The embedding input gets the context prefix; the payload text stays raw."""
     from mm_asset_rag.backends.qdrant_backend import build_qdrant_text_index
     from mm_asset_rag.document_store import write_documents
+    from mm_asset_rag.registry import embedders, register_embedder
 
     docs = [
         ParsedDocument(
@@ -162,22 +163,35 @@ def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, 
 
     seen_texts: list[str] = []
 
-    def fake_embed(self, content):
-        # probe call on documents[0] — also surfaces the prefix
-        seen_texts.append(str(content))
-        return [0.1, 0.2, 0.3, 0.4]
+    # Register a stub text embedder on the ``("text", "default")`` slot so
+    # ``build_qdrant_text_index``'s ``get_default_text_embedder()`` finds it
+    # without needing real credentials (CI has none — ``build_default`` would
+    # raise ``EmbeddingConfigError`` before any embed call). The stub records
+    # the embedding input (context + body) so we can assert the prefix is
+    # applied, and returns a fixed vector so the Qdrant upsert is well-formed.
+    class _RecordingStub:
+        modality = "text"
 
-    def fake_embed_batch(self, texts):
-        seen_texts.extend(texts)
-        return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
+        @property
+        def name(self) -> str:
+            return "default"
 
-    import mm_asset_rag.embedders.text_embedder as te
+        def dim(self) -> int:
+            return 4
 
-    with (
-        patch.object(te.TextEmbedder, "embed", fake_embed),
-        patch.object(te.TextEmbedder, "embed_batch", fake_embed_batch),
-    ):
+        def embed(self, content) -> list[float]:
+            seen_texts.append(str(content))
+            return [0.1, 0.2, 0.3, 0.4]
+
+        def embed_batch(self, texts) -> list[list[float]]:
+            seen_texts.extend(str(t) for t in texts)
+            return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
+
+    register_embedder(_RecordingStub(), replace=True)
+    try:
         build_qdrant_text_index(force_recreate=True)
+    finally:
+        embedders._items.pop(("text", "default"), None)
 
     # Embedding input = context + body (probe or batch).
     assert any("这是关于DDPM去噪扩散的前缀" in t and "正文内容" in t for t in seen_texts)

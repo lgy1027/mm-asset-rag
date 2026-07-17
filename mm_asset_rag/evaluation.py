@@ -247,7 +247,10 @@ ZH_PAPER_QUERIES: list[dict] = [
 # the way a user actually asks — by sub-topic, not by title.
 ZH_DOC_QUERIES: list[dict] = [
     {"query": "联宝科技可发电键盘专利 压电薄膜", "expected_asset_ids": ["创新联宝 会发电的键盘"]},
-    {"query": "联宝中试基地 省级备案 科技成果转化", "expected_asset_ids": ["联宝科技中试基地获省级备案"]},
+    {
+        "query": "联宝中试基地 省级备案 科技成果转化",
+        "expected_asset_ids": ["联宝科技中试基地获省级备案"],
+    },
     {"query": "CES 2026 联想可拉伸屏幕 未来PC", "expected_asset_ids": ["CES 2026再绽光芒"]},
     {"query": "联宝科技 合肥新春第一会 新质生产力", "expected_asset_ids": ["受邀参加合肥"]},
     {"query": "一台笔记本到一群机器人 联宝转型", "expected_asset_ids": ["媒眼看联宝"]},

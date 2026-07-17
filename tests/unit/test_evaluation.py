@@ -58,6 +58,26 @@ _QUERY_TO_ASSET = {
     "GAN": "Gan_caaa534b",
     "自注意力": "Attention Is All You Need_caaa534b",
     "图像分类 深度卷积": "Alexnet_caaa534b",
+    # ── ZH_PAPER_QUERIES — the queries not already matched by an EN needle
+    # above (e.g. 去噪扩散概率模型 has no English substring in the table).
+    "去噪扩散概率模型": "Ddpm_caaa534b",
+    "残差网络": "Resnet_caaa534b",
+    "端到端 Transformer 候选框": "Detr_caaa534b",
+    "反向残差线性瓶颈": "Mobilenetv2_caaa534b",
+    "变分自编码器 VAE": "Vae_caaa534b",
+    "分割一切 SAM": "Segment Anything_caaa534b",
+    "低秩适配 LoRA 大模型微调": "Lora_caaa534b",
+    # ── ZH_DOC_QUERIES — 联宝 / AI-tutorial Chinese corpus (10).
+    "可发电键盘专利": "创新联宝 会发电的键盘_caaa534b",
+    "中试基地 省级备案": "联宝科技中试基地获省级备案_caaa534b",
+    "可拉伸屏幕": "CES 2026再绽光芒_caaa534b",
+    "合肥新春第一会": "受邀参加合肥_caaa534b",
+    "一群机器人": "媒眼看联宝_caaa534b",
+    "外贸破万亿": "安徽外贸再创新高_caaa534b",
+    "财年启幕": "敢AI敢为_caaa534b",
+    "ESG 年度答卷": "ESG年度答卷_caaa534b",
+    "Obsidian AI Skill 本地知识库": "Obsidian 的 10 大 AI Skill_caaa534b",
+    "Codex 全景指南": "Codex 全景指南_caaa534b",
 }
 
 
@@ -81,8 +101,10 @@ def _fake_hybrid(query: str, **kwargs):
 
 
 def test_eval_cases_count() -> None:
-    # 32 arxiv papers + 6 ZH queries (3 legacy + 3 fresh).
-    assert len(EVAL_CASES) == len(EN_PAPER_QUERIES) + 6
+    # EVAL_CASES = EN_PAPER_QUERIES + ZH_PAPER_QUERIES + ZH_DOC_QUERIES.
+    from mm_asset_rag.evaluation import ZH_DOC_QUERIES, ZH_PAPER_QUERIES
+
+    assert len(EVAL_CASES) == len(EN_PAPER_QUERIES) + len(ZH_PAPER_QUERIES) + len(ZH_DOC_QUERIES)
     assert len(EVAL_CASES) >= 30  # guard against accidental pruning
 
 

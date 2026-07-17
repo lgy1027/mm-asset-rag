@@ -236,6 +236,7 @@ def test_recursive_split_caps_with_real_tokenizer() -> None:
     differs from the 3.5 approximation (here 1 char = 1 token, like CJK),
     the hard cap must verify against the real counter and shrink — otherwise
     an oversized piece survives past max_tokens."""
+
     # 1 token per char defeats the chars/3.5 approximation.
     def count(t: str) -> int:
         return len(t)
