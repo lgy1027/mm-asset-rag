@@ -1,6 +1,6 @@
 # mm-asset-rag
 
-> Multimodal asset RAG — upload PDFs and images, auto-detect file type, extract metadata, index with Qdrant, retrieve by text/image/hybrid, and stream grounded LLM answers through a bundled web UI.
+> Multimodal retrieval engine — index mixed assets (PDFs / Office docs / images), then search across four routes: text→text, text→image, image→image, and weighted hybrid, fused with RRF. An optional grounded LLM answer layer rides on top of the retrieved evidence.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
@@ -8,25 +8,28 @@
 
 ## What is this?
 
-A small, self-contained Python package for multimodal Retrieval-Augmented Generation over user-uploaded PDFs and images. It supports:
+A small, self-contained Python package for **multimodal retrieval** over user-uploaded assets — PDFs, Office documents (docx/pptx/xlsx), and images. The retrieval engine is the core; generation is an optional layer on top. It supports:
 
+- **Four retrieval routes**: text→text (dense + BM25 sparse fused with RRF), text→image (CLIP), image→image (CLIP), and a weighted hybrid that merges all routes by rank. One dispatch picks the route from the query shape.
+- **Cross-modal retrieval**: embedded figures in PDFs and Office docs are extracted and (optionally) given VLM captions so a text query can hit a figure-only slide; a `find images similar to this one` query hits the CLIP image collection. The same asset store feeds both.
 - **Upload-first ingestion**: no `asset_manifest.json`. `/upload/preview` sniffs file magic bytes, extracts dimensions / PDF metadata, optionally asks a VLM for title / description / tags, then `/upload/confirm` parses and indexes.
-- **Parsing**: PyMuPDF (local, free) or PaddleOCR-VL (API, better for scanned PDFs) for PDFs; OCR + VLM captioning for images.
-- **Indexing**: Qdrant (local file or server). Text points carry dense + BM25 sparse vectors and are fused with RRF at query time.
-- **Retrieval**: text-to-text, text-to-image, image-to-image, and weighted hybrid.
-- **Generation**: OpenAI-compatible chat completion with strict evidence grounding and NDJSON streaming.
+- **Parsing**: PyMuPDF (local) or PaddleOCR-VL (API, better for scanned PDFs) for PDFs; MarkItDown / docling for Office docs; OCR + VLM captioning for images.
+- **Indexing**: Qdrant (local file or server). Text points carry dense + BM25 + Chinese-aware BM25-zh sparse vectors; image points carry CLIP vectors.
+- **Optional generation**: OpenAI-compatible chat completion with strict evidence grounding and NDJSON streaming. When no LLM is configured, `/answer` and `/chat` return an evidence summary instead of failing — retrieval still works.
 - **Web UI**: a bundled single-page HTML (`mm_asset_rag/web/index.html`) served by FastAPI for upload preview, task status, and chat.
 
-When no LLM is configured the `/answer` and `/chat` endpoints return an evidence summary instead of failing. VLM-based auto-tagging is also optional; upload still works with sniff-only metadata.
+VLM-based auto-tagging is also optional; upload still works with sniff-only metadata.
 
 ## Why this project?
 
-If you have a folder of PDFs and images and want to ask questions like *"which document covers retrieval-augmented generation?"* or *"find images similar to this one"*, this is a working starting point. It is not a research-grade system; it is a **reference implementation** that exposes the moving parts so you can replace any layer (parser, embedder, backend, reranker, LLM) without rewriting the rest.
+If you have a folder of mixed assets — papers, slide decks, photos, diagrams — and want to ask *"find images similar to this one"*, *"which document covers retrieval-augmented generation?"*, or *"show me the slide whose only content is a roadmap diagram"*, this is a working starting point. The focus is **retrieval**: four routes, cross-modal, fused by rank, with every layer replaceable.
+
+It is not a research-grade system; it is a **modular multimodal retrieval engine** that exposes the moving parts so you can swap any layer (parser, embedder, backend, reranker, LLM) without rewriting the rest.
 
 Compared to larger frameworks:
 
-- **vs LlamaIndex Studio / Verba**: this ships with a web UI, focuses on multimodal from day one, and stays under 2k lines per module.
-- **vs Haystack / txtai**: smaller surface area, multimodal-first, easier to read end-to-end.
+- **vs LlamaIndex Studio / Verba**: this ships with a web UI, is multimodal-retrieval-first rather than text-RAG-first, and keeps every module under 2k lines.
+- **vs Haystack / txtai**: smaller surface area, four-route retrieval baked in from day one, easier to read end-to-end.
 
 ## Installation
 

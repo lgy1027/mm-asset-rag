@@ -5,14 +5,14 @@ build-backend = "hatchling.build"
 [project]
 name = "mm-asset-rag"
 dynamic = ["version"]
-description = "Multimodal asset RAG: parse PDFs and images, index with Qdrant, retrieve by text/image/hybrid, stream grounded LLM answers over a bundled web UI."
+description = "Multimodal retrieval engine: index mixed assets (PDFs / Office docs / images), search across four routes (text→text, text→image, image→image, hybrid) fused with RRF, with an optional grounded LLM answer layer on top."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [
     { name = "liguoyu", email = "guoyu.li@lcfuturecenter.com" },
 ]
-keywords = ["rag", "multimodal", "qdrant", "clip", "pdf-parsing", "vector-search"]
+keywords = ["multimodal-retrieval", "cross-modal", "vector-search", "rag", "qdrant", "clip", "hybrid-search"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
