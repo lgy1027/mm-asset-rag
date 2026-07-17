@@ -126,4 +126,9 @@ def test_text_embedder_dim_matches_bge_m3(monkeypatch) -> None:
             status=200,
         )
         emb.embed("probe")
-    assert emb.dim() == 1024
+        # ``dim()`` lazily probes by embedding a probe string (it does not
+        # hold a constant), so it issues a *second* HTTP call. Both calls
+        # must be inside the mocked scope — outside it, ``dim()`` would hit
+        # the real ollama endpoint, which exists locally (test passes by
+        # accident) but not on CI (ConnectionRefused).
+        assert emb.dim() == 1024
