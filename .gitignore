@@ -84,11 +84,3 @@ htmlcov/
 # rebuilt from source on the next `graphify --update` or via the
 # `.git/hooks/post-commit` hook.
 graphify-out/
-
-# Manifest backup produced by ``mm_asset_rag.assets.safe_write_manifest``
-# before each atomic replace. Recreatable by re-running the writer
-# (e.g. ``mmrag parse`` re-derives the manifest, ``scripts/build_manifest.py``
-# regenerates it from the asset directory).
-asset_manifest.json.bak
-indexes.json.bak
-documents.jsonl.bak
