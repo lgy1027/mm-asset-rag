@@ -208,6 +208,13 @@ class AnswerRequest(BaseModel):
 
 class EvalRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=200)
+    v2: bool = Field(
+        default=False,
+        description=(
+            "Run the v2 regression set (83 cases, Chinese-primary, "
+            "multi-dimensional) instead of v1. Default is v1."
+        ),
+    )
 
 
 class ChatRequest(_RouteRequest):
@@ -321,6 +328,16 @@ def answer(request: AnswerRequest) -> dict[str, object]:
 
 @app.post("/eval")
 def eval_endpoint(request: EvalRequest) -> dict[str, object]:
+    if request.v2:
+        from .evaluation_v2 import run_eval_v2
+
+        results = run_eval_v2(top_k=request.top_k)
+        # ``V2Result`` mirrors v1's ``EvalResult`` (same fields:
+        # query / expected_asset_ids / actual_asset_ids / hit / rank /
+        # group), so ``asdict`` produces the same row shape the v1
+        # branch returns; the only addition is a ``version`` tag so
+        # clients can tell which set ran.
+        return {"results": [asdict(r) for r in results], "version": "v2"}
     return {"results": [r.__dict__ for r in run_eval(top_k=request.top_k)]}
 
 

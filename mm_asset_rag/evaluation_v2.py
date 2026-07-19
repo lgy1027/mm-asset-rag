@@ -1,4 +1,10 @@
-"""v2 regression set: 50+ cases, Chinese-primary, multi-dimensional.
+"""v2 regression set: 83 cases, Chinese-primary, multi-dimensional.
+
+v2 is the new-generation retrieval eval set (83 cases, Chinese-primary
+multi-dimensional: cross-language, multi-relevant, negative, typo,
+image-to-image). It is opt-in: pass ``--v2`` on ``mmrag eval`` or set
+``v2: true`` on ``POST /eval``; the default is still v1 so existing
+scripts / dashboards keep their numbers.
 
 Adds three new groups on top of the v1 ``EVAL_CASES`` (32 EN + 6 ZH
 text→text) — focus is the actual content the user shipped in
@@ -354,6 +360,23 @@ def _match(actual: list[str], expected: list[str]) -> int | None:
             if norm_exp in norm_act or norm_act in norm_exp:
                 return rank
     return None
+
+
+def run_eval_v2(top_k: int = 5) -> list[V2Result]:
+    """Run the v2 text→text regression set (CLI / API entry point).
+
+    Thin alias for :func:`run_text_to_text_eval_v2` so the CLI ``--v2``
+    flag and the API ``v2: true`` field can treat v1 and v2 symmetrically
+    (``run_eval`` vs ``run_eval_v2``). Returns the same :class:`V2Result`
+    shape as the other v2 runners, which parallels v1's ``EvalResult`` so
+    callers can swap the two without adapting the response shape.
+
+    The text→image / image→image groups have their own runners; this
+    convenience only covers the text→text set because that is what v1's
+    ``run_eval`` covers and what the default ``mmrag eval`` output
+    compares against.
+    """
+    return run_text_to_text_eval_v2(top_k=top_k)
 
 
 def run_text_to_text_eval_v2(
