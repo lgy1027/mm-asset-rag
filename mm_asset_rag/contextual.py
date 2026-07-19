@@ -63,6 +63,12 @@ def _chat(messages: list[dict[str, str]], *, temperature: float = 0.0) -> str:
     base_url, api_key, model = _llm_credentials()
     if not base_url or not api_key or not model:
         return ""
+    try:
+        from .answer import _warn_insecure_base_url
+
+        _warn_insecure_base_url(base_url)
+    except Exception:  # pragma: no cover - never block contextual
+        pass
     payload = {"model": model, "temperature": temperature, "messages": messages}
     try:
         response = requests.post(

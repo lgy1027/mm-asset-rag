@@ -142,6 +142,12 @@ def _caption_one(asset_id: str, image_rel_path: str) -> str:
     if not base_url or not api_key or not model:
         return ""
     try:
+        from .answer import _warn_insecure_base_url
+
+        _warn_insecure_base_url(base_url)
+    except Exception:  # pragma: no cover - never block captioning
+        pass
+    try:
         image_base64 = base64.b64encode(abs_path.read_bytes()).decode("ascii")
         suffix = abs_path.suffix.lower().replace(".", "") or "png"
         mime = "jpeg" if suffix == "jpg" else suffix
