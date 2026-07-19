@@ -16,7 +16,6 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
-import os
 import time
 import urllib.parse
 from pathlib import Path
@@ -327,7 +326,8 @@ def _ocr_image_url_allowed(url: str) -> bool:
     the same domain). Any other host — including every private/loopback/
     link-local IP — is refused, blocking the SSRF vector where a crafted PDF
     makes the OCR service return an internal URL. Set
-    ``PADDLEOCR_VL_IMAGE_HOSTS`` (comma-separated) to allow extra CDN hosts.
+    ``paddleocr_vl_image_hosts`` (comma-separated, env
+    ``PADDLEOCR_VL_IMAGE_HOSTS``) to allow extra CDN hosts.
     """
     from urllib.parse import urlparse
 
@@ -355,9 +355,9 @@ def _ocr_image_url_allowed(url: str) -> bool:
                 allowed.add(h)
         except Exception:
             pass
-    # Extra hosts from env (comma-separated).
-    extras = os.environ.get("PADDLEOCR_VL_IMAGE_HOSTS", "")
-    for h in extras.split(","):
+    # Extra hosts from settings (comma-separated) — allows the OCR service's
+    # result-CDN domains. Private/loopback IPs were already refused above.
+    for h in s.paddleocr_vl_image_hosts.split(","):
         h = h.strip()
         if h:
             allowed.add(h)

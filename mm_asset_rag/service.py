@@ -4,7 +4,8 @@ This module centralizes everything the FastAPI app and the ``mmrag`` CLI
 both need:
 
 * Spawning background ``threading.Thread`` workers that run parse + index
-* Persisting task state to ``$MM_ASSET_RAG_HOME/tasks.jsonl`` so it survives
+* Persisting task state to ``$MM_ASSET_RAG_HOME/tasks.db`` (SQLite; the
+  legacy ``tasks.jsonl`` is migrated on first startup) so it survives
   process restarts
 * Surfacing :class:`TaskRecord` snapshots to ``GET /tasks`` and
   ``GET /tasks/{id}``

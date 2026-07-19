@@ -307,6 +307,7 @@ The threshold default of `10` is tuned for genuinely scanned (image-only) PDFs, 
 | `PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY` | `false` | Paddle option |
 | `PADDLEOCR_VL_USE_DOC_UNWARPING` | `false` | Paddle option |
 | `PADDLEOCR_VL_USE_CHART_RECOGNITION` | `false` | Paddle option |
+| `PADDLEOCR_VL_IMAGE_HOSTS` | unset | Comma-separated extra hosts allowed for OCR image downloads (SSRF allow-list extension; default: only the `PADDLEOCR_VL_JOB_URL` host). Private/loopback/link-local IPs are always refused. |
 
 ## Example `.env`
 

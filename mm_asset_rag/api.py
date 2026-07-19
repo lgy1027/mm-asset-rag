@@ -528,6 +528,17 @@ async def _iter_sync_in_thread(factory, *args, **kwargs) -> asyncio.Queue:
     out: queue.Queue = queue.Queue(maxsize=64)
     stop = threading.Event()
 
+    def _put_terminal(item) -> None:
+        """Put the sentinel / error without ever blocking.
+
+        On a client disconnect the consumer stops draining, so the queue
+        may be full. A blocking ``put`` here would hang the daemon thread
+        forever (and pin the 64-item buffer until process exit). Drop
+        silently instead — nobody is listening anymore.
+        """
+        with suppress(queue.Full):
+            out.put_nowait(item)
+
     def _worker():
         try:
             for item in factory(*args, **kwargs):
@@ -544,9 +555,9 @@ async def _iter_sync_in_thread(factory, *args, **kwargs) -> asyncio.Queue:
                 else:
                     return  # stop was set during the wait
         except BaseException as exc:  # surface producer errors to the consumer
-            out.put(exc)
+            _put_terminal(exc)
         finally:
-            out.put(_STREAM_DONE)
+            _put_terminal(_STREAM_DONE)
 
     t = threading.Thread(target=_worker, daemon=True, name="chat-stream-producer")
     t.start()

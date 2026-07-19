@@ -191,7 +191,7 @@ Return every non-deleted asset recorded in the content-hash index.
 
 ## `DELETE /assets/{asset_id}`
 
-Best-effort cleanup of every trace of `asset_id`. Removes the source file, `parsed/<id>/`, `captions/<id>.jsonl`, the matching `documents.jsonl` rows, the Qdrant text + image points, and tombstone the asset index entry.
+Best-effort cleanup of every trace of `asset_id`. Removes the source file, `parsed/<id>/`, `captions/<id>.{jsonl,json}` (document embedded-figure captions use `.jsonl`; image assets use `.json`), the matching `documents.jsonl` rows, the Qdrant text + image points, and tombstone the asset index entry.
 
 ```json
 // response

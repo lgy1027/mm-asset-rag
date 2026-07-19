@@ -294,3 +294,17 @@ def test_ocr_image_url_allowed_extra_hosts(monkeypatch) -> None:
     assert pdf_parser._ocr_image_url_allowed("https://cdn.example.com/a.png") is True
     assert pdf_parser._ocr_image_url_allowed("https://cdn2.example.com/a.png") is True
     assert pdf_parser._ocr_image_url_allowed("https://other.example.com/a.png") is False
+
+
+def test_ocr_image_url_allowed_blocks_ipv6_private(monkeypatch) -> None:
+    """IPv6 private/loopback/link-local forms are refused too (the allow-list
+    check uses ipaddress which handles IPv6, not just IPv4 dotted quads)."""
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example.com/jobs")
+    monkeypatch.delenv("PADDLEOCR_VL_IMAGE_HOSTS", raising=False)
+    get_settings.cache_clear()
+    assert pdf_parser._ocr_image_url_allowed("http://[::1]/x") is False  # loopback
+    assert pdf_parser._ocr_image_url_allowed("http://[fe80::1]/x") is False  # link-local
+    assert pdf_parser._ocr_image_url_allowed("http://[fc00::1]/x") is False  # ULA private

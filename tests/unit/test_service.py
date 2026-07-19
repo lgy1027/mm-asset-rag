@@ -187,6 +187,38 @@ def test_delete_asset_removes_file_parsed_captions(tmp_home: Path) -> None:
     assert not parsed_dir.exists()
 
 
+def test_delete_asset_removes_jsonl_captions(tmp_home: Path) -> None:
+    """Documents with embedded figures cache captions as ``.jsonl`` (one JSON
+    per figure), image assets use ``.json``. Delete must clean both — earlier
+    code only looked for ``.json`` and left document caption caches behind."""
+    from mm_asset_rag.asset_index import upsert_entry
+    from mm_asset_rag.paths import get_captions_dir, get_parsed_dir
+
+    asset_id = "doc_test"
+    upsert_entry(
+        AssetIndexEntry(
+            asset_id=asset_id,
+            sha256="abc",
+            source_type="document",
+            relative_path="documents/doc_test.docx",
+        )
+    )
+    parsed_dir = get_parsed_dir() / asset_id
+    parsed_dir.mkdir(parents=True)
+    (parsed_dir / "raw.jsonl").write_text("{}", encoding="utf-8")
+    # The document-embedded-figure caption cache is .jsonl.
+    (get_captions_dir() / f"{asset_id}.jsonl").write_text(
+        '{"key": "images/fig1.png", "context": "caption text"}\n',
+        encoding="utf-8",
+    )
+
+    service = IngestService()
+    report = service.delete_asset(asset_id)
+
+    assert report.captions_deleted
+    assert not (get_captions_dir() / f"{asset_id}.jsonl").exists()
+
+
 def test_delete_asset_is_idempotent(tmp_home: Path) -> None:
     asset = _make_asset(tmp_home, "fish.png")
     service = IngestService()

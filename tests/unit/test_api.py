@@ -855,6 +855,8 @@ def test_answer_chat_endpoints_require_token_when_set(client: TestClient, monkey
     get_settings.cache_clear()
     assert client.post("/answer", json={"question": "q"}).status_code == 401
     assert client.post("/chat", json={"question": "q"}).status_code == 401
+    # /chat/stream is an LLM-quota endpoint too — guarded the same way.
+    assert client.post("/chat/stream", json={"question": "q"}).status_code == 401
     # Non-streaming read endpoint stays open.
     with patch("mm_asset_rag.api.get_service") as m:
         m.return_value.list_assets.return_value = []

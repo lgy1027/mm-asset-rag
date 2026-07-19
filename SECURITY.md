@@ -34,3 +34,11 @@ Before exposing the API beyond localhost, review
 `MMRAG_API_TOKEN` (guards destructive + LLM-quota endpoints) and
 `MMRAG_TRUSTED_HOSTS` (Host-header allow-list). The defaults are safe for
 single-machine loopback use only.
+
+> **Note on the bundled web UI:** the web UI served at `/` does **not** send
+> an `Authorization` header, so once `MMRAG_API_TOKEN` is set its
+> `/upload/*`, `/answer`, and `/chat/*` fetches return 401. The web UI is
+> intended for the zero-config loopback default; on a token-guarded
+> deployment use the HTTP API directly (or front the UI behind a proxy that
+> injects the token). Read endpoints (`/search`, `/assets`, `/tasks`,
+> `/health`) stay open regardless.
