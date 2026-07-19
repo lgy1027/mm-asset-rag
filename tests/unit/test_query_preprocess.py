@@ -49,6 +49,18 @@ def test_preprocess_fixes_typos(_isolated_home) -> None:
     assert pre.corrections == {"transformr": "transformer"}
 
 
+def test_preprocess_fixes_uppercase_typos(_isolated_home) -> None:
+    """Uppercase typos are corrected too — SequenceMatcher is case-sensitive
+    and ``vocab`` is lowercase, so the comparison must run on the lowercased
+    token or an all-caps typo would never match."""
+    _seed_corpus(_isolated_home, ["transformer self-attention paper."])
+    pre = preprocess("TRANSFORMR")
+    # Dense keeps original casing; BM25 corrects + lowercases.
+    assert pre.dense_query == "TRANSFORMR"
+    assert pre.bm25_query == "transformer"
+    assert pre.corrections == {"TRANSFORMR": "transformer"}
+
+
 def test_preprocess_lowercase_keeps_chinese(_isolated_home) -> None:
     _seed_corpus(_isolated_home, ["Codex 全景指南"])
     pre = preprocess("Codex 全景指南")
