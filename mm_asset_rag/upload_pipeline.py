@@ -31,14 +31,22 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+
+try:  # Unix-only; the project targets darwin/Linux where this is always present.
+    import fcntl  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - exercised only on non-Unix platforms
+    fcntl = None  # type: ignore[assignment]
 
 from . import asset_index, auto_meta
 from .assets import Asset, from_sniffed
@@ -78,6 +86,13 @@ _CACHE_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 _DANGEROUS_FILENAME_CHARS = re.compile(r"[<>:\"|?*\x00-\x1f]+")
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 SUPPORTED_MANIFEST_VERSIONS = {1}
+
+# In-process fallback when ``fcntl`` is unavailable (non-Unix). Keyed by
+# cache_id so different caches don't block each other. Entries are never
+# pruned but the dict is bounded by the number of distinct cache_ids seen
+# in one process lifetime, which is bounded in turn by preview_cache_ttl.
+_FALLBACK_LOCKS_GUARD = threading.Lock()
+_FALLBACK_LOCKS: dict[str, threading.Lock] = {}
 
 
 class UploadManifestError(ValueError):
@@ -293,6 +308,12 @@ class UploadPipeline:
         self.home = Path(home)
         self.cache_root = self.home / ".preview-cache"
         self.assets_root = self.home / "assets"
+        # Per-cache_id confirm bookkeeping (lock + done marker) lives
+        # outside ``cache_root`` so it survives the rmtree a successful
+        # confirm performs on ``cache_dir``, and so it doesn't pollute
+        # ``cache_root.iterdir()`` (callers expect only 12-hex cache
+        # directories there).
+        self.confirm_state_root = self.home / ".confirm-state"
 
     # ── Phase 1 ─────────────────────────────────────────────────────────
 
@@ -433,66 +454,134 @@ class UploadPipeline:
         Files marked ``rejected=True`` are deleted with the cache and
         skipped. Files whose ``preview_id`` isn't in the cache raise
         ``KeyError`` so the API layer can surface a 400.
+
+        Concurrent confirms against the same ``cache_id`` are serialized
+        via a per-cache_id exclusive lock (``fcntl.flock`` on a sibling
+        ``<cache_id>.lock`` file, with an in-process ``threading.Lock``
+        fallback on platforms without ``fcntl``). The first caller moves
+        the files and tears down the cache; later callers find the
+        ``<cache_id>.done`` marker and return an empty list rather than
+        racing on the same cache files. The empty list lets the API
+        layer's existing ``if not assets`` check surface a 400 instead
+        of a 500 (``UploadCommitError`` from a lost ``shutil.move``).
         """
         _validate_cache_id(cache_id)
         cache_dir = self.cache_root / cache_id
         manifest_path = cache_dir / "manifest.json"
-        if not manifest_path.exists():
-            raise KeyError(f"unknown preview cache id: {cache_id}")
+        done_marker = self.confirm_state_root / f"{cache_id}.done"
 
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise UploadManifestError(f"invalid preview manifest: {exc}") from exc
-        if not isinstance(manifest, dict):
-            raise UploadManifestError("invalid preview manifest: expected object")
-        self._validate_manifest_version(manifest, source=cache_id)
+        with self._confirm_lock(cache_id):
+            # A prior confirm already consumed this cache (or it was
+            # cleaned up between the API receiving the request and us
+            # acquiring the lock). Surface as "no confirmed assets" so
+            # the API layer returns 400 instead of 500.
+            if done_marker.exists():
+                log.info("confirm: cache %s already confirmed; returning []", cache_id)
+                return []
+            if not manifest_path.exists():
+                raise KeyError(f"unknown preview cache id: {cache_id}")
 
-        edits_by_id = {e.preview_id: e for e in edits}
-        unknown_edits = sorted(set(edits_by_id) - set(manifest))
-        if unknown_edits:
-            raise KeyError(f"unknown preview id: {unknown_edits[0]}")
-
-        prepared = self._prepare_confirm(cache_dir, manifest, edits_by_id)
-        moved: list[tuple[Path, Path]] = []
-        try:
-            for item in prepared:
-                shutil.move(str(item.source_path), str(item.target_path))
-                moved.append((item.source_path, item.target_path))
-        except Exception as exc:
-            self._rollback_moves(moved)
-            raise UploadCommitError(f"failed to move uploaded file into assets: {exc}") from exc
-
-        for item in prepared:
             try:
-                asset_index.upsert_entry(
-                    asset_index.AssetIndexEntry(
-                        asset_id=item.asset.asset_id,
-                        sha256=item.sha256,
-                        source_type=item.asset.source_type,
-                        relative_path=item.asset.relative_path,
-                        asset_title=item.asset.title,
-                        tags=list(item.asset.tags),
-                    )
-                )
-            except OSError as exc:
-                log.warning("asset_index upsert failed for %s: %s", item.asset.asset_id, exc)
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError as exc:
+                raise UploadManifestError(f"invalid preview manifest: {exc}") from exc
+            if not isinstance(manifest, dict):
+                raise UploadManifestError("invalid preview manifest: expected object")
+            self._validate_manifest_version(manifest, source=cache_id)
 
-        # Preserve the cache when the user rejected every preview: the
-        # web UI's 400 response tells them to "re-edit" and we want
-        # the same ``cache_id`` to remain valid for the next confirm.
-        # An empty ``prepared`` for a *non-empty* manifest means every
-        # preview was rejected or unsupported — never delete in that
-        # case. A genuinely empty manifest (corrupt cache) is still
-        # safe to clean up since nothing useful was there.
-        if not prepared and any(pid != "__meta__" for pid in manifest):
-            log.info(
-                "confirm: all previews rejected or unsupported; keeping cache %s",
-                cache_dir,
-            )
-            return []
-        shutil.rmtree(cache_dir, ignore_errors=True)
-        return [item.asset for item in prepared]
+            edits_by_id = {e.preview_id: e for e in edits}
+            unknown_edits = sorted(set(edits_by_id) - set(manifest))
+            if unknown_edits:
+                raise KeyError(f"unknown preview id: {unknown_edits[0]}")
+
+            prepared = self._prepare_confirm(cache_dir, manifest, edits_by_id)
+            moved: list[tuple[Path, Path]] = []
+            try:
+                for item in prepared:
+                    shutil.move(str(item.source_path), str(item.target_path))
+                    moved.append((item.source_path, item.target_path))
+            except Exception as exc:
+                self._rollback_moves(moved)
+                raise UploadCommitError(f"failed to move uploaded file into assets: {exc}") from exc
+
+            for item in prepared:
+                try:
+                    asset_index.upsert_entry(
+                        asset_index.AssetIndexEntry(
+                            asset_id=item.asset.asset_id,
+                            sha256=item.sha256,
+                            source_type=item.asset.source_type,
+                            relative_path=item.asset.relative_path,
+                            asset_title=item.asset.title,
+                            tags=list(item.asset.tags),
+                        )
+                    )
+                except OSError as exc:
+                    log.warning("asset_index upsert failed for %s: %s", item.asset.asset_id, exc)
+
+            # Preserve the cache when the user rejected every preview: the
+            # web UI's 400 response tells them to "re-edit" and we want
+            # the same ``cache_id`` to remain valid for the next confirm.
+            # An empty ``prepared`` for a *non-empty* manifest means every
+            # preview was rejected or unsupported — never delete in that
+            # case. A genuinely empty manifest (corrupt cache) is still
+            # safe to clean up since nothing useful was there.
+            if not prepared and any(pid != "__meta__" for pid in manifest):
+                log.info(
+                    "confirm: all previews rejected or unsupported; keeping cache %s",
+                    cache_dir,
+                )
+                return []
+            shutil.rmtree(cache_dir, ignore_errors=True)
+            # Stamp a done marker so concurrent / retried confirms on the
+            # same cache_id return [] instead of racing on missing files.
+            try:
+                done_marker.write_text("done", encoding="utf-8")
+            except OSError as exc:  # pragma: no cover - best-effort marker
+                log.debug("confirm: failed to write done marker for %s: %s", cache_id, exc)
+            return [item.asset for item in prepared]
+
+    @contextmanager
+    def _confirm_lock(self, cache_id: str):
+        """Per-cache_id exclusive lock serializing concurrent confirms.
+
+        Uses ``fcntl.flock(LOCK_EX)`` on a sibling ``<cache_id>.lock``
+        file under ``.preview-cache/`` so multiple API workers (separate
+        processes or threads) cannot race on the same cache files. The
+        lock file lives *outside* ``cache_dir`` (in ``.confirm-state/``)
+        because a successful confirm rmtrees ``cache_dir``; placing it
+        in a separate directory keeps it alive for follow-up confirms
+        to observe the ``.done`` marker and keeps ``cache_root`` free
+        of non-cache-dir siblings.
+
+        On platforms without ``fcntl`` (non-Unix), degrades to an
+        in-process ``threading.Lock`` dict — correct within one process
+        but not across processes. The project targets darwin/Linux where
+        ``fcntl`` is always available.
+        """
+        self.confirm_state_root.mkdir(parents=True, exist_ok=True)
+        lock_path = self.confirm_state_root / f"{cache_id}.lock"
+        if fcntl is not None:
+            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+        else:  # pragma: no cover - non-Unix fallback
+            with _FALLBACK_LOCKS_GUARD:
+                lock = _FALLBACK_LOCKS.get(cache_id)
+                if lock is None:
+                    lock = threading.Lock()
+                    _FALLBACK_LOCKS[cache_id] = lock
+            lock.acquire()
+            try:
+                yield
+            finally:
+                lock.release()
 
     def _prepare_confirm(
         self,
@@ -682,6 +771,17 @@ class UploadPipeline:
         if not _CACHE_ID_RE.fullmatch(cache_id):
             return
         shutil.rmtree(self.cache_root / cache_id, ignore_errors=True)
+        # Also remove the per-cache confirm bookkeeping files so a
+        # discarded cache_id can't leak a stale ``.done`` marker (which
+        # would make a later confirm silently return []).
+        for suffix in (".done", ".lock"):
+            marker = self.confirm_state_root / f"{cache_id}{suffix}"
+            try:
+                marker.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:  # pragma: no cover - best-effort
+                log.debug("discard_cache: failed to unlink %s: %s", marker, exc)
 
 
 # ─── Module-level helpers ──────────────────────────────────────────────
