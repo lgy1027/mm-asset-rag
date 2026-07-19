@@ -496,3 +496,97 @@ def test_get_asset_endpoint_404(client: TestClient) -> None:
         fake_service.get_asset_detail.return_value = None
         response = client.get("/assets/missing")
     assert response.status_code == 404
+
+
+# ─── Upload / stream safety ──────────────────────────────────────────────
+
+
+def test_upload_preview_rejects_too_many_files(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    png_bytes: bytes,
+) -> None:
+    """An upload with more than ``upload_max_files`` files → 413.
+
+    Each previewed file can trigger a VLM auto-meta call, so an unbounded
+    file count is a quota-burn vector the byte caps alone don't bound.
+    """
+    monkeypatch.setenv("UPLOAD_MAX_FILES", "2")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    files = [("files", (f"img{i}.png", png_bytes, "image/png")) for i in range(3)]
+    response = client.post("/upload/preview", files=files)
+    assert response.status_code == 413
+    assert "upload_max_files" in response.json()["detail"]
+
+
+def test_upload_preview_body_size_limit_rejects_oversized_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+) -> None:
+    """The body-size middleware rejects a POST before Starlette spools it.
+
+    Regression guard for the old behaviour where a 50 GB multipart would
+    fill ``/tmp`` before the in-handler byte check fired. The cap is read
+    from ``upload_max_batch_bytes`` per-request, so lowering it here makes
+    the middleware reject a modestly-sized body.
+    """
+    monkeypatch.setenv("UPLOAD_MAX_BATCH_BYTES", "1024")  # 1 KiB
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    # A 4 KiB body — well over the 1 KiB cap, under the default file cap.
+    big = b"\0" * 4096
+    response = client.post(
+        "/upload/preview",
+        files=[("files", ("big.bin", big, "application/octet-stream"))],
+    )
+    assert response.status_code == 413
+
+
+def test_upload_preview_body_size_limit_allows_normal_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    png_bytes: bytes,
+) -> None:
+    """A normal-sized upload clears the body-size limit (no false positive)."""
+    monkeypatch.setenv("UPLOAD_MAX_BATCH_BYTES", str(50 * 1024 * 1024))
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    with patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None):
+        response = client.post(
+            "/upload/preview",
+            files=[("files", ("scene.png", png_bytes, "image/png"))],
+        )
+    assert response.status_code == 200, response.text
+
+
+def test_safe_stream_error_strips_urls_and_caps_length() -> None:
+    """``_safe_stream_error`` strips URLs (provider hosts, inlined userinfo)
+    and caps the message so a streamed error event leaks no topology."""
+    from mm_asset_rag.api import _STREAM_ERR_MAX_CHARS, _safe_stream_error
+
+    # A requests-style error with the full URL — and a userinfo-form URL.
+    exc = Exception(
+        "404 Client Error: Not Found for url: "
+        "https://user:secretpass@10.0.0.5:8080/v1/chat/completions"
+    )
+    out = _safe_stream_error(exc)
+    assert "10.0.0.5" not in out
+    assert "secretpass" not in out
+    assert "<url>" in out
+    assert "404 Client Error" in out
+
+    # Multi-line: only the first line is kept.
+    assert "\n" not in _safe_stream_error(Exception("line one\nline two"))
+
+    # Over-cap message is truncated with an ellipsis.
+    long_msg = "x" * (_STREAM_ERR_MAX_CHARS + 100)
+    truncated = _safe_stream_error(Exception(long_msg))
+    assert len(truncated) <= _STREAM_ERR_MAX_CHARS + 1  # +1 for the ellipsis
+    assert truncated.endswith("…")
+
+    # Empty message still yields something non-empty.
+    assert _safe_stream_error(Exception())

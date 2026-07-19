@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
@@ -28,6 +29,9 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response
 
 from .__init__ import __version__
 from .answer import answer_question, stream_answer_chunks
@@ -74,6 +78,71 @@ app = FastAPI(
     description="Multimodal asset RAG: PDF + image parsing, hybrid retrieval, grounded answers.",
     lifespan=lifespan,
 )
+
+
+# ─── Request body size limit ─────────────────────────────────────────────
+#
+# Starlette streams multipart bodies into a ``SpooledTemporaryFile`` *before*
+# the route handler runs, so the in-handler ``upload_max_*`` byte checks
+# only gate the copy into ``incoming_dir`` — a 50 GB POST would still fill
+# ``/tmp`` before our 413 fires. This middleware wraps ``receive`` so the
+# body is rejected as soon as the cumulative byte count crosses the
+# configured cap, before Starlette spools it to disk.
+#
+# The cap is the per-batch upload limit (``upload_max_batch_bytes``, default
+# 200 MiB) — large enough that ordinary JSON requests (search/answer/chat,
+# tens of KB) sail through, small enough to bound a malicious upload. The
+# limit applies to every request body; NDJSON/JSON payloads are tiny so this
+# never rejects legitimate traffic.
+
+
+class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    """Reject request bodies larger than ``upload_max_batch_bytes`` (HTTP 413).
+
+    Wraps the ASGI ``receive`` callable and accumulates ``http.request``
+    body chunks; on overflow it stops pulling and returns a 413 response.
+    The cap is read from :class:`Settings` on every request (not fixed at
+    middleware construction) so a test that lowers ``UPLOAD_MAX_BATCH_BYTES``
+    sees the new limit immediately. Streaming responses are unaffected
+    (the limit is on the *request* body).
+    """
+
+    async def dispatch(self, request: StarletteRequest, call_next):
+        max_bytes = int(get_settings().upload_max_batch_bytes)
+        # Only bound requests that actually carry a body. GET / HEAD / OPTIONS
+        # with no body pass through untouched.
+        if request.method in ("GET", "HEAD", "OPTIONS"):
+            return await call_next(request)
+
+        sent = 0
+        overflow = False
+        receive = request.receive
+
+        async def bounded_receive():
+            nonlocal sent, overflow
+            message = await receive()
+            if message["type"] == "http.request":
+                body = message.get("body", b"")
+                sent += len(body)
+                if sent > max_bytes:
+                    overflow = True
+                    # Pretend the body is now complete so Starlette stops
+                    # reading and our 413 can fire.
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        request._receive = bounded_receive  # type: ignore[attr-defined]
+        response = await call_next(request)
+        if overflow:
+            return Response(
+                content=json.dumps({"detail": f"request body exceeds {max_bytes} bytes"}),
+                status_code=413,
+                media_type="application/json",
+            )
+        return response
+
+
+app.add_middleware(_BodySizeLimitMiddleware)
 
 
 # ─── Service layer (task scheduling + history) ─────────────────────────
@@ -151,6 +220,35 @@ class UploadEdit(BaseModel):
     tags: list[str] | str | None = None
     description: str | None = None
     rejected: bool = False
+
+
+# How much of an exception's string we surface in a streamed ``error``
+# event. Streaming endpoints (``/chat/stream``, ``/tasks/{id}/stream``)
+# send ``{"event": "error", "message": str(exc)}`` to the client; a raw
+# ``str(exc)`` from ``requests`` / the OpenAI SDK commonly embeds the full
+# request URL (and thus the ``OPENAI_BASE_URL`` / ``VLM_BASE_URL`` host,
+# occasionally an inlined userinfo ``https://user:pass@host/...``) and a
+# slice of the upstream response body. We strip URLs and cap the length so
+# the error stays actionable without leaking provider topology or creds.
+_STREAM_ERR_MAX_CHARS = 240
+_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+
+
+def _safe_stream_error(exc: BaseException) -> str:
+    """Render ``exc`` for a streamed error event without leaking URLs.
+
+    Strips any ``http(s)://...`` substring (provider base URLs, inlined
+    userinfo), takes the first line, and caps the length. Non-ASCII is
+    preserved (Chinese error text), but control characters are dropped.
+    """
+    msg = str(exc)
+    msg = _URL_RE.sub("<url>", msg)
+    first_line = msg.splitlines()[0] if msg else ""
+    # Strip control chars except tab/newline (already single-line).
+    first_line = "".join(c for c in first_line if c >= " " or c == "\t")
+    if len(first_line) > _STREAM_ERR_MAX_CHARS:
+        first_line = first_line[:_STREAM_ERR_MAX_CHARS] + "…"
+    return first_line or f"{type(exc).__name__}: <no message>"
 
 
 def _main_text(request: _RouteRequest) -> str:
@@ -285,7 +383,12 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 yield json.dumps({"event": "token", "text": chunk}, ensure_ascii=False) + "\n"
             yield json.dumps({"event": "done"}, ensure_ascii=False) + "\n"
         except Exception as exc:
-            yield json.dumps({"event": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+            yield (
+                json.dumps(
+                    {"event": "error", "message": _safe_stream_error(exc)}, ensure_ascii=False
+                )
+                + "\n"
+            )
 
     return StreamingResponse(gen(), media_type="application/x-ndjson")
 
@@ -306,6 +409,16 @@ async def upload_preview(files: list[UploadFile] = File(...)) -> dict[str, objec
         raise HTTPException(status_code=400, detail="no files uploaded")
 
     settings = get_settings()
+    # Cap the file count up front — each previewed file can trigger a VLM
+    # auto-meta call, so an unbounded batch is a quota-burn vector. The
+    # byte caps alone don't bound the number of (small) files.
+    if len(files) > settings.upload_max_files:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"too many files: {len(files)} > upload_max_files ({settings.upload_max_files})"
+            ),
+        )
     with suppress(Exception):
         get_pipeline().cleanup_expired_caches()
     incoming_dir = get_preview_cache_dir() / f"incoming_{uuid.uuid4().hex[:12]}"
@@ -441,7 +554,12 @@ def task_stream(task_id: str) -> StreamingResponse:
             for event in get_service().stream_task(task_id):
                 yield json.dumps(event, ensure_ascii=False) + "\n"
         except Exception as exc:
-            yield json.dumps({"event": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+            yield (
+                json.dumps(
+                    {"event": "error", "message": _safe_stream_error(exc)}, ensure_ascii=False
+                )
+                + "\n"
+            )
 
     return StreamingResponse(
         gen(),
