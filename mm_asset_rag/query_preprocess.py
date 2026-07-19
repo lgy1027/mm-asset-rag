@@ -104,7 +104,11 @@ def _fuzzy_correct(token: str, vocab: set[str]) -> str | None:
     # difflib's cutoff in get_close_matches is ratio-based, not edit
     # distance. For our use case (4-20 char tokens, English-leaning
     # corpus) a ratio of 0.85 captures single-edit typos.
-    matches = difflib.get_close_matches(token, vocab, n=1, cutoff=0.85)
+    # Compare against the lowercased token: ``vocab`` is all-lowercase, and
+    # ``SequenceMatcher`` is case-sensitive, so an uppercase typo like
+    # ``"TRANSFORMR"`` would otherwise score ~0 against ``"transformer"`` and
+    # never be corrected.
+    matches = difflib.get_close_matches(token.lower(), vocab, n=1, cutoff=0.85)
     return matches[0] if matches else None
 
 

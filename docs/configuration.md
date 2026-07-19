@@ -54,6 +54,10 @@ When neither triple is complete, `/answer` and `/chat` return evidence-summary f
 | `EMBEDDING_RETRY_COUNT` | `5` | Retry attempts |
 | `EMBEDDING_TIMEOUT` | `120.0` | Timeout seconds |
 | `EMBEDDING_MAX_INPUT_CHARS` | `8192` | Per-text truncation limit |
+| `EMBEDDING_SPARSE_ENABLED` | `auto` | `auto` probes the embedder (only bge-m3 via sentence-transformers exposes it); `true`/`false` force on/off |
+| `EMBEDDING_COLBERT_ENABLED` | `auto` | Same probe pattern for the ColBERT multi-vector channel |
+
+When `auto` resolves to enabled (bge-m3), the text collection gains extra sparse / multi-vector fields; the indexer raises a schema-mismatch error so you run `mmrag reindex` to rebuild. The OpenAI-compatible embedder never exposes these, so the default config adds no fields and needs no reindex.
 
 ## Image embedding
 
@@ -78,9 +82,11 @@ pip install -e ".[clip]"
 | `QDRANT_IMAGE_COLLECTION` | `multimodal_image` | Base image collection name |
 | `QDRANT_UPSERT_BATCH_SIZE` | `16` | Upsert batch size |
 | `QDRANT_BM25_MODEL` | `Qdrant/bm25` | fastembed sparse model |
-| `QDRANT_HYBRID_PREFETCH_LIMIT` | `20` | Per-channel prefetch limit |
+| `QDRANT_HYBRID_PREFETCH_LIMIT` | `50` | Per-channel prefetch limit |
+| `QDRANT_ACTIVE_TEXT_COLLECTION` | unset | Force a specific active text collection (overrides `{base}_{dim}d` auto-resolution) |
+| `QDRANT_ACTIVE_IMAGE_COLLECTION` | unset | Force a specific active image collection (overrides `{base}_{dim}d` auto-resolution) |
 
-Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`.
+Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`. Leave `QDRANT_ACTIVE_*_COLLECTION` unset to use the auto suffix; set them only to pin a collection that does not match the current embedder's dim.
 
 ## Retrieval tuning
 
@@ -88,7 +94,11 @@ Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`.
 | --- | ---: | --- |
 | `HYBRID_WEIGHT_TEXT` | `0.80` | Text-route merge weight |
 | `HYBRID_WEIGHT_TEXT_TO_IMAGE` | `0.20` | Text→image merge weight |
-| `HYBRID_WEIGHT_IMAGE_TO_IMAGE` | `0.0` | Image→image merge weight when an image query is provided |
+| `HYBRID_WEIGHT_IMAGE_TO_IMAGE` | `0.15` | Image→image merge weight when an image query is provided |
+| `MIN_SCORE` | `0.0` | Soft low-end guard on the final RRF-fused score (0.0 disables; ~0.001 trims tiny-tail noise) |
+| `RRF_WEIGHT_DENSE` | `1.0` | Per-channel RRF bias for the dense prefetch |
+| `RRF_WEIGHT_BM25` | `1.0` | Per-channel RRF bias for the BM25-en prefetch |
+| `RRF_WEIGHT_BM25_ZH` | `1.0` | Per-channel RRF bias for the BM25-zh prefetch (raise to ~1.5 for Chinese-only recall) |
 | `MAX_CHUNKS_PER_PDF` | unset | Per-PDF chunk cap before text indexing |
 | `IMAGE_RELEVANCE_THRESHOLD` | `0.24` | CLIP cosine floor for image routes |
 | `IMAGE_PREFILTER_FIELDS` | `tags,asset_id,asset_title` | Payload fields used for sparse image pre-filter |
@@ -105,6 +115,25 @@ Appends a `关键词: ...` footer (jieba TextRank) to every PDF chunk's text bef
 | `ENRICH_CHUNK_WITH_KEYWORDS` | `true` | Append jieba TextRank keyword footer to each chunk |
 | `ENRICH_CHUNK_KEYWORD_TOP_K` | `8` | Number of keywords in the footer |
 | `ENRICH_CHUNK_LANGUAGE` | `auto` | `zh` / `en` / `auto` (jieba first, stopword-frequency fallback) |
+
+## Recursive chunking
+
+After heading-based splitting, each section body is recursively split to a token budget with overlap, so long sections don't produce oversized chunks that dilute BM25 / get truncated by the embedder / mislead the cross-encoder reranker. Token counts default to a char approximation (token ≈ chars/3.5, mixed zh/en) so no tokenizer is required; set `CHUNK_TOKENIZER` to a HuggingFace id for exact counts (falls back to char approx if unavailable). Changing these requires `mmrag reindex` (chunk text is re-derived at parse time, so a full `mmrag parse` is needed for existing assets).
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `CHUNK_TARGET_TOKENS` | `500` | Target tokens per chunk (benchmark sweet spot ~500) |
+| `CHUNK_MAX_TOKENS` | `800` | Hard max tokens per chunk |
+| `CHUNK_OVERLAP_TOKENS` | `60` | Overlap tokens between adjacent chunks |
+| `CHUNK_TOKENIZER` | unset | HF tokenizer id for exact counts; unset = char approximation |
+
+## Semantic dedup (asset-level)
+
+On top of the exact content-hash dedup (`find_by_sha256`), the asset index keeps a title / first-chunk embedding index. A new asset whose embedding is cosine-close to an existing active asset (different sha256) reuses the existing `asset_id` so near-duplicates aren't re-indexed. This threshold is the cosine cutoff; default `0.92` matches LlamaIndex's `DeduplicationModule`. Note: this dedup path is implemented in `asset_index` but not yet wired into the ingest/upload pipeline, so it does not trigger on real uploads today.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `DEDUP_SEMANTIC_THRESHOLD` | `0.92` | Cosine cutoff for near-duplicate asset reuse |
 
 ## PDF embedded-image extraction
 
@@ -126,13 +155,13 @@ When `ANSWER_WITH_IMAGES` is on, `/answer` and `/chat/stream` inject each hit's 
 | `ANSWER_WITH_IMAGES` | `false` | opt-in — inject hit images into the LLM chat request |
 | `ANSWER_IMAGE_MAX_PER_HIT` | `2` | Max images sent per hit (bounds token cost; hard global cap is 4) |
 
-## Contextual Retrieval (opt-in)
+## Contextual Retrieval
 
-Anthropic-style chunk context: each chunk gets a short LLM-generated preamble situating it within its document, prepended to the embedding/BM25 input so dense + sparse channels can disambiguate generic terms. opt-in because it costs ~1 LLM call per chunk. Generated at parse time and cached under `parsed/<id>/context.jsonl` so `mmrag reindex` reuses it without re-calling the LLM. Enable via `mmrag parse --contextual`.
+Anthropic-style chunk context: each chunk gets a short LLM-generated preamble situating it within its document, prepended to the embedding/BM25 input so dense + sparse channels can disambiguate generic terms. **Enabled by default** — it costs ~1 LLM call per chunk, generated at parse time and cached under `parsed/<id>/context.jsonl` so `mmrag reindex` reuses it without re-calling the LLM. Disable with `CONTEXTUAL_ENABLED=false` (or `mmrag parse --no-contextual` on the CLI) when no LLM is configured or to skip the per-chunk calls.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `CONTEXTUAL_ENABLED` | `false` | opt-in master switch |
+| `CONTEXTUAL_ENABLED` | `true` | Master switch (default on; set `false` to opt out) |
 | `CONTEXTUAL_MODEL` | unset (→ `OPENAI_MODEL`) | LLM model override |
 | `CONTEXTUAL_CONCURRENCY` | `4` | Parallel chunk-context calls |
 | `CONTEXTUAL_CHUNK_MAX_CHARS` | `8000` | Cap chunk text fed to the LLM |
@@ -149,16 +178,17 @@ This is the **text-route** path only: embedded figures are *not* sent to the CLI
 | `IMAGE_CAPTION_ENABLED` | `false` | opt-in master switch |
 | `IMAGE_CAPTION_CONCURRENCY` | `4` | Parallel figure-caption VLM calls |
 
-## Two-stage reranker (opt-in)
+## Two-stage reranker
 
-bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a candidate pool with dense + BM25, then score each `(query, doc)` pair with a cross-encoder. Catches high-score false positives that `MIN_SCORE` cannot. Runs locally via `sentence-transformers.CrossEncoder` (same dep as the bge-m3 embedder); no ollama / API. Adds ~50-200ms latency per query; first run downloads ~600MB.
+bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a candidate pool with dense + BM25, then score each `(query, doc)` pair with a cross-encoder. Catches high-score false positives that `MIN_SCORE` cannot. **Enabled by default** — it adds ~50-200ms latency per query and the model is ~2GB on first download (`BAAI/bge-reranker-v2-m3`). Runs locally via `sentence-transformers.CrossEncoder` (same dep as the bge-m3 embedder); no ollama / API. Disable with `RERANKER_ENABLED=false` when latency / download cost is a concern.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `RERANKER_ENABLED` | `false` | opt-in master switch |
+| `RERANKER_ENABLED` | `true` | Master switch (default on; set `false` to opt out) |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | HuggingFace cross-encoder model id |
-| `RERANKER_TOP_N` | `20` | Candidates fetched from each route before rerank (≤ `QDRANT_HYBRID_PREFETCH_LIMIT`) |
+| `RERANKER_TOP_N` | `30` | Candidates fetched from each route before rerank (≤ `QDRANT_HYBRID_PREFETCH_LIMIT`) |
 | `RERANKER_TOP_K` | unset (→ caller's `top_k`) | Final result count after rerank |
+| `RERANKER_HYBRID_BLEND` | `0.6` | Cross-encoder weight in the final blended rank (0 = hybrid only, 1 = pure reranker) |
 
 ## Chinese BM25
 

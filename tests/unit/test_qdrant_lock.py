@@ -18,6 +18,7 @@ from mm_asset_rag.backends.qdrant_backend import (
     _clean_stale_lock,
     _lock_holder_pid,
     _pid_alive,
+    _probe_lock_holder,
 )
 
 # ─── Unit tests for the helper primitives ───────────────────────────────
@@ -97,3 +98,51 @@ def test_clean_stale_lock_raises_when_held_by_live_process(tmp_path: Path):
         # After the test closes the fd, _clean_stale_lock should succeed.
         if lock.exists():
             _clean_stale_lock(qdrant_path)
+
+
+def test_clean_stale_lock_raises_when_holder_unknown(tmp_path: Path, monkeypatch):
+    """When lsof cannot answer (missing / failed) the lock is NOT removed.
+
+    Blindly unlinking a lock whose holder is unknown risks deleting a lock
+    a live process still holds, letting two processes write the same local
+    storage. The guard must raise instead of guessing.
+    """
+    qdrant_path = tmp_path / "qdrant"
+    qdrant_path.mkdir()
+    lock = qdrant_path / ".lock"
+    lock.write_text("unknown")
+
+    def _unknown_probe(_lock):
+        return ("unknown", None)
+
+    monkeypatch.setattr("mm_asset_rag.backends.qdrant_backend._probe_lock_holder", _unknown_probe)
+    with pytest.raises(QdrantLockHeldError) as excinfo:
+        _clean_stale_lock(qdrant_path)
+    assert "could not be determined" in str(excinfo.value)
+    # Crucially, the lock file is left in place.
+    assert lock.exists()
+
+
+def test_clean_stale_lock_removes_when_lsof_confirms_free(tmp_path: Path, monkeypatch):
+    """A "free" probe (lsof ran, no holder) is unlinked, same as before."""
+    qdrant_path = tmp_path / "qdrant"
+    qdrant_path.mkdir()
+    lock = qdrant_path / ".lock"
+    lock.write_text("stale")
+
+    def _free_probe(_lock):
+        return ("free", None)
+
+    monkeypatch.setattr("mm_asset_rag.backends.qdrant_backend._probe_lock_holder", _free_probe)
+    _clean_stale_lock(qdrant_path)
+    assert not lock.exists()
+
+
+def test_probe_lock_holder_states(tmp_path: Path):
+    """The three-state probe returns ("free", None) for an unheld lock."""
+    unheld = tmp_path / "free.lock"
+    unheld.write_text("")
+    state, pid = _probe_lock_holder(unheld)
+    # On a system with lsof this is "free"; on one without it is "unknown".
+    assert state in ("free", "unknown")
+    assert pid is None
