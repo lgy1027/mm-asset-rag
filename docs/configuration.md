@@ -78,7 +78,7 @@ When `auto` resolves to enabled (bge-m3), the text collection gains extra sparse
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLIP_MODEL` | `clip-ViT-B-32` | Sentence-transformers CLIP model name |
-| `IMAGE_PROVIDER` | `lite` | Legacy provider selector |
+| `IMAGE_PROVIDER` | `lite` | 占位字符串,无独立 lite embedder 实现。实际图片索引依赖 `[clip]` extra 的 sentence-transformers CLIP(`get_default_image_embedder` 只实例化 CLIP);`lite` 在缺 `[clip]` 时效果是"图片跳过索引"而非"用轻量 embedder",`sentence_transformers` 显式要求 CLIP。保留 `lite` 仅为兼容旧 `.env`,行为等价于"未配置图片 embedder" |
 
 Install `[clip]` to use sentence-transformers CLIP:
 

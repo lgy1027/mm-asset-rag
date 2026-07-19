@@ -1146,3 +1146,150 @@ def test_list_tasks_surfaces_memory_only_recs_not_yet_persisted(tmp_home: Path) 
     listed = service.list_tasks()
     ids = [t.task_id for t in listed]
     assert "memonly01" in ids
+
+
+def test_cancel_task_marks_running_task_cancelled(tmp_home: Path) -> None:
+    """cancel_task sets the stop flag and patches status → cancelled."""
+    service = IngestService()
+    rec = TaskRecord(task_id="runtask0001", kind="ingest", status="running", total=3)
+    service._tasks[rec.task_id] = rec
+
+    out = service.cancel_task(rec.task_id)
+
+    assert out.task_id == rec.task_id
+    assert out.status == "cancelled"
+    assert rec.status == "cancelled"
+    assert rec.finished_at is not None
+    # The per-task stop flag was created and set.
+    assert service._is_cancelled(rec.task_id)
+
+
+def test_cancel_task_unknown_raises(tmp_home: Path) -> None:
+    service = IngestService()
+    with pytest.raises(KeyError, match="unknown task"):
+        service.cancel_task("does-not-exist")
+
+
+def test_cancel_task_terminal_task_is_noop(tmp_home: Path) -> None:
+    """Cancelling an already-terminal task returns it unchanged (no resurrect)."""
+    service = IngestService()
+    rec = TaskRecord(task_id="donetask001", kind="ingest", status="done", total=1)
+    service._tasks[rec.task_id] = rec
+
+    out = service.cancel_task(rec.task_id)
+
+    assert out.status == "done"  # not flipped to cancelled
+    # Still records a stop flag (harmless), but status untouched.
+    assert service._is_cancelled(rec.task_id)
+
+
+def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
+    """The parse worker checks _is_cancelled between assets: once the flag
+    is set, it stops before the next asset and leaves the task cancelled.
+
+    End-to-end for the cooperative-cancel checkpoint (not covered by the
+    cancel_task unit tests, which only exercise the flag-set path).
+    """
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.schema import ParsedDocument
+    from mm_asset_rag.service import _do_parse
+
+    a1 = _make_asset(tmp_home, "a1.png")
+    a2 = _make_asset(tmp_home, "a2.png")
+    a3 = _make_asset(tmp_home, "a3.png")
+    service = IngestService()
+    rec = TaskRecord(task_id="canceltask1", kind="parse", status="running", total=3)
+    service._tasks[rec.task_id] = rec
+    service._cancel_flags[rec.task_id] = __import__("threading").Event()
+
+    parsed_ids: list[str] = []
+
+    def fake_parser(asset, **kwargs):
+        parsed_ids.append(asset.asset_id)
+        # After the first asset is parsed, request cancellation. The worker
+        # should check the flag before asset #2 and stop.
+        if asset.asset_id == a1.asset_id:
+            service._cancel_flags[rec.task_id].set()
+            service._patch(rec, status="cancelled", finished_at=time.time(), current="cancelled")
+        return [ParsedDocument(text="x", metadata={"asset_id": asset.asset_id})]
+
+    def fake_get_parser(kind, name):
+        class P:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def parse(self, asset, **kwargs):
+                return fake_parser(asset)
+
+        return P()
+
+    orig = svc_mod.get_parser
+    svc_mod.get_parser = fake_get_parser
+    try:
+        _do_parse(service, rec, ParseOptions(assets=[a1, a2, a3]))
+    finally:
+        svc_mod.get_parser = orig
+
+    # Only the first asset was parsed; the checkpoint before #2 saw cancel.
+    assert parsed_ids == [a1.asset_id]
+    assert rec.status == "cancelled"
+
+
+def test_index_phase_stops_when_cancelled(tmp_home: Path) -> None:
+    """The index phase checks _is_cancelled at each progress tick (one per
+    upsert batch) via _progress → raises _TaskCancelled, which the ingest
+    worker catches cleanly (no failed/failed_index status flip).
+
+    Covers L1's index-stage cancel path (the parse-stage checkpoint is
+    covered by test_worker_stops_at_checkpoint_when_cancelled)."""
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.service import _run_ingest_task
+
+    service = IngestService()
+    # Pretend parse already finished successfully (parse_status=done) so
+    # _run_ingest_task proceeds straight to the index phase.
+    rec = TaskRecord(
+        task_id="idxcancel01",
+        kind="ingest",
+        status="done",
+        total=1,
+        finished_at=None,
+    )
+    service._tasks[rec.task_id] = rec
+    service._cancel_flags[rec.task_id] = __import__("threading").Event()
+    parse_options = ParseOptions(assets=[])
+
+    # Skip the real parse stage — we only want to drive the index path.
+    def fake_parse(_svc, _rec, _opts):
+        # Leave rec as parse-done so _run_ingest_task continues to index.
+        _svc._patch(_rec, status="done", current="parse done")
+
+    ticks = {"n": 0}
+
+    class FakeBackend:
+        def upsert_text(self, *, progress_cb=None, force_recreate=False):
+            # First tick: normal. Second tick: cancel arrives mid-index.
+            ticks["n"] += 1
+            if progress_cb:
+                progress_cb(1, 10, "indexing")
+            # Simulate cancel arriving between batches.
+            service._cancel_flags[rec.task_id].set()
+            service._patch(rec, status="cancelled", finished_at=time.time(), current="cancelled")
+            # Next progress tick should raise _TaskCancelled.
+            if progress_cb:
+                progress_cb(2, 10, "indexing")  # this raises _TaskCancelled
+            return 1, "text_coll"
+
+        def upsert_image(self, *, progress_cb=None, force_recreate=False):
+            return 1, "img_coll"
+
+    with (
+        patch.object(svc_mod, "_run_parse_task", fake_parse),
+        patch.object(svc_mod, "get_backend", lambda name: FakeBackend()),
+    ):
+        _run_ingest_task(service, rec, parse_options)
+
+    # The _TaskCancelled was caught cleanly; status stays cancelled (not
+    # flipped to failed/failed_index by the BaseException branch).
+    assert rec.status == "cancelled"
+    assert ticks["n"] == 1  # upsert_text ran (and was interrupted at tick 2)
