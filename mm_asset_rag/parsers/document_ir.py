@@ -194,6 +194,14 @@ def ir_to_documents(ir: DocumentIR) -> list:
             markdown_path_by_page[page] = ir.markdown_paths[page]
 
     docs: list[ParsedDocument] = []
+    # Global per-asset chunk counter: ``enumerate(sections)`` inside the
+    # per-block loop would reset to 0 for every block (PyMuPDF emits one
+    # block per page), so a multi-page asset would have N chunks all tagged
+    # ``chunk_index=0``. That collides with the Contextual Retrieval cache
+    # key ``f"chunk:{ci}"`` — re-parse would let later chunks overwrite
+    # earlier ones' cached context. A single monotonic counter across all
+    # blocks keeps ``chunk_index`` unique within the asset.
+    global_chunk_index = 0
     for block in ir.blocks:
         page = block.page
         markdown_path = markdown_path_by_page.get(page, "") if page is not None else ""
@@ -252,7 +260,7 @@ def ir_to_documents(ir: DocumentIR) -> list:
                         page=ref.page or 0,
                     )
 
-        for chunk_index, section in enumerate(sections):
+        for _chunk_index, section in enumerate(sections):
             body = section.body.strip()
             # Skip sections with no body — empty chunks (e.g. a bare "1"
             # heading with no following text) would pollute the BM25
@@ -260,6 +268,11 @@ def ir_to_documents(ir: DocumentIR) -> list:
             # ranking.
             if not body:
                 continue
+            # Use the global counter so chunk_index is unique across blocks;
+            # the local index from enumerate only orders sections within this
+            # block and is otherwise unused.
+            ci = global_chunk_index
+            global_chunk_index += 1
             enriched_text = _maybe_enrich_with_keywords(body)
 
             chunk_images: list = []
@@ -292,7 +305,7 @@ def ir_to_documents(ir: DocumentIR) -> list:
                 "source_path": asset.relative_path,
                 "source_url": asset.source_url,
                 "page": page,
-                "chunk_index": chunk_index,
+                "chunk_index": ci,
                 "section": section.heading,
                 "parser": ir.parser,
                 "markdown_path": markdown_path,

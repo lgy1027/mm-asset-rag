@@ -132,8 +132,38 @@ def test_ir_to_documents_pymupdf_splits_long_body(tmp_path: Path) -> None:
     # Every sub-chunk inherits page 2 + its markdown_path.
     assert all(d.metadata["page"] == 2 for d in docs)
     assert all(d.metadata["markdown_path"] == "/tmp/page_2.md" for d in docs)
-    # chunk_index resets per page (per-block) — matches the pre-IR contract.
+    # chunk_index is globally unique within the asset (a single monotonic
+    # counter across all blocks), so it never collides across pages —
+    # important for the Contextual Retrieval cache key ``f"chunk:{ci}"``.
     assert [d.metadata["chunk_index"] for d in docs] == list(range(len(docs)))
+
+
+def test_ir_to_documents_chunk_index_unique_across_blocks(tmp_path: Path) -> None:
+    """Multiple blocks (e.g. multi-page PDF) get a globally-unique chunk_index.
+
+    Regression guard: previously ``enumerate(sections)`` reset to 0 inside
+    each block, so every page's first chunk was tagged ``chunk_index=0``.
+    That collided with the Contextual Retrieval cache key and let a
+    re-parse overwrite earlier chunks' cached context with later ones'.
+    """
+    asset = _asset(tmp_path)
+    ir = DocumentIR(
+        blocks=[
+            Block(text="第一页的内容。", page=0),
+            Block(text="第二页的内容。", page=1),
+            Block(text="第三页的内容。", page=2),
+        ],
+        images=[],
+        asset=asset,
+        parser="pymupdf",
+        markdown_paths=["/tmp/p0.md", "/tmp/p1.md", "/tmp/p2.md"],
+    )
+    docs = ir_to_documents(ir)
+    assert len(docs) == 3
+    indices = [d.metadata["chunk_index"] for d in docs]
+    # Unique, monotonic, starting at 0 — NOT [0, 0, 0].
+    assert indices == [0, 1, 2]
+    assert len(set(indices)) == len(indices)
 
 
 def test_ir_to_documents_pymupdf_skips_whitespace_body(tmp_path: Path) -> None:
