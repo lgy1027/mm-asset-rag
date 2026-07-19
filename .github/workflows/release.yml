@@ -2,18 +2,25 @@ name: Release
 
 # 触发条件:推送 `v*` 形态的 tag(例如 `v0.1.0`、`v1.2.3`)。
 # 打 tag 前请确认:
-#   1. 已在 GitHub Settings → Secrets and variables → Actions 配置 `PYPI_API_TOKEN`
-#      (PyPI account-scoped token,见 https://pypi.org/manage/account/token/)。
-#   2. tag 形如 `v0.1.0`,不带 build 元数据;动作会基于 tag refname 自动取版本。
-#   3. 本地 `uv lock` 已与 `pyproject.toml` 对齐,`uv build` 产物可干净构建。
+#   1. 任选一种发布鉴权(二选一):
+#      a) PyPI trusted publishing(推荐,无需 token):在 PyPI 项目设置
+#         "Trusted Publisher",GitHub 仓库 + workflow 文件名 + 环境名。
+#         需本 workflow 的 `id-token: write` 权限(已配)。
+#      b) API token:GitHub Settings → Secrets → Actions →
+#         PYPI_API_TOKEN(PyPI account-scoped token)。配了 token 会优先用它。
+#   2. tag 形如 `v0.1.0`;uv build 产物由 tag refname 取版本。
+#   3. 本地 `uv lock` 已与 `pyproject.toml` 对齐,`uv build` 可干净构建。
 on:
   push:
     tags:
       - "v*"
 
-# 最小权限原则:发布动作只需要读仓库内容与写 PyPI(由 action 内部通过 OIDC/secret 处理)。
+# `id-token: write` 让 PyPI trusted publishing (OIDC) 工作;`contents: read`
+# 是 checkout 最低权限。若用 API token (secret) 发布则 id-token 非必需,
+# 但保留 id-token 让两种方式都能用。
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build-and-publish:
@@ -41,7 +48,7 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        # 不要在此硬编码 token。token 通过 GitHub Secrets 注入:
-        #   Secrets → Actions → New repository secret → Name: PYPI_API_TOKEN
+        # 发布鉴权:配了 PYPI_API_TOKEN secret 就用它;否则走 PyPI trusted
+        # publishing (OIDC,需 PyPI 项目设置 Trusted Publisher)。
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
