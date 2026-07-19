@@ -26,6 +26,7 @@ import shutil
 import threading
 import time
 import uuid
+from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -406,7 +407,44 @@ class IngestService:
         if not text_only:
             _ni, ni_name = backend.upsert_image(force_recreate=True)
             results.append(f"image: {ni_name}")
+        # Collections were just recreated with fresh vocab / IDF stats;
+        # drop any in-process caches that were built against the old
+        # collections so the next query rebuilds them against the new
+        # state. Lazy imports + ``suppress(Exception)`` keep this
+        # best-effort: a missing function (e.g. the BM25-zh invalidator
+        # not yet added) or any import / runtime failure must not
+        # crash the reindex path.
+        self._invalidate_search_caches()
         return tuple(results)
+
+    def _invalidate_search_caches(self) -> None:
+        """Drop in-process vocab + BM25-zh IDF caches after a reindex or
+        successful ingest.
+
+        ``query_preprocess`` caches the corpus vocab used for query
+        expansion / hyphenisation, and ``qdrant_backend`` caches the
+        IDF vector used by the BM25-zh sparse index. Both caches are
+        derived from the *current* Qdrant collection state, so after a
+        ``force_recreate=True`` reindex (or any successful ``upsert_text``
+        / ``upsert_image`` on the ingest path) the cached values go
+        stale and silently degrade retrieval quality. We invalidate
+        them here so the next query rebuilds them against the new data.
+
+        Lazy imports keep ``service`` from hard-depending on either
+        module at import time (e.g. ``invalidate_bm25_zh_idf_cache``
+        may not exist yet in older deployed builds), and
+        ``suppress(Exception)`` ensures cache invalidation can never
+        crash the task-completion path — at worst we print nothing
+        and the next query pays the cache-miss cost.
+        """
+        with suppress(Exception):
+            from .query_preprocess import invalidate_vocab_cache
+
+            invalidate_vocab_cache()
+        with suppress(Exception):
+            from .backends.qdrant_backend import invalidate_bm25_zh_idf_cache
+
+            invalidate_bm25_zh_idf_cache()
 
     def list_tasks(self) -> list[TaskRecord]:
         """Return the task history ordered by most recent ``updated_at``.
@@ -417,12 +455,24 @@ class IngestService:
         history, and the SQL ``ORDER BY updated_at DESC`` gives a
         deterministic, time-ordered view rather than the dict's
         insertion order.
+
+        In-memory recs are overlaid on top of the SQLite rows: for any
+        ``task_id`` present in both, the in-memory copy wins because
+        it's the one ``_patch`` mutates and ``_persist`` serialises
+        from — it is strictly fresher than whatever row SQLite has.
+        Recs that exist only in memory (the small window between
+        ``_new_task`` adding to ``self._tasks`` and ``_persist``
+        landing the first SQLite row) are prepended in newest-first
+        order so a just-created task doesn't briefly vanish from the
+        UI. The merged result keeps SQLite's ``updated_at DESC``
+        order for the overlapping rows.
         """
         import sqlite3
 
         db_path = self._tasks_db_path()
         if not db_path.exists():
-            return []
+            with self._TASKS_LOCK:
+                return list(self._tasks.values())
         try:
             with sqlite3.connect(str(db_path)) as conn:
                 rows = conn.execute("SELECT payload FROM tasks ORDER BY updated_at DESC").fetchall()
@@ -432,14 +482,32 @@ class IngestService:
             # failure doesn't blank the UI.
             with self._TASKS_LOCK:
                 return list(self._tasks.values())
+        # Snapshot the in-memory view *under the lock* so a concurrent
+        # ``_patch`` can't mutate a rec mid-overlay. We then iterate
+        # SQLite rows in their existing desc order and substitute the
+        # memory copy where present; any memory-only recs are prepended.
+        with self._TASKS_LOCK:
+            mem_snapshot = dict(self._tasks)
         out: list[TaskRecord] = []
+        seen_ids: set[str] = set()
         for (payload,) in rows:
             try:
                 obj = json.loads(payload)
             except json.JSONDecodeError:
                 continue
-            out.append(self._task_from_dict(obj))
-        return out
+            task_id = obj.get("task_id") if isinstance(obj, dict) else None
+            if isinstance(task_id, str) and task_id in mem_snapshot:
+                out.append(mem_snapshot[task_id])
+                seen_ids.add(task_id)
+            else:
+                out.append(self._task_from_dict(obj))
+        # Memory-only recs: created via ``_new_task`` but not yet
+        # persisted to SQLite (the race window M8 closes). Prepend
+        # newest-first so the just-spawned task shows at the top of
+        # the UI history where users expect to see it.
+        mem_only = [r for tid, r in mem_snapshot.items() if tid not in seen_ids]
+        mem_only.sort(key=lambda r: r.started_at, reverse=True)
+        return mem_only + out
 
     def get_task(self, task_id: str) -> TaskRecord | None:
         with self._TASKS_LOCK:
@@ -797,12 +865,22 @@ class IngestService:
         thread.start()
 
     def _patch(self, rec: TaskRecord, **fields: Any) -> None:
+        # Hold ``_TASKS_LOCK`` across both the setattr *and* the
+        # ``_persist`` call so the snapshot ``_persist`` serialises
+        # with ``asdict(rec)`` is the same one we publish to stream
+        # subscribers. Previously ``_persist`` ran outside the lock,
+        # which meant a concurrent ``_patch`` could setattr the rec
+        # mid-serialise and produce a torn JSON line on disk (some
+        # fields from the old state, some from the new). ``_persist``
+        # only takes ``_PERSIST_LOCK`` (not ``_TASKS_LOCK``), so this
+        # can't deadlock; the critical section is short because the
+        # JSONL tail-append happens after the SQLite write releases
+        # the connection.
         with self._TASKS_LOCK:
             for k, v in fields.items():
                 setattr(rec, k, v)
             payload = self._snapshot_payload(rec)
-        self._persist(rec)
-        with self._TASKS_LOCK:
+            self._persist(rec)
             entries = self._stream_events.get(rec.task_id)
             if entries:
                 # Update every subscriber's payload in place and wake
@@ -819,7 +897,7 @@ class IngestService:
         payload["progress"] = round(rec.processed / rec.total, 3) if rec.total else None
         return payload
 
-    def stream_task(self, task_id: str, *, heartbeat: float = 15.0):
+    def stream_task(self, task_id: str, *, heartbeat: float = 2.0):
         """Yield NDJSON-friendly events for ``task_id`` until it terminates.
 
         Schema: ``{"event": "snapshot", "task": {...}}`` on every patch,
@@ -827,6 +905,14 @@ class IngestService:
         ``{"event": "done"}`` once the task reaches a terminal status.
         Unknown task ids yield a single ``{"event": "error", ...}`` and
         exit.
+
+        The default ``heartbeat`` is 2s (not 15s) so that a client that
+        disconnects without closing the SSE stream frees the worker
+        thread quickly — ``event.wait(timeout=heartbeat)`` is the only
+        signal the generator loop has that the consumer is gone, and a
+        15s timeout kept the thread pinned for the whole window on a
+        dropped connection. 2s bounds the wasted threadpool occupancy
+        without meaningfully increasing event-loop overhead.
         """
         with self._TASKS_LOCK:
             rec = self._tasks.get(task_id)
@@ -1067,11 +1153,28 @@ def _run_parse_task(service: IngestService, rec: TaskRecord, options: ParseOptio
     KeyboardInterrupt / abrupt shutdowns surface as ``status="failed"``
     with the message in ``error``, instead of silently leaving the task
     at ``done`` with stale state.
+
+    Note on KeyboardInterrupt: this runs on a daemon thread, and CPython
+    only delivers ``KeyboardInterrupt`` to the *main* thread — so a
+    Ctrl-C in the terminal will not actually trip the ``except
+    BaseException`` below; the main thread exits and the daemon is
+    hard-killed by the interpreter shut-down. The branch still earns
+    its keep for ``SystemExit`` raised explicitly inside the worker and
+    for any third-party library that raises something non-``Exception``
+    subclass, but for the Ctrl-C case the real safety net is
+    ``load_history`` on the next boot: it rewrites any task still in
+    ``running`` to ``interrupted`` so the UI never shows a stale
+    "running" row.
     """
     service._patch(rec, status="running", current="starting")
     try:
         _do_parse(service, rec, options)
     except BaseException as exc:
+        # Daemon thread: Ctrl-C won't reach here (only the main
+        # thread receives KeyboardInterrupt). This branch fires for
+        # in-worker SystemExit or third-party BaseException-derived
+        # raises. The Ctrl-C recovery story is handled by
+        # ``load_history`` → ``interrupted`` on the next boot.
         service._patch(
             rec,
             status="failed",
@@ -1326,6 +1429,12 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
         text_n, text_name = backend.upsert_text(progress_cb=_progress)
         service._patch(rec, current=f"text indexed · {text_name}")
         image_n, _image_name = backend.upsert_image(progress_cb=_progress)
+        # All points are now upserted. Drop the in-process vocab / IDF
+        # caches before we mark the task done so a query issued the
+        # moment the UI shows "done" doesn't reuse stats built against
+        # the pre-ingest collection state. Lazy + suppressed so a cache
+        # module that's missing or raises can't crash the success path.
+        service._invalidate_search_caches()
         # Index succeeded: mark parse-ok assets as fully indexed so
         # --failed-only retry can skip them next time.
         new_statuses = dict(rec.asset_statuses)
@@ -1339,6 +1448,12 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
             asset_statuses=new_statuses,
         )
     except BaseException as exc:
+        # Same daemon-thread caveat as ``_run_parse_task``: Ctrl-C is
+        # delivered to the main thread only, so this branch handles
+        # in-worker SystemExit / BaseException-derived raises, not
+        # KeyboardInterrupt. Ctrl-C recovery is handled by
+        # ``load_history`` rewriting ``running`` → ``interrupted`` on
+        # the next boot.
         new_statuses = dict(rec.asset_statuses)
         for aid in indexed_targets:
             new_statuses[aid] = "failed_index"

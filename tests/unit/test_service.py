@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -887,3 +888,229 @@ def test_parse_assets_empty_list_returns_done_without_thread(tmp_home: Path) -> 
     assert rec.total == 0
     assert rec.processed == 0
     assert rec.finished_at > 0
+
+
+# ─── M2: search-cache invalidation on reindex / ingest success ────────
+
+
+def test_reindex_invalidates_vocab_and_bm25_idf_caches(tmp_home: Path) -> None:
+    """``reindex`` force-recreates the Qdrant collections, so the
+    in-process vocab + BM25-zh IDF caches (derived from the *previous*
+    collection state) must be dropped before the next query. The
+    invalidation is best-effort: a missing invalidator function
+    (older build) must not crash the reindex path.
+    """
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.service import IngestService
+
+    service = IngestService()
+
+    calls: list[str] = []
+
+    class FakeBackend:
+        def upsert_text(self, *, force_recreate=False, progress_cb=None):
+            return (0, "fake_text")
+
+        def upsert_image(self, *, force_recreate=False, progress_cb=None):
+            return (0, "fake_image")
+
+    orig_get_backend = svc_mod.get_backend
+    svc_mod.get_backend = lambda name: FakeBackend()
+
+    def fake_invalidate(name):
+        def _fn():
+            calls.append(name)
+
+        return _fn
+
+    # Both invalidators exist and are called.
+    orig_mod = sys.modules.get("mm_asset_rag.query_preprocess")
+    fake_qp = type("M", (), {"invalidate_vocab_cache": staticmethod(fake_invalidate("vocab"))})
+    orig_qdrant = sys.modules.get("mm_asset_rag.backends.qdrant_backend")
+    fake_qb = type(
+        "M",
+        (),
+        {"invalidate_bm25_zh_idf_cache": staticmethod(fake_invalidate("bm25_idf"))},
+    )
+    sys.modules["mm_asset_rag.query_preprocess"] = fake_qp
+    sys.modules["mm_asset_rag.backends.qdrant_backend"] = fake_qb
+    try:
+        service.reindex()
+    finally:
+        svc_mod.get_backend = orig_get_backend
+        if orig_mod is not None:
+            sys.modules["mm_asset_rag.query_preprocess"] = orig_mod
+        else:
+            sys.modules.pop("mm_asset_rag.query_preprocess", None)
+        if orig_qdrant is not None:
+            sys.modules["mm_asset_rag.backends.qdrant_backend"] = orig_qdrant
+        else:
+            sys.modules.pop("mm_asset_rag.backends.qdrant_backend", None)
+
+    assert calls == ["vocab", "bm25_idf"]
+
+
+def test_reindex_survives_missing_invalidator(tmp_home: Path) -> None:
+    """If the BM25-zh invalidator isn't present (older build, or the
+    function hasn't been added yet), ``reindex`` must not crash — the
+    ``suppress(Exception)`` wrapper absorbs the ``ImportError`` /
+    ``AttributeError`` and the reindex still returns.
+    """
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.service import IngestService
+
+    service = IngestService()
+
+    class FakeBackend:
+        def upsert_text(self, *, force_recreate=False, progress_cb=None):
+            return (0, "fake_text")
+
+        def upsert_image(self, *, force_recreate=False, progress_cb=None):
+            return (0, "fake_image")
+
+    orig_get_backend = svc_mod.get_backend
+    svc_mod.get_backend = lambda name: FakeBackend()
+
+    # vocab invalidator present, BM25-zh invalidator absent.
+    orig_mod = sys.modules.get("mm_asset_rag.query_preprocess")
+    fake_qp = type("M", (), {"invalidate_vocab_cache": staticmethod(lambda: None)})
+    orig_qdrant = sys.modules.get("mm_asset_rag.backends.qdrant_backend")
+    # No invalidate_bm25_zh_idf_cache attribute on this stub.
+    fake_qb = type("M", (), {})
+    sys.modules["mm_asset_rag.query_preprocess"] = fake_qp
+    sys.modules["mm_asset_rag.backends.qdrant_backend"] = fake_qb
+    try:
+        results = service.reindex()
+        assert any("text" in r for r in results)
+    finally:
+        svc_mod.get_backend = orig_get_backend
+        if orig_mod is not None:
+            sys.modules["mm_asset_rag.query_preprocess"] = orig_mod
+        else:
+            sys.modules.pop("mm_asset_rag.query_preprocess", None)
+        if orig_qdrant is not None:
+            sys.modules["mm_asset_rag.backends.qdrant_backend"] = orig_qdrant
+        else:
+            sys.modules.pop("mm_asset_rag.backends.qdrant_backend", None)
+
+
+def test_ingest_task_invalidates_caches_on_success(tmp_home: Path) -> None:
+    """A successful ingest (``upsert_text`` + ``upsert_image`` both
+    return without raising) must drop the vocab + BM25-zh IDF caches
+    after the points are written and before the task is marked
+    terminal, so a query issued right after the UI flips to "done"
+    rebuilds against the new collection state.
+    """
+    import sys
+
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.service import IngestService, ParseOptions, TaskRecord, _run_ingest_task
+
+    asset = _make_asset(tmp_home, "ing.png")
+    rec = TaskRecord(task_id="ingest-inv", kind="ingest", status="running", total=1)
+    rec.uploaded_files = [asset.relative_path]
+    rec.asset_statuses = {asset.asset_id: "ok"}
+
+    service = IngestService()
+
+    class FakeBackend:
+        def upsert_text(self, progress_cb=None):
+            return (1, "fake_text")
+
+        def upsert_image(self, progress_cb=None):
+            return (0, "fake_image")
+
+    orig_get_backend = svc_mod.get_backend
+    svc_mod.get_backend = lambda name: FakeBackend()
+
+    calls: list[str] = []
+
+    def _record(name):
+        def _fn():
+            calls.append(name)
+
+        return _fn
+
+    orig_qp = sys.modules.get("mm_asset_rag.query_preprocess")
+    orig_qb = sys.modules.get("mm_asset_rag.backends.qdrant_backend")
+    sys.modules["mm_asset_rag.query_preprocess"] = type(
+        "M", (), {"invalidate_vocab_cache": staticmethod(_record("vocab"))}
+    )
+    sys.modules["mm_asset_rag.backends.qdrant_backend"] = type(
+        "M", (), {"invalidate_bm25_zh_idf_cache": staticmethod(_record("bm25_idf"))}
+    )
+    try:
+        _run_ingest_task(service, rec, ParseOptions(assets=[asset]))
+    finally:
+        svc_mod.get_backend = orig_get_backend
+        if orig_qp is not None:
+            sys.modules["mm_asset_rag.query_preprocess"] = orig_qp
+        else:
+            sys.modules.pop("mm_asset_rag.query_preprocess", None)
+        if orig_qb is not None:
+            sys.modules["mm_asset_rag.backends.qdrant_backend"] = orig_qb
+        else:
+            sys.modules.pop("mm_asset_rag.backends.qdrant_backend", None)
+
+    assert calls == ["vocab", "bm25_idf"]
+    assert rec.status in {"done", "partial"}
+    assert rec.finished_at is not None
+
+
+# ─── M8: list_tasks overlays in-memory recs on SQLite rows ────────────
+
+
+def test_list_tasks_overlays_in_memory_recs_on_sqlite_rows(tmp_home: Path) -> None:
+    """For any ``task_id`` present in both SQLite and ``self._tasks``,
+    the in-memory copy wins — it's the one ``_patch`` mutates, so it's
+    strictly fresher than the persisted row. Without the overlay a
+    just-patched task whose SQLite write is still in flight would show
+    stale status/``current`` in the UI.
+    """
+    import sqlite3
+
+    from mm_asset_rag.service import IngestService, TaskRecord
+
+    service = IngestService()
+    base = time.time()
+    rec = TaskRecord(task_id="overlay01", kind="parse", status="pending", total=1)
+    # Persist an old (stale) snapshot to SQLite.
+    with sqlite3.connect(str(service._tasks_db_path())) as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tasks ("
+            "task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO tasks (task_id, payload, updated_at) VALUES (?, ?, ?)",
+            (rec.task_id, json.dumps(asdict(rec)), base),
+        )
+    # Mutate the in-memory copy — this is the fresher state SQLite
+    # doesn't have yet.
+    rec.status = "done"
+    rec.current = "patched in memory"
+    rec.finished_at = base + 5.0
+    service._tasks[rec.task_id] = rec
+
+    listed = service.list_tasks()
+    assert listed
+    hit = next(t for t in listed if t.task_id == rec.task_id)
+    assert hit.status == "done"
+    assert hit.current == "patched in memory"
+    assert hit.finished_at == base + 5.0
+
+
+def test_list_tasks_surfaces_memory_only_recs_not_yet_persisted(tmp_home: Path) -> None:
+    """``_new_task`` adds to ``self._tasks`` and *then* calls
+    ``_persist``; ``list_tasks`` must surface such a memory-only rec
+    (no SQLite row yet) so the UI doesn't briefly lose the just-created
+    task. We simulate the pre-persist window by inserting into
+    ``_tasks`` only.
+    """
+    from mm_asset_rag.service import IngestService, TaskRecord
+
+    service = IngestService()
+    rec = TaskRecord(task_id="memonly01", kind="parse", status="running", total=1)
+    service._tasks[rec.task_id] = rec
+    listed = service.list_tasks()
+    ids = [t.task_id for t in listed]
+    assert "memonly01" in ids
