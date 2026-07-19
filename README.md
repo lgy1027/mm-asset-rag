@@ -33,22 +33,36 @@ Compared to larger frameworks:
 
 ## Installation
 
+The package is not yet published to PyPI. Install from source (clone or a release tarball):
+
 ```bash
-pip install mm-asset-rag
+git clone https://github.com/lgy1027/mm-asset-rag
+cd mm-asset-rag
+pip install -e .            # core: text + image (lite) retrieval, FastAPI web UI
 ```
 
-Optional CLIP-based image embeddings:
+Optional CLIP-based image embeddings (recommended if you want text→image / image→image routes on real image corpora):
 
 ```bash
-pip install "mm-asset-rag[clip]"
+pip install -e ".[clip]"    # sentence-transformers CLIP
+```
+
+Optional multi-format Office document parsing (docx/pptx/xlsx/html) beyond the default MarkItDown:
+
+```bash
+pip install -e ".[docling]" # layout-aware docling parser (heavier, pulls torch/transformers)
 ```
 
 For local development:
 
 ```bash
-git clone https://github.com/lgy1027/mm-asset-rag
-cd mm-asset-rag
 pip install -e ".[dev,clip]"
+```
+
+Or with [uv](https://docs.astral.sh/uv/) (reproducible installs from the committed `uv.lock`):
+
+```bash
+uv sync --extra dev
 ```
 
 ## Quick start
@@ -75,6 +89,8 @@ mmrag reindex
 mmrag search "find the beach photo"
 ```
 
+> **Qdrant local-file lock is single-process.** While `mmrag-api` is running, run `mmrag reindex` from another terminal and it will fail with a "storage already accessed" lock error. Either stop the API first, or point `QDRANT_URL` at a Qdrant server for concurrent access.
+
 ## Upload flow
 
 ```
@@ -86,8 +102,8 @@ POST /upload/preview (multipart files)
   └─ return editable preview cards
 
 POST /upload/confirm (cache_id + edited previews)
-  ├─ move confirmed files into assets/pdfs or assets/images
-  ├─ parse PDF/image into documents.jsonl
+  ├─ move confirmed files into assets/pdfs, assets/images, or assets/documents
+  ├─ parse PDF/image/document into documents.jsonl
   ├─ upsert text chunks into Qdrant text collection
   └─ upsert image vectors into Qdrant image collection
 ```
@@ -109,6 +125,21 @@ All settings come from environment variables (a `.env` file in the current direc
 | `OCR_HTTP_URL` | Optional local OCR service for image text extraction. | — |
 
 See [`.env.example`](.env.example) and [`docs/configuration.md`](docs/configuration.md) for the full list.
+
+## Evaluation
+
+`mmrag eval` runs a fixed set of expected-query → expected-asset cases against the live index and reports hit-rate / MRR. It needs the expected assets to be **already ingested** first — otherwise every case returns `hit: false`, which looks like the system is broken.
+
+```bash
+# 1. Ingest the eval corpus (the cases reference known PDFs/images —
+#    point mmrag parse at whatever corpus you want to evaluate against).
+mmrag parse ./my_eval_corpus/*.pdf
+# 2. Run the evaluation
+mmrag eval          # v1 case set
+mmrag eval --v2     # v2: 83 Chinese-primary, multi-dimensional cases
+```
+
+When no LLM is configured, the eval still runs (it measures retrieval only); `/answer`-dependent cases degrade gracefully.
 
 ## Project layout
 
@@ -137,7 +168,7 @@ mm-asset-rag/
 ├── tests/unit/           # offline unit tests
 ├── tests/integration/    # marked @pytest.mark.integration
 ├── docs/                 # architecture, configuration, api
-└── scripts/              # eval_rag.py, benchmark.py
+└── scripts/              # eval_rag.py, benchmark.py, *.sh eval pilots
 ```
 
 ### Adding a new modality (audio, video)

@@ -670,7 +670,18 @@ class IngestService:
 
         parsed_dir = get_parsed_dir() / asset_id
         parsed_raw = parsed_dir / "raw.jsonl"
-        captions_path = get_captions_dir() / f"{asset_id}.json"
+        # Captions are cached per asset. Image assets use a single-object
+        # ``.json`` (one VLM caption); documents with embedded figures use
+        # ``.jsonl`` (one JSON-per-figure, written by image_caption). Check
+        # both so the detail view reports the path that actually exists.
+        captions_candidates = [
+            get_captions_dir() / f"{asset_id}.jsonl",
+            get_captions_dir() / f"{asset_id}.json",
+        ]
+        captions_path = next(
+            (p for p in captions_candidates if p.exists()),
+            captions_candidates[0],
+        )
 
         try:
             parsed_size = parsed_raw.stat().st_size if parsed_raw.exists() else 0
@@ -756,17 +767,20 @@ class IngestService:
         except OSError as exc:
             report.errors.append(f"parsed delete failed: {exc}")
 
-        # 3. captions/<asset_id>.json
-        try:
-            captions_path = get_captions_dir() / f"{asset_id}.json"
-            if captions_path.exists():
-                if dry_run:
-                    report.would_delete_captions = True
-                else:
-                    captions_path.unlink()
-                    report.captions_deleted = True
-        except OSError as exc:
-            report.errors.append(f"captions delete failed: {exc}")
+        # 3. captions/<asset_id>.{jsonl,json} — document embedded figures
+        #    use .jsonl (one JSON per figure), image assets use .json. Clean
+        #    both so no caption cache is left behind on delete.
+        for cap_name in (f"{asset_id}.jsonl", f"{asset_id}.json"):
+            try:
+                captions_path = get_captions_dir() / cap_name
+                if captions_path.exists():
+                    if dry_run:
+                        report.would_delete_captions = True
+                    else:
+                        captions_path.unlink()
+                        report.captions_deleted = True
+            except OSError as exc:
+                report.errors.append(f"captions delete failed: {exc}")
 
         # 4. documents.jsonl rewrite (filter rows whose metadata.asset_id matches)
         try:

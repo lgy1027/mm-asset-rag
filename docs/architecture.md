@@ -50,7 +50,7 @@
 - **`service.IngestService`** owns parse + index + task state. It uses
   `Protocol`s from `protocols.py` to dispatch to the right parser /
   embedder / backend via `registry.py`, and persists every state change to
-  `$MM_ASSET_RAG_HOME/tasks.jsonl` so history survives restarts.
+  `$MM_ASSET_RAG_HOME/tasks.db` so history survives restarts.
 - **`parsers/`** turn raw files into `ParsedDocument` records. Today:
   PyMuPDF + PaddleOCR-VL (PDF); OCR + VLM caption (image). Each parser
   satisfies `Parser` Protocol and is registered at import time.
@@ -62,7 +62,7 @@
   swap-in point for Milvus / Pinecone.
 - **`retrieval.hybrid_search`** is pure (no I/O); it normalizes per-route
   scores and weights them from `Settings` (defaults: text 0.80,
-  text-to-image 0.20, image-to-image 0.0 unless an image query is provided).
+  text-to-image 0.20, image-to-image 0.15).
 - **`answer.llm_answer` / `stream_answer_chunks`** issue an OpenAI-
   compatible chat completion with the retrieved evidence as context. When
   no LLM is configured, an evidence-summary fallback is returned instead.
@@ -73,7 +73,7 @@ Three Protocols are declared in `protocols.py` and registered in `registry.py`:
 
 | Protocol          | Keyed by            | Where the registry is queried                            |
 | ----------------- | ------------------- | ------------------------------------------------------- |
-| `Parser`          | `(source_type, name)` | `parsers/__init__.py` registers `pymupdf` / `paddleocr_vl` |
+| `Parser`          | `(source_type, name)` | `parsers/__init__.py` registers `pymupdf` / `paddleocr_vl` (PDF), `docling` / `markitdown` (documents), `image` |
 | `Embedder`        | `(modality, name)`  | `embedders/__init__.py` registers the default text embedder |
 | `VectorBackend`   | `name`              | `backends/__init__.py` registers Qdrant                  |
 
@@ -84,7 +84,7 @@ Adding a new modality (audio, video) is a three-line change — see
 
 Background work runs on daemon `threading.Thread`s spawned by
 `IngestService._spawn()`. Every `_patch()` writes a JSON snapshot of
-the task to `$MM_ASSET_RAG_HOME/tasks.jsonl`. On startup, the FastAPI
+the task to `$MM_ASSET_RAG_HOME/tasks.db`. On startup, the FastAPI
 `lifespan` calls `service.load_history()`, which rebuilds the in-memory
 task list and reclassifies any task that was still `running` when the
 previous process exited as `interrupted`.

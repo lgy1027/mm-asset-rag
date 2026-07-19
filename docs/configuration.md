@@ -14,10 +14,10 @@ $MM_ASSET_RAG_HOME/
 │   └── documents/           # confirmed office/text (docx/pptx/xlsx/html/md/txt)
 ├── .preview-cache/<id>/     # short-lived upload preview files
 ├── parsed/<asset_id>/       # PDF page markdown / image OCR JSON
-├── captions/<asset_id>.json # VLM captions
+├── captions/<asset_id>.jsonl # VLM captions
 ├── indexes/qdrant/          # local Qdrant persistence
 ├── documents.jsonl          # ParsedDocument store
-└── tasks.jsonl              # background task history
+└── tasks.db                  # background task history (SQLite)
 ```
 
 There is no `asset_manifest.json`; uploaded files are auto-sniffed and converted into `Asset` objects during `/upload/confirm`.
