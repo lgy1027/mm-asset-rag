@@ -1148,17 +1148,26 @@ def qdrant_text_search(
         )
 
     # Determine the active collection name (Qdrant active-text env var wins).
-    results = _hybrid_text_query(
-        client,
-        text_collection(len(dense_query)),
-        dense_query,
-        sparse_query,
-        sparse_query_zh,
-        top_k,
-        text_filter=text_filter,
-        embed_sparse_vector=embed_sparse_query,
-        embed_colbert_vector=embed_colbert_query,
-    )
+    try:
+        results = _hybrid_text_query(
+            client,
+            text_collection(len(dense_query)),
+            dense_query,
+            sparse_query,
+            sparse_query_zh,
+            top_k,
+            text_filter=text_filter,
+            embed_sparse_vector=embed_sparse_query,
+            embed_colbert_vector=embed_colbert_query,
+        )
+    except ValueError as exc:
+        # The text collection may not exist yet (e.g. a fresh install, or
+        # an instance that has only ingested images). Degrade to an empty
+        # result instead of crashing hybrid_search — mirrors the image
+        # routes' collection-missing handling.
+        if not _is_collection_missing(exc):
+            raise
+        return []
     return [_point_to_hit("qdrant_text", point) for point in results]
 
 
@@ -1174,6 +1183,20 @@ def _filter_by_relevance(results, threshold: float) -> list:
     if threshold <= 0.0:
         return list(results)
     return [p for p in results if (p.score or 0.0) >= threshold]
+
+
+def _is_collection_missing(exc: BaseException) -> bool:
+    """True iff ``exc`` is Qdrant's "collection not found" error.
+
+    A freshly installed instance (or one that has only ingested images /
+    only ingested text) has no matching collection yet; the search routes
+    must treat that as a clean empty result rather than crashing
+    ``hybrid_search``. Qdrant's client raises a ``ValueError`` whose
+    message contains ``not found`` for a missing collection — the same
+    signal the image routes already keyed on. Centralised here so all
+    three routes degrade symmetrically.
+    """
+    return isinstance(exc, ValueError) and "not found" in str(exc)
 
 
 # ─── Sparse pre-filter for image search ─────────────────────────────────
@@ -1398,7 +1421,7 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
             with_payload=True,
         ).points
     except ValueError as exc:
-        if "not found" not in str(exc):
+        if not _is_collection_missing(exc):
             raise
         return []
     threshold = get_settings().image_relevance_threshold
@@ -1413,12 +1436,20 @@ def qdrant_image_to_image_search(image_path: Path, top_k: int = 5) -> list[Searc
         return []
     client = get_qdrant_client()
     query_vector = provider.embed_image(image_path)
-    results = client.query_points(
-        collection_name=image_collection(len(query_vector)),
-        query=query_vector,
-        limit=top_k,
-        with_payload=True,
-    ).points
+    # The image collection may not exist yet (e.g. the user only ingested
+    # PDFs/documents). Degrade to an empty result instead of raising —
+    # symmetric with the text→image route and the text route.
+    try:
+        results = client.query_points(
+            collection_name=image_collection(len(query_vector)),
+            query=query_vector,
+            limit=top_k,
+            with_payload=True,
+        ).points
+    except ValueError as exc:
+        if not _is_collection_missing(exc):
+            raise
+        return []
     threshold = get_settings().image_relevance_threshold
     results = _filter_by_relevance(results, threshold)
     return [_point_to_hit("qdrant_image_to_image", point) for point in results]
