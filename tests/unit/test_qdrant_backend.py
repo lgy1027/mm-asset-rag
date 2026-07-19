@@ -639,3 +639,143 @@ def test_is_collection_missing_predicate() -> None:
     assert _is_collection_missing(ValueError("Collection X not found")) is True
     assert _is_collection_missing(ValueError("something else")) is False
     assert _is_collection_missing(RuntimeError("not found")) is False
+
+
+# ─── invalidate_bm25_zh_idf_cache ─────────────────────────────────────────
+# In server mode (long-lived API process), a reindex triggered from a
+# separate CLI rewrites ``bm25_zh_idf.json`` on disk, but the API
+# process keeps the old IDF table in ``_BM25_ZH_IDF_CACHE`` — recall
+# drifts out of sync with the freshly rebuilt collection. The public
+# ``invalidate_bm25_zh_idf_cache`` lets ``service`` drop the cache after
+# reindex / parse so the next query re-reads the on-disk file.
+
+
+def test_invalidate_bm25_zh_idf_cache_clears_cache() -> None:
+    """Calling ``invalidate_bm25_zh_idf_cache`` resets the module cache to None."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    # Seed the cache with a sentinel value; the function should drop it.
+    qdrant_backend._BM25_ZH_IDF_CACHE = {"sentinel": 1.0}
+    qdrant_backend.invalidate_bm25_zh_idf_cache()
+    assert qdrant_backend._BM25_ZH_IDF_CACHE is None
+
+
+def test_invalidate_bm25_zh_idf_cache_idempotent_on_none() -> None:
+    """Invalidating when the cache is already None is a no-op."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    qdrant_backend._BM25_ZH_IDF_CACHE = None
+    qdrant_backend.invalidate_bm25_zh_idf_cache()
+    assert qdrant_backend._BM25_ZH_IDF_CACHE is None
+
+
+# ─── get_qdrant_client local→remote switch closes local client ───────────
+# When the deployer flips ``QDRANT_URL`` on at runtime (e.g. moves from
+# local-file mode to a Qdrant server), the previously cached local
+# client must be closed so its ``.lock`` and underlying storage fd are
+# released. Otherwise the lock stays held for the rest of the process
+# even though we no longer use that client.
+
+
+def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
+    monkeypatch, tmp_path
+) -> None:
+    """Switching to remote mode closes the cached local client."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    # Build a fake local client whose close() is observable.
+    closed_calls: list[int] = []
+
+    class _FakeLocalClient:
+        def __init__(self) -> None:
+            self._closed = False
+
+        def close(self) -> None:
+            closed_calls.append(1)
+            self._closed = True
+
+    # Pretend we already cached a local client (simulating a prior
+    # local-mode call) — populate the module globals directly.
+    monkeypatch.setattr(
+        "mm_asset_rag.backends.qdrant_backend.get_indexes_dir",
+        lambda: tmp_path / "indexes",
+    )
+    qdrant_backend.reset_qdrant_client_cache()
+    fake_local = _FakeLocalClient()
+    qdrant_backend._QDRANT_CLIENT = fake_local
+    qdrant_backend._QDRANT_CLIENT_KEY = str(tmp_path / "indexes" / "qdrant")
+
+    # Configure remote mode.
+    monkeypatch.setenv("QDRANT_URL", "http://example:6333")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+
+    # Stub QdrantClient so we don't actually open a remote connection.
+    constructed: list[str] = []
+
+    class _FakeRemoteClient:
+        def __init__(self, **kwargs):
+            constructed.append(kwargs.get("url", ""))
+
+        def close(self) -> None:  # pragma: no cover — never called here
+            pass
+
+    import mm_asset_rag.backends.qdrant_backend as qb
+
+    monkeypatch.setattr(qb, "QdrantClient", _FakeRemoteClient)
+
+    try:
+        client = qdrant_backend.get_qdrant_client()
+    finally:
+        qdrant_backend.reset_qdrant_client_cache()
+        # Restore env cache for other tests.
+        monkeypatch.delenv("QDRANT_URL", raising=False)
+        get_settings.cache_clear()
+
+    # The cached local client was closed exactly once.
+    assert closed_calls == [1]
+    # A new remote client was constructed.
+    assert constructed == ["http://example:6333"]
+    # The module-level cache is cleared (local client no longer held).
+    assert qdrant_backend._QDRANT_CLIENT is None
+    assert qdrant_backend._QDRANT_CLIENT_KEY is None
+    # Returned client is the freshly constructed remote one.
+    assert isinstance(client, _FakeRemoteClient)
+
+
+def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> None:
+    """Switching to remote when no local client is cached is a no-op on close."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    monkeypatch.setattr(
+        "mm_asset_rag.backends.qdrant_backend.get_indexes_dir",
+        lambda: None,  # not used in remote branch
+    )
+    qdrant_backend.reset_qdrant_client_cache()
+    monkeypatch.setenv("QDRANT_URL", "http://example:6333")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+
+    constructed: list[str] = []
+
+    class _FakeRemoteClient:
+        def __init__(self, **kwargs):
+            constructed.append(kwargs.get("url", ""))
+
+        def close(self) -> None:  # pragma: no cover
+            pass
+
+    import mm_asset_rag.backends.qdrant_backend as qb
+
+    monkeypatch.setattr(qb, "QdrantClient", _FakeRemoteClient)
+    try:
+        qdrant_backend.get_qdrant_client()
+    finally:
+        qdrant_backend.reset_qdrant_client_cache()
+        monkeypatch.delenv("QDRANT_URL", raising=False)
+        get_settings.cache_clear()
+
+    assert constructed == ["http://example:6333"]
+    assert qdrant_backend._QDRANT_CLIENT is None

@@ -65,3 +65,56 @@ def test_answer_json_returns_valid_json(monkeypatch) -> None:
     parsed = json.loads(payload)
     assert "answer" in parsed
     assert "sources" in parsed
+
+
+def test_warn_insecure_base_url_warns_on_non_loopback_http(caplog) -> None:
+    """A plain-HTTP base_url to a non-loopback host warns once."""
+    import logging
+
+    from mm_asset_rag.answer import _warn_insecure_base_url, _warned_insecure_base_urls
+
+    _warned_insecure_base_urls.clear()
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.answer"):
+        _warn_insecure_base_url("http://10.0.0.5/v1")
+    assert any("10.0.0.5" in r.message for r in caplog.records)
+    assert any("HTTP" in r.message for r in caplog.records)
+
+
+def test_warn_insecure_base_url_silent_on_loopback(caplog) -> None:
+    """http:// to loopback hosts (local ollama) must not warn."""
+    import logging
+
+    from mm_asset_rag.answer import _warn_insecure_base_url, _warned_insecure_base_urls
+
+    _warned_insecure_base_urls.clear()
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.answer"):
+        _warn_insecure_base_url("http://127.0.0.1:11434/v1")
+        _warn_insecure_base_url("http://localhost:11434/v1")
+        _warn_insecure_base_url("http://[::1]:11434/v1")
+    assert not any("Authorization" in r.message for r in caplog.records)
+
+
+def test_warn_insecure_base_url_dedups(caplog) -> None:
+    """Same non-loopback http:// base_url warns only once per process."""
+    import logging
+
+    from mm_asset_rag.answer import _warn_insecure_base_url, _warned_insecure_base_urls
+
+    _warned_insecure_base_urls.clear()
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.answer"):
+        _warn_insecure_base_url("http://10.0.0.5/v1")
+        _warn_insecure_base_url("http://10.0.0.5/v1")
+    matching = [r for r in caplog.records if "10.0.0.5" in r.message]
+    assert len(matching) == 1
+
+
+def test_warn_insecure_base_url_silent_on_https(caplog) -> None:
+    """HTTPS base_urls never warn, regardless of host."""
+    import logging
+
+    from mm_asset_rag.answer import _warn_insecure_base_url, _warned_insecure_base_urls
+
+    _warned_insecure_base_urls.clear()
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.answer"):
+        _warn_insecure_base_url("https://10.0.0.5/v1")
+    assert not any("HTTP" in r.message for r in caplog.records)

@@ -217,10 +217,13 @@ bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a candidate
 
 These limits protect `/upload/preview` from accidental very large uploads. Oversized multipart bodies return HTTP 413; files that sniff as too large/complex are shown as rejected preview cards and cannot be confirmed.
 
+The `UPLOAD_MAX_BATCH_BYTES` cap is enforced by a request-body-size middleware **before** Starlette spools the multipart body to `SpooledTemporaryFile` — so an oversized POST is rejected at the ASGI layer rather than filling `/tmp` first. The per-file and per-batch checks inside the handler remain as a second layer.
+
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `UPLOAD_MAX_FILE_BYTES` | `52428800` | Per-file upload cap |
-| `UPLOAD_MAX_BATCH_BYTES` | `209715200` | Total multipart batch cap |
+| `UPLOAD_MAX_FILE_BYTES` | `52428800` | Per-file upload cap (in-handler check) |
+| `UPLOAD_MAX_BATCH_BYTES` | `209715200` | Total request-body cap (enforced by the body-size middleware before spool) |
+| `UPLOAD_MAX_FILES` | `50` | Max files in one `/upload/preview` batch (bounds VLM auto-meta spend) |
 | `UPLOAD_MAX_PDF_PAGES` | `500` | Reject confirmed PDFs above this page count |
 | `UPLOAD_MAX_IMAGE_PIXELS` | `50000000` | Reject images above this pixel count |
 | `UPLOAD_SLUG_MAX_LEN` | `80` | Maximum readable title slug length used in asset file names |

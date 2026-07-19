@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Unlock v4 code paths + measure real eval delta vs v5 baseline (0.280 / 0.087 / 1.000).
 #
+# ⚠ 依赖说明(2026-07):
+#   - 本脚本依赖 bundled corpus `examples/data/chapter11_assets/pdfs`。该目录已
+#     出仓(经 git filter-repo 清理),clone 后默认不存在,需自行准备或从历史
+#     commit 中恢复对应 PDF 文件后再运行。
+#   - 基线 0.280 / 0.087 / 1.000 是 v5 历史评估结果(text→text / text→image /
+#     image→image hit@5),仅作参考;新环境跑出来的数字不能直接和该基线对比,
+#     除非 corpus / eval 集 / 模型版本完全一致。
+#   - 脚本依赖 `/tmp/run_v2_eval.py` 存在,以及 home .env 里配好的 bge-m3 /
+#     minimax / ollama 环境。
+#
 # What this does:
 #   1. Kill stale qdrant lock + verify no process holds it
 #   2. Reparse all bundled PDFs  → triggers P5 chunk-by-section + keyword footer
@@ -21,6 +31,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/..")"
 REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
 export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+# Guard:依赖的 bundled corpus 已出仓,不存在则提前退出。
+PDFS_DIR="$REPO_ROOT/examples/data/chapter11_assets/pdfs"
+if [ ! -d "$PDFS_DIR" ]; then
+    echo "错误:依赖的 bundled corpus 不存在: $PDFS_DIR" >&2
+    echo "     该目录已出仓,需自行准备对应 PDF 文件后放入上述路径,或从历史 commit 恢复。" >&2
+    echo "     (基线 0.280 / 0.087 / 1.000 仅为历史参考值,新环境结果不可直接对比)" >&2
+    exit 1
+fi
 
 echo "════════════════════════════════════════════════════════════════"
 echo "  mm-asset-rag  unlock-v4 + eval   (home: $HOME_DIR)"

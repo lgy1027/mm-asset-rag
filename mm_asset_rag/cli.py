@@ -161,6 +161,20 @@ def command_search(args: argparse.Namespace) -> None:
 
 def command_eval(args: argparse.Namespace) -> None:
     load_env()
+    if args.v2:
+        from .evaluation_v2 import run_eval_v2, write_eval_report_v2
+
+        results = run_eval_v2(top_k=args.top_k)
+        # v2 has multiple groups (text-to-text here, plus separate
+        # text→image / image→image runners); ``write_eval_report_v2``
+        # expects a ``{group_name: [V2Result, ...]}`` mapping. We run only
+        # the text→text group because that is what v1's ``run_eval``
+        # covers and what the default ``mmrag eval`` output compares
+        # against; the other groups have their own CLI one-shot in
+        # ``evaluation_v2.__main__``.
+        write_eval_report_v2({"text_to_text": results})
+        safe_print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
+        return
     results = run_eval(top_k=args.top_k)
     write_eval_report(results)
     safe_print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
@@ -284,6 +298,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     eval_cmd = subparsers.add_parser("eval", help="Run the small retrieval regression set")
     eval_cmd.add_argument("--top-k", type=int, default=5)
+    eval_cmd.add_argument(
+        "--v2",
+        action="store_true",
+        help=(
+            "Run the v2 regression set (83 cases, Chinese-primary, multi-dimensional: "
+            "cross-language / multi-relevant / negative / typo / image-to-image) "
+            "instead of the v1 set. Writes eval_report_v2.json. Default is v1 "
+            "so existing scripts / dashboards keep their numbers."
+        ),
+    )
     eval_cmd.set_defaults(func=command_eval)
 
     answer_cmd = subparsers.add_parser("answer", help="Answer with retrieved multimodal evidence")

@@ -2,6 +2,15 @@
 # Contextual Retrieval 小规模试点:对 10 个中文 PDF(联宝/Codex/Obsidian,~208 chunks)
 # 生成 LLM context,跑 eval 看是否 > v6-corrected 基线 0.673。
 #
+# ⚠ 依赖说明(2026-07):
+#   - 本脚本依赖 bundled corpus `examples/data/chapter11_assets/pdfs`。该目录已
+#     出仓(经 git filter-repo 清理),clone 后默认不存在,需自行准备或从历史
+#     commit 中恢复对应 PDF 文件后再运行。
+#   - 基线 0.673 是 v6-corrected 历史评估结果,仅作参考;新环境跑出来的数字
+#     不能直接和该基线对比,除非 corpus / eval 集 / 模型版本完全一致。
+#   - 脚本会调 MiniMax-M3 生成 context(需在 home .env 配置 LLM),并依赖
+#     `/tmp/run_v2_eval.py` 存在。
+#
 # 流程:
 #   1. 清这 10 个 asset 的 parsed/ 缓存(否则 _do_parse 跳过)
 #   2. 从 documents.jsonl 删这 10 个 asset 的旧 chunk(否则重复)
@@ -18,6 +27,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/..")"
 REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
 PDFS_DIR="$REPO_ROOT/examples/data/chapter11_assets/pdfs"
+
+# Guard:依赖的 bundled corpus 已出仓,不存在则提前退出。
+if [ ! -d "$PDFS_DIR" ]; then
+    echo "错误:依赖的 bundled corpus 不存在: $PDFS_DIR" >&2
+    echo "     该目录已出仓,需自行准备对应 PDF 文件后放入上述路径,或从历史 commit 恢复。" >&2
+    echo "     (基线 0.673 仅为历史参考值,新环境结果不可直接对比)" >&2
+    exit 1
+fi
+if [ -z "$(find "$PDFS_DIR" -maxdepth 1 -name '*.pdf' -print -quit 2>/dev/null)" ]; then
+    echo "错误:$PDFS_DIR 存在但不含任何 .pdf 文件,无法继续。" >&2
+    exit 1
+fi
 
 echo "════════════════════════════════════════════════════════════════"
 echo "  contextual retrieval 试点 (10 中文 PDF, ~208 chunks)"

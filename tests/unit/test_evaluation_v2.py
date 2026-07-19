@@ -8,7 +8,10 @@ without running the full Qdrant-backed eval loop.
 
 from __future__ import annotations
 
-from mm_asset_rag.evaluation_v2 import _expand, _match, _title_of
+from dataclasses import dataclass
+from unittest.mock import patch
+
+from mm_asset_rag.evaluation_v2 import _expand, _match, _title_of, run_eval_v2
 
 
 def test_title_of_strips_hash() -> None:
@@ -83,3 +86,95 @@ def test_expand_returns_all_hash_variants() -> None:
 def test_match_empty_expected_returns_none() -> None:
     """Negative samples (expected=[]) should never be marked hit."""
     assert _match(["Picsum 240", "Caltech Panda 01_3443a5d5"], []) is None
+
+
+def test_run_eval_v2_wraps_text_to_text() -> None:
+    """``run_eval_v2`` is the CLI / API entry point. It must delegate to
+    ``run_text_to_text_eval_v2`` and forward ``top_k`` — that is what
+    makes the v2 production path (``mmrag eval --v2`` / ``POST /eval
+    {v2:true}``) work without each caller knowing about the per-group
+    runners. Regression for M11: before this alias the v2 functions
+    were only reachable from tests.
+    """
+    with patch(
+        "mm_asset_rag.evaluation_v2.run_text_to_text_eval_v2",
+        return_value=[],
+    ) as stub:
+        out = run_eval_v2(top_k=7)
+    stub.assert_called_once_with(top_k=7)
+    assert out == []
+
+
+@dataclass
+class _FakeV2Result:
+    query: str
+    expected_asset_ids: list[str]
+    actual_asset_ids: list[str]
+    hit: bool
+    rank: int | None
+    group: str
+
+
+def test_eval_endpoint_v2_path_routes_to_run_eval_v2() -> None:
+    """``POST /eval`` with ``v2: true`` must invoke ``run_eval_v2`` and
+    return the same ``{"results": [...]}`` shape as v1, with a
+    ``version: "v2"`` tag so clients can tell which set ran.
+    """
+    from fastapi.testclient import TestClient
+
+    from mm_asset_rag.api import app
+
+    fake = [
+        _FakeV2Result(
+            query="CLIP 模型",
+            expected_asset_ids=["Learning Transferable Visual Models"],
+            actual_asset_ids=["Learning Transferable Visual Models_79e328a2"],
+            hit=True,
+            rank=1,
+            group="zh_on_en",
+        )
+    ]
+    with patch("mm_asset_rag.evaluation_v2.run_eval_v2", return_value=fake):
+        # The endpoint imports ``run_eval_v2`` lazily inside the handler
+        # (``from .evaluation_v2 import run_eval_v2``), so patching the
+        # attribute on the module is enough.
+        client = TestClient(app)
+        response = client.post("/eval", json={"v2": True, "top_k": 5})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["version"] == "v2"
+    assert isinstance(body["results"], list)
+    assert len(body["results"]) == 1
+    row = body["results"][0]
+    assert row["query"] == "CLIP 模型"
+    assert row["hit"] is True
+    assert row["rank"] == 1
+    assert row["group"] == "zh_on_en"
+    # Shape parity with v1: same keys.
+    assert set(row.keys()) == {
+        "query",
+        "expected_asset_ids",
+        "actual_asset_ids",
+        "hit",
+        "rank",
+        "group",
+    }
+
+
+def test_eval_endpoint_v1_default_unchanged() -> None:
+    """``POST /eval`` without ``v2`` keeps the v1 path and does not
+    include a ``version`` field (so existing clients are unaffected).
+    """
+    from fastapi.testclient import TestClient
+
+    from mm_asset_rag.api import app
+
+    with patch("mm_asset_rag.api.run_eval", return_value=[]):
+        client = TestClient(app)
+        response = client.post("/eval", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"results": []}
+    assert "version" not in body

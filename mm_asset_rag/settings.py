@@ -360,6 +360,9 @@ class Settings(BaseSettings):
     # ─── Upload preview safety limits ─────────────────────────────────────
     upload_max_file_bytes: int = 50 * 1024 * 1024
     upload_max_batch_bytes: int = 200 * 1024 * 1024
+    # Max number of files in one /upload/preview batch. Bounds VLM auto-meta
+    # spend (one call per file) and keeps the preview response manageable.
+    upload_max_files: int = 50
     upload_max_pdf_pages: int = 500
     upload_max_image_pixels: int = 50_000_000
     upload_slug_max_len: int = 80

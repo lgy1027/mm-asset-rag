@@ -67,6 +67,69 @@ def test_cli_eval_subcommand() -> None:
     parser = build_parser()
     args = parser.parse_args(["eval", "--top-k", "10"])
     assert args.top_k == 10
+    # v2 is opt-in; default is v1 so existing scripts keep their numbers.
+    assert args.v2 is False
+
+
+def test_cli_eval_subcommand_v2_flag() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["eval", "--v2", "--top-k", "7"])
+    assert args.v2 is True
+    assert args.top_k == 7
+
+
+def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``mmrag eval --v2`` must route to ``run_eval_v2`` (not v1's
+    ``run_eval``) and write the v2 report. Regression for M11:
+    v2 was unreachable from production before this flag existed.
+    """
+    from dataclasses import dataclass, field
+
+    import mm_asset_rag.cli as cli_mod
+
+    @dataclass
+    class _FakeV2Result:
+        query: str = "q"
+        expected_asset_ids: list[str] = field(default_factory=list)
+        actual_asset_ids: list[str] = field(default_factory=list)
+        hit: bool = False
+        rank: int | None = None
+        group: str = "zh_on_en"
+
+    calls: dict[str, object] = {}
+
+    def fake_run_eval_v2(top_k: int):
+        calls["top_k"] = top_k
+        calls["v2_called"] = True
+        return [_FakeV2Result()]
+
+    def fake_write_v2(by_group, path=None):
+        calls["write_v2"] = by_group
+
+    def fake_write_v1(results, path=None):
+        calls["write_v1"] = results
+
+    # Block ``load_env`` from touching the real env in case the test
+    # runner has no .env; it is a no-op when no .env exists, but patching
+    # keeps the test hermetic.
+    monkeypatch.setattr(cli_mod, "load_env", lambda: None)
+    import mm_asset_rag.evaluation_v2 as ev2
+
+    monkeypatch.setattr(ev2, "run_eval_v2", fake_run_eval_v2)
+    monkeypatch.setattr(ev2, "write_eval_report_v2", fake_write_v2)
+    # Guard: v1 must NOT be called when --v2 is set.
+    monkeypatch.setattr(
+        cli_mod, "run_eval", lambda top_k: (_ for _ in ()).throw(AssertionError("v1 ran"))
+    )
+    monkeypatch.setattr(cli_mod, "write_eval_report", fake_write_v1)
+
+    args = build_parser().parse_args(["eval", "--v2", "--top-k", "4"])
+    cli_mod.command_eval(args)
+
+    assert calls.get("v2_called") is True
+    assert calls.get("top_k") == 4
+    assert "write_v2" in calls
+    assert "write_v1" not in calls
 
 
 def test_cli_retry_subcommand_parses() -> None:

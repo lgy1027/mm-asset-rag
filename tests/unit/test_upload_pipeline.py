@@ -724,3 +724,105 @@ def test_fill_auto_meta_swallows_single_failure(
     previews = pipeline.preview([(p1.name, p1), (p2.name, p2)])
     for p in previews:
         assert p.auto_meta is None
+
+
+# ─── concurrent confirm safety ────────────────────────────────────────
+
+
+def test_confirm_second_call_on_already_consumed_cache_returns_empty(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    """A second confirm on the same cache_id after the first succeeded
+    returns ``[]`` (so the API layer surfaces 400 "no confirmed assets")
+    instead of racing on missing cache files and raising a 500."""
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    pipeline.preview([(png_file.name, png_file)])
+    cache_id = _get_cache_id(home)
+
+    import json as _json
+
+    manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
+    preview_id = next(iter(manifest))
+    edits = [UserEdits(preview_id=preview_id)]
+
+    first = pipeline.confirm(cache_id, edits)
+    assert len(first) == 1
+    # Cache dir is gone; a ``.done`` marker sits in the confirm-state dir.
+    assert not (home / ".preview-cache" / cache_id).exists()
+    assert (home / ".confirm-state" / f"{cache_id}.done").exists()
+
+    # Second confirm on the same cache_id: no 500, just an empty list.
+    second = pipeline.confirm(cache_id, edits)
+    assert second == []
+
+
+def test_confirm_concurrent_same_cache_id_serializes(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    """Two threads confirming the same cache_id concurrently: exactly one
+    wins (returns 1 asset), the loser returns [] instead of throwing
+    ``UploadCommitError``. Verifies the per-cache_id lock prevents
+    torn moves on the same cached file."""
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    pipeline.preview([(png_file.name, png_file)])
+    cache_id = _get_cache_id(home)
+
+    import json as _json
+
+    manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
+    preview_id = next(iter(manifest))
+    edits = [UserEdits(preview_id=preview_id)]
+
+    results: list[list] = []
+    errors: list[BaseException] = []
+    start_gate = threading.Event()
+    results_lock = threading.Lock()
+
+    def run_confirm() -> None:
+        start_gate.wait(timeout=2.0)
+        try:
+            assets = pipeline.confirm(cache_id, list(edits))
+            with results_lock:
+                results.append(assets)
+        except BaseException as exc:  # pragma: no cover - we assert no errors
+            with results_lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=run_confirm) for _ in range(2)]
+    for t in threads:
+        t.start()
+    start_gate.set()
+    for t in threads:
+        t.join(timeout=10.0)
+
+    assert errors == [], f"concurrent confirms should not raise, got: {errors}"
+    # Exactly one winner got the asset; the other returned [].
+    winners = [r for r in results if len(r) == 1]
+    empties = [r for r in results if r == []]
+    assert len(winners) == 1, f"expected exactly one winner, got: {results}"
+    assert len(empties) == 1, f"expected exactly one empty, got: {results}"
+
+
+def test_discard_cache_clears_done_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    """``discard_cache`` removes the ``.done`` and ``.lock`` markers so a
+    recycled cache_id can't leak a stale 'already confirmed' state."""
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    pipeline.preview([(png_file.name, png_file)])
+    cache_id = _get_cache_id(home)
+    # Simulate a prior confirm leaving the done marker behind.
+    (home / ".confirm-state").mkdir(exist_ok=True)
+    (home / ".confirm-state" / f"{cache_id}.done").write_text("done")
+    pipeline.discard_cache(cache_id)
+    assert not (home / ".confirm-state" / f"{cache_id}.done").exists()
+    assert not (home / ".confirm-state" / f"{cache_id}.lock").exists()

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import urlparse
 
 import requests
 
@@ -15,11 +17,52 @@ from .retrieval import hybrid_search
 from .schema import SearchHit
 from .settings import get_settings
 
+log = logging.getLogger(__name__)
+
 # Hard cap on total images sent in one chat request, on top of the per-hit
 # ``answer_image_max_per_hit`` cap. Bounds token cost: a 5-hit answer with
 # 2 images each would otherwise push 10 base64'd figures through an 8B
 # local model. 4 is enough to cover the top-2 hits' figures.
 _MAX_TOTAL_IMAGES = 4
+
+# base_url values already warned about in this process — avoids log spam
+# when many chunks / captions hit the same insecure endpoint.
+_warned_insecure_base_urls: set[str] = set()
+
+# Hosts considered loopback — http:// to these is fine (local ollama, etc.).
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+def _warn_insecure_base_url(base_url: str) -> None:
+    """Warn once when ``base_url`` is plain HTTP to a non-loopback host.
+
+    Only warns — never raises or blocks the request — so existing local
+    http://ollama deployments keep working. A non-loopback http:// endpoint
+    would send ``Authorization: Bearer <api_key>`` in cleartext over the
+    network; we surface that risk once per base_url so deployments can move
+    to HTTPS without breaking callers that intentionally use plain HTTP.
+    """
+    if not base_url:
+        return
+    try:
+        parsed = urlparse(base_url)
+    except ValueError:
+        return
+    if parsed.scheme != "http":
+        return
+    host = (parsed.hostname or "").lower()
+    if not host or host in _LOOPBACK_HOSTS:
+        return
+    if base_url in _warned_insecure_base_urls:
+        return
+    _warned_insecure_base_urls.add(base_url)
+    log.warning(
+        "LLM/VLM base_url %s 使用明文 HTTP 且非本机回环地址,"
+        " Authorization Bearer api_key 将以明文 over HTTP 传输,"
+        " 建议改用 HTTPS 或保持本机 (127.0.0.1/localhost/::1) 部署。",
+        base_url,
+    )
+
 
 _SYSTEM_MSG = {
     "role": "system",
@@ -160,6 +203,7 @@ def _post_chat(
     base_url: str, api_key: str, model: str, messages: list, *, stream: bool, timeout: float
 ) -> requests.Response:
     """One OpenAI-compatible chat completion POST (shared by answer + stream)."""
+    _warn_insecure_base_url(base_url)
     return requests.post(
         base_url.rstrip("/") + "/chat/completions",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
