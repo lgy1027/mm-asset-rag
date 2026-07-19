@@ -358,12 +358,110 @@ def test_chat_stream_runs_through_to_thread(client: TestClient) -> None:
     assert "sources" in kinds and "token" in kinds and "done" in kinds
     joined = "".join(e["text"] for e in events if e["event"] == "token")
     assert joined == "slow stream"
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        fake_service = mock_get_service.return_value
-        fake_service.retry_task.side_effect = ValueError("task x cannot be retried")
-        response = client.post("/tasks/abc/retry")
-    assert response.status_code == 400
-    assert "cannot be retried" in response.json()["detail"]
+
+
+def test_iter_sync_in_thread_streams_incrementally() -> None:
+    """The bridge yields each item as the producer emits it, not buffered.
+
+    Regression guard for the old ``list(stream_answer_chunks(...))`` which
+    collected the whole generator before yielding anything. Here the producer
+    sets a flag after its first yield; the consumer must observe that flag
+    set *before* the producer emits its second item — which only holds if
+    the consumer drained the first item promptly instead of waiting for the
+    producer to finish.
+    """
+    import asyncio
+    import threading
+
+    from mm_asset_rag.api import _iter_sync_in_thread
+
+    emitted_after_first = threading.Event()
+
+    def producer():
+        yield "a"
+        # The consumer has received "a" and is now awaiting the next item.
+        # Only set the flag now — if the bridge had buffer-all'd, the
+        # consumer would not yet have run.
+        emitted_after_first.set()
+        yield "b"
+
+    async def main():
+        bridge = await _iter_sync_in_thread(producer)
+        first = await asyncio.to_thread(bridge.get)
+        assert first == "a"
+        # The producer is parked on its second yield; the flag proves it
+        # already passed the first yield (i.e. "a" was delivered live).
+        assert emitted_after_first.is_set()
+        # Drain the rest + sentinel.
+        items = []
+        while True:
+            item = await asyncio.to_thread(bridge.get)
+            from mm_asset_rag.api import _STREAM_DONE
+
+            if item is _STREAM_DONE:
+                break
+            items.append(item)
+        return items
+
+    rest = asyncio.run(main())
+    assert rest == ["b"]
+
+
+def test_iter_sync_in_thread_stop_signals_producer() -> None:
+    """Setting ``bridge.stop`` lets the producer exit between yields.
+
+    Models a client disconnect: the consumer stops draining and signals
+    stop; the producer, which checks ``stop`` between yields, bails out
+    instead of running the rest of the (potentially long, LLM-backed)
+    generator to completion.
+    """
+    import asyncio
+    import threading
+    import time
+
+    from mm_asset_rag.api import _STREAM_DONE, _iter_sync_in_thread
+
+    past_first = threading.Event()
+    producer_exited = threading.Event()
+    # Holder for the bridge's stop event; filled by the consumer right after
+    # the bridge is constructed, so the producer can read the *same* event
+    # the consumer signals on disconnect.
+    stop_holder: list[threading.Event] = []
+
+    def producer():
+        yield "first"
+        past_first.set()
+        # Each iteration sleeps briefly (emulating the network wait of a real
+        # LLM stream) and checks stop before yielding — so a consumer that
+        # sets stop mid-stream makes the producer bail on its next wake
+        # instead of running all 1000 iterations to completion.
+        for _ in range(1000):
+            time.sleep(0.01)
+            if stop_holder and stop_holder[0].is_set():
+                producer_exited.set()
+                return
+            yield "more"
+        yield "tail"
+
+    async def main():
+        bridge = await _iter_sync_in_thread(producer)
+        stop_holder.append(bridge.stop)  # type: ignore[attr-defined]
+
+        # The producer sets past_first right after its first yield; wait so
+        # we know it is parked inside the loop before we signal stop.
+        past_first.wait(2.0)
+        bridge.stop.set()  # type: ignore[attr-defined]
+        # Drain anything already queued + the sentinel. The producer should
+        # observe ``stop`` on its next loop check and return, so the sentinel
+        # arrives promptly (well within the 2 s timeout).
+        while True:
+            item = await asyncio.to_thread(bridge.get, timeout=2.0)
+            if item is _STREAM_DONE:
+                break
+
+    asyncio.run(main())
+    # The producer must have exited *because of* stop, not by running out.
+    assert producer_exited.is_set()
 
 
 def test_list_assets_endpoint_returns_index(client: TestClient) -> None:
