@@ -27,7 +27,6 @@ the pre-contextual behavior. Nothing here raises.
 
 from __future__ import annotations
 
-import os
 import re
 
 import requests
@@ -42,13 +41,19 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 def _llm_credentials() -> tuple[str | None, str | None, str | None]:
     """Return ``(base_url, api_key, model)`` for the contextual LLM.
 
-    Falls back to the shared ``OPENAI_*`` triple — the same credentials
-    ``answer.llm_answer`` uses — so a deployment only configures one LLM.
+    Reuses the shared ``Settings.llm_creds`` (``OPENAI_*`` preferred, with
+    a ``VLM_*`` fallback) so a deployment that only configured a
+    multimodal VLM still gets Contextual Retrieval — previously this read
+    ``OPENAI_*`` directly and silently degraded to a no-op in a VLM-only
+    deploy. ``CONTEXTUAL_MODEL`` overrides only the model name, matching
+    the other LLM call sites (``answer.py``, ``image_caption.py``,
+    ``auto_meta.py``) that all go through the same ``llm_creds`` /
+    ``vlm_creds`` properties.
     """
     s = get_settings()
-    base_url = os.environ.get("OPENAI_BASE_URL") or s.openai_base_url
-    api_key = os.environ.get("OPENAI_API_KEY") or s.openai_api_key
-    model = s.contextual_model or os.environ.get("OPENAI_MODEL") or s.openai_model
+    base_url, api_key, model = s.llm_creds
+    if s.contextual_model:
+        model = s.contextual_model
     return base_url, api_key, model
 
 

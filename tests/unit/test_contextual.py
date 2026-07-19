@@ -226,18 +226,21 @@ def test_contextual_enabled_defaults_true(tmp_home) -> None:
 
 
 def test_enrich_noop_without_credentials_writes_no_cache(tmp_home, monkeypatch) -> None:
-    """When OPENAI_* is unconfigured, enrich is a full no-op: no LLM call, no
-    exception, and no cache file written (keeps the parse dir clean)."""
+    """When the LLM is unconfigured, enrich is a full no-op: no LLM call, no
+    exception, and no cache file written (keeps the parse dir clean).
+
+    Pins the credentials at ``(None, None, None)`` via the same
+    ``_llm_credentials`` seam the other no-creds test uses, so the result
+    doesn't depend on whatever ``OPENAI_*`` / ``VLM_*`` happens to be in
+    the host environment (Contextual Retrieval now falls back to ``VLM_*``
+    via ``Settings.llm_creds``, so delenv-ing only ``OPENAI_*`` is no
+    longer enough to guarantee "unconfigured").
+    """
     docs = [_doc("片段一", chunk_index=0), _doc("片段二", chunk_index=1)]
     cache_path = tmp_home / "parsed" / "a1" / "context.jsonl"
 
-    # No credentials anywhere — neither env nor settings.
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-
-    # Should not raise and should not create a cache file.
-    enrich_docs_with_context(docs, asset_title="t", cache_path=cache_path)
+    with patch("mm_asset_rag.contextual._llm_credentials", return_value=(None, None, None)):
+        enrich_docs_with_context(docs, asset_title="t", cache_path=cache_path)
 
     assert not cache_path.exists()
     for d in docs:
