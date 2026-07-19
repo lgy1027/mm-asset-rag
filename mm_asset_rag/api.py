@@ -959,11 +959,21 @@ def run() -> None:
     """Console-script entry point declared in ``pyproject.toml``.
 
     Runs the FastAPI app on ``127.0.0.1:8011`` via uvicorn. We bind to
-    loopback only — the API has no auth and would be trivially
-    exploitable on a routable interface. Deployments that need a public
-    endpoint must add auth (e.g. a reverse proxy with a token) before
-    changing the host.
+    loopback only — the API is unauthenticated by default (set
+    ``MMRAG_API_TOKEN`` to guard destructive + LLM-quota endpoints, and
+    ``MMRAG_TRUSTED_HOSTS`` to widen the Host allow-list beyond loopback).
     """
+    import sys
+
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(
+            "mmrag-api — start the mm-asset-rag HTTP API + web UI.\n\n"
+            "  mmrag-api            # serve on http://127.0.0.1:8011\n\n"
+            "No CLI flags; configure via env vars (see .env.example / "
+            "docs/configuration.md). Bind is loopback-only by default; set "
+            "MMRAG_TRUSTED_HOSTS + MMRAG_API_TOKEN before exposing publicly."
+        )
+        return
     import uvicorn
 
     uvicorn.run("mm_asset_rag.api:app", host="127.0.0.1", port=8011, log_level="info")

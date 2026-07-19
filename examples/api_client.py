@@ -7,13 +7,19 @@ Prerequisite: start the server in another shell:
 
 This script:
   1. calls /health
-  2. calls /ingest to parse + index a small asset set
+  2. uploads files via /upload/preview, then /upload/confirm to parse + index
   3. calls /search in four modes
   4. calls /answer (falls back to evidence summary if no LLM configured)
   5. calls /eval
+
+Usage:
+    python examples/api_client.py path/to/file1.pdf path/to/file2.png
 """
 
 from __future__ import annotations
+
+import sys
+from pathlib import Path
 
 import httpx
 
@@ -31,17 +37,45 @@ def show(label: str, payload: dict) -> None:
     print(payload)
 
 
+def upload_and_confirm(client: httpx.Client, files: list[str]) -> None:
+    """Two-phase upload: /upload/preview then /upload/confirm.
+
+    Replaces the removed ``/ingest`` endpoint. If no files are passed the
+    step is skipped (the rest of the demo still runs against whatever is
+    already indexed).
+    """
+    if not files:
+        print("\n=== upload (skipped: no files passed) ===")
+        return
+    multipart = []
+    for f in files:
+        p = Path(f)
+        multipart.append(("files", (p.name, p.read_bytes())))
+    preview = client.post("/upload/preview", files=multipart).json()
+    show("upload/preview", preview)
+    edits = [
+        {
+            "preview_id": pv["preview_id"],
+            "title": pv.get("effective_title") or pv["sniff"].get("title", ""),
+            "tags": pv.get("effective_tags", []),
+        }
+        for pv in preview["previews"]
+        if not pv.get("rejected_reason")
+    ]
+    if edits:
+        confirm = client.post(
+            "/upload/confirm",
+            json={"cache_id": preview["cache_id"], "edits": edits},
+        ).json()
+        show("upload/confirm", confirm)
+
+
 def main() -> None:
-    with httpx.Client(base_url=BASE, timeout=60) as client:
+    files = sys.argv[1:]
+    with httpx.Client(base_url=BASE, timeout=120) as client:
         show("health", client.get("/health").json())
 
-        show(
-            "ingest",
-            client.post(
-                "/ingest",
-                json={"limit": 5, "pdf_parser": "pymupdf"},
-            ).json(),
-        )
+        upload_and_confirm(client, files)
 
         show(
             "search (text)",
@@ -77,7 +111,7 @@ def main() -> None:
             ).json(),
         )
 
-        show("eval", client.post("/eval").json())
+        show("eval", client.post("/eval", json={}).json())
 
 
 if __name__ == "__main__":
