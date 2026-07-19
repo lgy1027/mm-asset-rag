@@ -1181,3 +1181,55 @@ def test_cancel_task_terminal_task_is_noop(tmp_home: Path) -> None:
     assert out.status == "done"  # not flipped to cancelled
     # Still records a stop flag (harmless), but status untouched.
     assert service._is_cancelled(rec.task_id)
+
+
+def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
+    """The parse worker checks _is_cancelled between assets: once the flag
+    is set, it stops before the next asset and leaves the task cancelled.
+
+    End-to-end for the cooperative-cancel checkpoint (not covered by the
+    cancel_task unit tests, which only exercise the flag-set path).
+    """
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.schema import ParsedDocument
+    from mm_asset_rag.service import _do_parse
+
+    a1 = _make_asset(tmp_home, "a1.png")
+    a2 = _make_asset(tmp_home, "a2.png")
+    a3 = _make_asset(tmp_home, "a3.png")
+    service = IngestService()
+    rec = TaskRecord(task_id="canceltask1", kind="parse", status="running", total=3)
+    service._tasks[rec.task_id] = rec
+    service._cancel_flags[rec.task_id] = __import__("threading").Event()
+
+    parsed_ids: list[str] = []
+
+    def fake_parser(asset, **kwargs):
+        parsed_ids.append(asset.asset_id)
+        # After the first asset is parsed, request cancellation. The worker
+        # should check the flag before asset #2 and stop.
+        if asset.asset_id == a1.asset_id:
+            service._cancel_flags[rec.task_id].set()
+            service._patch(rec, status="cancelled", finished_at=time.time(), current="cancelled")
+        return [ParsedDocument(text="x", metadata={"asset_id": asset.asset_id})]
+
+    def fake_get_parser(kind, name):
+        class P:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def parse(self, asset, **kwargs):
+                return fake_parser(asset)
+
+        return P()
+
+    orig = svc_mod.get_parser
+    svc_mod.get_parser = fake_get_parser
+    try:
+        _do_parse(service, rec, ParseOptions(assets=[a1, a2, a3]))
+    finally:
+        svc_mod.get_parser = orig
+
+    # Only the first asset was parsed; the checkpoint before #2 saw cancel.
+    assert parsed_ids == [a1.asset_id]
+    assert rec.status == "cancelled"

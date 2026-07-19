@@ -75,6 +75,30 @@ def test_health_deep_reports_config_completeness(client: TestClient) -> None:
     assert isinstance(body["embedder_configured"], bool)
 
 
+def test_health_deep_reports_false_when_unconfigured(client: TestClient, monkeypatch) -> None:
+    """With no LLM/embedder creds configured, deep reports both False — so an
+    orchestrator can tell /answer and /search won't work without waiting for
+    an actual call to fail."""
+    # Patch the creds properties directly: the host .env (loaded by
+    # pydantic BaseSettings) would otherwise leak OPENAI_* into settings,
+    # and env-var monkeypatch can't override that.
+    with (
+        patch(
+            "mm_asset_rag.settings.Settings.llm_creds",
+            new_callable=lambda: property(lambda self: (None, None, None)),
+        ),
+        patch(
+            "mm_asset_rag.settings.Settings.text_embedding_creds",
+            new_callable=lambda: property(lambda self: (None, None, None)),
+        ),
+    ):
+        response = client.get("/health?deep=true")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["llm_configured"] is False
+    assert body["embedder_configured"] is False
+
+
 def test_root_serves_bundled_ui(client: TestClient) -> None:
     """GET / should serve ``index.html`` plus CSP + security headers."""
     response = client.get("/")

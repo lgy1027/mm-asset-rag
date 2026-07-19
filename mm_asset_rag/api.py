@@ -460,10 +460,15 @@ def health(
     }
     if deep:
         s = get_settings()
-        b, k, m = s.llm_creds
-        eb, ek, em = s.text_embedding_creds
-        payload["llm_configured"] = bool(b and k and m)
-        payload["embedder_configured"] = bool(eb and ek and em)
+        # llm_creds → (base_url, api_key, model); text_embedding_creds →
+        # (api_key, base_url, model) — different orders, name carefully.
+        lb, lk, lm = s.llm_creds
+        ek, eb, _em = s.text_embedding_creds
+        # An embedder with no explicit EMBEDDING_MODEL still works at runtime
+        # (TextEmbedder falls back to "text-embedding-3-small"), so treat a
+        # missing model as configured as long as api_key + base_url resolve.
+        payload["llm_configured"] = bool(lb and lk and lm)
+        payload["embedder_configured"] = bool(ek and eb)
     return payload
 
 

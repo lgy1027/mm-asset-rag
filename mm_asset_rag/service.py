@@ -256,6 +256,17 @@ class DeleteAssetReport:
 # ─── Task bookkeeping ────────────────────────────────────────────────────
 
 
+class _TaskCancelled(Exception):
+    """Raised inside a worker's index progress callback to break out of a
+    long ``upsert_*`` call when the task was cancelled mid-index.
+
+    Daemon threads can't be force-stopped, so cancellation is cooperative:
+    the index path checks ``_is_cancelled`` at each progress tick (one per
+    upsert batch) and raises this to unwind out of ``backend.upsert_*``.
+    The outer ``except`` chain treats it as a clean cancel, not a crash.
+    """
+
+
 class IngestService:
     """Stateful ingest + index + task-history service.
 
@@ -1476,6 +1487,14 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
     # index step is killed before ``upsert_text`` ever runs. Re-flag
     # the task as in-progress and let the final ``_patch`` at the end
     # of the try block restore the terminal status.
+    #
+    # Cooperative cancel: if cancel_task was called during the parse
+    # stage, rec.status is already CANCELLED (terminal) — don't flip it
+    # back to running here; _run_ingest_task's CANCELLED branch returns
+    # below. (Covers the narrow race where cancel arrives between the
+    # last parse checkpoint and this re-flag.)
+    if rec.status == TaskStatus.CANCELLED:
+        return
     service._patch(
         rec,
         status="running",
@@ -1492,6 +1511,12 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
     }
 
     def _progress(done: int, total: int, phase: str) -> None:
+        # Cancel check during the index phase too — each progress tick is
+        # a natural checkpoint (one upsert batch). If cancelled, stop the
+        # index build here; the task stays CANCELLED (cancel_task already
+        # set status + finished_at).
+        if service._is_cancelled(rec.task_id):
+            raise _TaskCancelled
         service._patch(
             rec,
             processed=done,
@@ -1522,6 +1547,13 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
             finished_at=time.time(),
             asset_statuses=new_statuses,
         )
+    except _TaskCancelled:
+        # Cancelled mid-index: cancel_task already set status=CANCELLED +
+        # finished_at. The partial index points remain in Qdrant (a retry
+        # rebuilds from documents.jsonl); assets parsed but not indexed
+        # keep their parse status. Nothing more to patch here — just stop.
+        print(f"[task {rec.task_id}] index cancelled by request")
+        return
     except BaseException as exc:
         # Same daemon-thread caveat as ``_run_parse_task``: Ctrl-C is
         # delivered to the main thread only, so this branch handles
