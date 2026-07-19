@@ -41,6 +41,20 @@ The chat LLM channel (`/answer`, `/chat`) and the image-channel VLM (image capti
 
 When neither triple is complete, `/answer` and `/chat` return evidence-summary fallback answers instead of failing.
 
+## API auth + host guard
+
+The HTTP API ships with two independent security layers, both with safe loopback defaults so a developer's `mmrag-api` works zero-config:
+
+- **TrustedHostMiddleware** locks the API to loopback (`127.0.0.1`, `localhost`, `[::1]`) by default. A malicious web page cannot reach the API via DNS rebinding — the browser SOP preflight blocks cross-origin JSON POST, but multipart `/upload/preview` is a simple request, and the rebinding trick can read GET responses without it. Set `MMRAG_TRUSTED_HOSTS` to your public hostname(s) when deploying behind a reverse proxy, or `*` to disable the check (unsafe without a token).
+- **Bearer token** guards the destructive + write endpoints (`DELETE /assets/*`, `POST /tasks/*/retry`, `POST /upload/preview`, `POST /upload/confirm`, `POST /eval`). Leave `MMRAG_API_TOKEN` unset to keep the zero-config default (no auth); set it when exposing the API beyond localhost. Clients pass it as `Authorization: Bearer <token>` or `X-API-Key: <token>`. Read endpoints (`/search`, `/answer`, `/chat`, `/assets`, `/tasks`, `/health`, `/`) stay open regardless so the bundled web UI's same-origin fetches keep working without a token.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `MMRAG_API_TOKEN` | unset | Static bearer token for destructive + write endpoints; unset = no auth |
+| `MMRAG_TRUSTED_HOSTS` | `127.0.0.1,localhost,[::1]` | Comma-separated trusted Host headers; `*` disables the check |
+
+When deploying on a public host, set **both** `MMRAG_API_TOKEN` (so destructive endpoints can't be called anonymously) and `MMRAG_TRUSTED_HOSTS` (so the loopback-only host check accepts your public hostname).
+
 ## Text embedding
 
 | Variable | Default | Purpose |

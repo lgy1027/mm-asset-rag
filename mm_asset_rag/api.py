@@ -27,8 +27,10 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field, field_validator
 
 from .__init__ import __version__
@@ -76,6 +78,88 @@ app = FastAPI(
     description="Multimodal asset RAG: PDF + image parsing, hybrid retrieval, grounded answers.",
     lifespan=lifespan,
 )
+
+
+# ─── Auth + host guard ───────────────────────────────────────────────────
+#
+# Two independent layers, both opt-in but with safe defaults:
+#
+# * ``TrustedHostMiddleware`` — locked to loopback (127.0.0.1, localhost) by
+#   default so a malicious web page cannot reach the API via DNS rebinding
+#   (the browser SOP preflight blocks JSON POST, but multipart ``/upload``
+#   is a simple request and the rebinding trick can read GET responses).
+#   Set ``MMRAG_TRUSTED_HOSTS`` to your public hostname(s) or ``*`` to relax.
+#
+# * bearer-token dependency — when ``MMRAG_API_TOKEN`` is set, the
+#   destructive + write endpoints require ``Authorization: Bearer <token>``
+#   or ``X-API-Key: <token>``. Unset = zero-config loopback (no auth), so
+#   the bundled web UI works out of the box on a developer's machine.
+#
+# Read endpoints (/search /answer /chat* /assets* /tasks* /health /) stay
+# open regardless so the web UI's same-origin fetches keep working without
+# a token. Only operations that mutate data or spend provider quota are
+# guarded.
+
+_DEFAULT_TRUSTED_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
+
+
+def _resolve_trusted_hosts() -> list[str]:
+    raw = get_settings().mmrag_trusted_hosts
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_TRUSTED_HOSTS
+    hosts = [h.strip() for h in raw.split(",") if h.strip()]
+    return hosts or _DEFAULT_TRUSTED_HOSTS
+
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_resolve_trusted_hosts())
+
+
+# Both header schemes resolve to the same token; either is accepted so the
+# client can use whichever its HTTP library makes ergonomic. ``auto_error``
+# is False so the dependency (not Starlette) controls the 401 — that lets an
+# unset token keep the endpoint open (zero-config) rather than always 403.
+_TOKEN_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
+_BEARER_HEADER = APIKeyHeader(name="Authorization", auto_error=False, scheme_name="bearer")
+
+
+def _extract_bearer(value: str | None) -> str | None:
+    """Pull the token out of an ``Authorization: Bearer <t>`` header."""
+    if not value:
+        return None
+    parts = value.split(None, 1)
+    if len(parts) == 2 and parts[0].lower() == "bearer":
+        return parts[1].strip()
+    return None
+
+
+def require_token(
+    x_api_key: str | None = Depends(_TOKEN_HEADER),
+    authorization: str | None = Depends(_BEARER_HEADER),
+) -> None:
+    """Dependency: reject the request unless it carries the configured token.
+
+    When ``MMRAG_API_TOKEN`` is unset the dependency is a no-op — the
+    loopback default stays zero-config. When set, a request missing the
+    token (or carrying the wrong one) gets 401. Constant-time comparison
+    avoids a timing oracle on the token.
+    """
+    expected = get_settings().mmrag_api_token
+    if not expected:
+        return  # auth disabled — zero-config loopback default
+    provided = x_api_key or _extract_bearer(authorization)
+    if not provided or not _const_time_eq(provided, expected):
+        raise HTTPException(
+            status_code=401,
+            detail="missing or invalid API token (set Authorization: Bearer <token> or X-API-Key)",
+            headers={"WWW-Authenticate": 'Bearer realm="mmrag"'},
+        )
+
+
+def _const_time_eq(a: str, b: str) -> bool:
+    """Constant-time string compare to avoid a token timing oracle."""
+    import hmac
+
+    return hmac.compare_digest(a.encode(), b.encode())
 
 
 # ─── Service layer (task scheduling + history) ─────────────────────────
@@ -224,7 +308,10 @@ def answer(request: AnswerRequest) -> dict[str, object]:
 
 
 @app.post("/eval")
-def eval_endpoint(request: EvalRequest) -> dict[str, object]:
+def eval_endpoint(
+    request: EvalRequest,
+    _auth: None = Depends(require_token),
+) -> dict[str, object]:
     return {"results": [r.__dict__ for r in run_eval(top_k=request.top_k)]}
 
 
@@ -362,7 +449,10 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
 
 
 @app.post("/upload/preview")
-async def upload_preview(files: list[UploadFile] = File(...)) -> dict[str, object]:
+async def upload_preview(
+    files: list[UploadFile] = File(...),
+    _auth: None = Depends(require_token),
+) -> dict[str, object]:
     """Stage uploaded files and return editable metadata previews.
 
     This endpoint does not parse, embed or index. It streams multipart bytes
@@ -441,7 +531,10 @@ async def upload_preview(files: list[UploadFile] = File(...)) -> dict[str, objec
 
 
 @app.post("/upload/confirm")
-def upload_confirm(request: UploadConfirmRequest) -> dict[str, object]:
+def upload_confirm(
+    request: UploadConfirmRequest,
+    _auth: None = Depends(require_token),
+) -> dict[str, object]:
     """Apply user edits and kick off parse + index for confirmed previews."""
     edits = [
         UserEdits(
@@ -529,6 +622,7 @@ def retry_task(
         False,
         description="Only re-run assets whose previous status was failed or skipped",
     ),
+    _auth: None = Depends(require_token),
 ) -> dict[str, object]:
     """Re-run a previously failed/partial/interrupted task.
 
@@ -572,7 +666,10 @@ def list_assets() -> dict[str, object]:
 
 
 @app.delete("/assets/{asset_id}")
-def delete_asset(asset_id: str) -> dict[str, object]:
+def delete_asset(
+    asset_id: str,
+    _auth: None = Depends(require_token),
+) -> dict[str, object]:
     """Best-effort cleanup of every trace of ``asset_id``.
 
     404 if the asset is unknown to the index. 200 with a ``was_known``
