@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import queue
 import re
 import threading
@@ -95,14 +94,15 @@ app = FastAPI(
 #   Set ``MMRAG_TRUSTED_HOSTS`` to your public hostname(s) or ``*`` to relax.
 #
 # * bearer-token dependency — when ``MMRAG_API_TOKEN`` is set, the
-#   destructive + write endpoints require ``Authorization: Bearer <token>``
-#   or ``X-API-Key: <token>``. Unset = zero-config loopback (no auth), so
-#   the bundled web UI works out of the box on a developer's machine.
+#   destructive + write endpoints *and* the LLM-calling endpoints
+#   (/answer, /chat, /chat/stream — they spend provider quota) require
+#   ``Authorization: Bearer <token>`` or ``X-API-Key: <token>``. Unset =
+#   zero-config loopback (no auth), so the bundled web UI works out of
+#   the box on a developer's machine.
 #
-# Read endpoints (/search /answer /chat* /assets* /tasks* /health /) stay
-# open regardless so the web UI's same-origin fetches keep working without
-# a token. Only operations that mutate data or spend provider quota are
-# guarded.
+# Read endpoints (/search /assets* /tasks* /health /) stay open so the
+# web UI's same-origin fetches keep working without a token; they don't
+# mutate data or spend quota.
 
 _DEFAULT_TRUSTED_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
 
@@ -148,7 +148,11 @@ def require_token(
     avoids a timing oracle on the token.
     """
     expected = get_settings().mmrag_api_token
-    if not expected:
+    # An empty / whitespace token is treated as "unset" (no auth) — a
+    # misconfigured ``MMRAG_API_TOKEN=`` must not silently read as "enabled
+    # with empty token" (which would let any request through via
+    # compare_digest("", "")).
+    if not expected or not expected.strip():
         return  # auth disabled — zero-config loopback default
     provided = x_api_key or _extract_bearer(authorization)
     if not provided or not _const_time_eq(provided, expected):
@@ -325,17 +329,60 @@ class UploadEdit(BaseModel):
 # the error stays actionable without leaking provider topology or creds.
 _STREAM_ERR_MAX_CHARS = 240
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+")
+# ``requests.exceptions.ConnectionError`` / ``ReadTimeout`` render as e.g.
+# ``HTTPSConnectionPool(host='api.openai.com', port=443): Read timed out.``
+# — the host appears quoted with no ``http(s)://`` prefix, so ``_URL_RE``
+# alone misses it. Strip both the ``host='...'`` form and bare ``host:port``.
+_HOST_QUOTED_RE = re.compile(r"\bhost='([^']+)'")
+_HOSTPORT_RE = re.compile(r"\b([a-z0-9][a-z0-9.-]*):(\d{2,5})\b")
+
+
+def _provider_hosts() -> set[str]:
+    """Hosts parsed from the configured LLM/VLM base URLs.
+
+    Used to scrub bare host mentions (``Connection to api.openai.com timed
+    out``) that the URL/host:port regexes miss. Reading settings here is
+    safe: ``_safe_stream_error`` is only called from streaming endpoints,
+    not at import time.
+    """
+    from urllib.parse import urlparse
+
+    hosts: set[str] = set()
+    try:
+        s = get_settings()
+        for base in (s.openai_base_url, s.vlm_base_url, s.embedding_base_url):
+            if base:
+                h = urlparse(base).hostname
+                if h:
+                    hosts.add(h)
+    except Exception:
+        pass
+    return hosts
 
 
 def _safe_stream_error(exc: BaseException) -> str:
-    """Render ``exc`` for a streamed error event without leaking URLs.
+    """Render ``exc`` for a streamed error event without leaking URLs/hosts.
 
     Strips any ``http(s)://...`` substring (provider base URLs, inlined
-    userinfo), takes the first line, and caps the length. Non-ASCII is
-    preserved (Chinese error text), but control characters are dropped.
+    userinfo) and the ``host='...'`` / ``host:port`` forms that
+    ``requests``' connection errors use, takes the first line, and caps the
+    length. Non-ASCII is preserved (Chinese error text), but control
+    characters are dropped.
+
+    Additionally substitutes the configured LLM/VLM provider hosts (parsed
+    from ``OPENAI_BASE_URL`` / ``VLM_BASE_URL``) wherever they appear —
+    ``requests``' ``ConnectionError`` renders the host bare (``Connection
+    to api.openai.com timed out``) with no URL prefix, so the regexes above
+    miss it. Matching the exact configured host avoids the false-positive
+    risk of a generic bare-host regex.
     """
     msg = str(exc)
     msg = _URL_RE.sub("<url>", msg)
+    msg = _HOST_QUOTED_RE.sub("host=<host>", msg)
+    msg = _HOSTPORT_RE.sub("<host>:<port>", msg)
+    for host in _provider_hosts():
+        if host:
+            msg = msg.replace(host, "<host>")
     first_line = msg.splitlines()[0] if msg else ""
     # Strip control chars except tab/newline (already single-line).
     first_line = "".join(c for c in first_line if c >= " " or c == "\t")
@@ -397,7 +444,7 @@ def health() -> dict[str, object]:
         "text_index_exists": get_text_index_dir().exists(),
         "image_index_exists": (get_indexes_dir() / "qdrant").exists(),
         "vector_backend": "qdrant",
-        "model": os.environ.get("OPENAI_MODEL", ""),
+        "model": get_settings().openai_model or "",
     }
 
 
@@ -408,7 +455,10 @@ def search(request: SearchRequest) -> dict[str, object]:
 
 
 @app.post("/answer")
-def answer(request: AnswerRequest) -> dict[str, object]:
+def answer(
+    request: AnswerRequest,
+    _auth: None = Depends(require_token),
+) -> dict[str, object]:
     return answer_question(request.question, top_k=request.top_k)
 
 
@@ -431,7 +481,10 @@ def eval_endpoint(
 
 
 @app.post("/chat")
-def chat(request: ChatRequest) -> dict[str, object]:
+def chat(
+    request: ChatRequest,
+    _auth: None = Depends(require_token),
+) -> dict[str, object]:
     """One-call: retrieve + grounded LLM answer in a single response."""
     hits = _run_search(request)
     answer = answer_question(request.question, top_k=request.top_k, hits=hits)
@@ -464,25 +517,47 @@ async def _iter_sync_in_thread(factory, *args, **kwargs) -> asyncio.Queue:
 
     Returns the queue; the caller iterates it until it sees ``_STREAM_DONE``.
     On cancellation the caller drops the queue and the orphaned worker exits
-    on its next ``put`` (the queue is unbounded, so ``put`` never blocks — it
-    just finishes; see the worker's ``stop`` check). The worker is a daemon
-    thread, so a runaway producer that ignores ``stop`` (e.g. blocked inside
-    the SDK with no chance to check it) is reaped at process exit rather than
-    pinning the loop forever.
+    on its next ``put``. The queue is **bounded** (maxsize 64): a slow client
+    (or one that stopped reading) can't let a fast LLM stream buffer an
+    unbounded response in memory. When the queue is full the worker waits
+    up to 0.5s per put, re-checking ``stop`` so a client disconnect still
+    unblocks it promptly rather than blocking forever. The worker is a
+    daemon thread, so a runaway producer that ignores ``stop`` is reaped
+    at process exit rather than pinning the loop forever.
     """
-    out: queue.Queue = queue.Queue()
+    out: queue.Queue = queue.Queue(maxsize=64)
     stop = threading.Event()
+
+    def _put_terminal(item) -> None:
+        """Put the sentinel / error without ever blocking.
+
+        On a client disconnect the consumer stops draining, so the queue
+        may be full. A blocking ``put`` here would hang the daemon thread
+        forever (and pin the 64-item buffer until process exit). Drop
+        silently instead — nobody is listening anymore.
+        """
+        with suppress(queue.Full):
+            out.put_nowait(item)
 
     def _worker():
         try:
             for item in factory(*args, **kwargs):
                 if stop.is_set():
                     return
-                out.put(item)
+                # Bounded put: if the consumer fell behind, wait but keep
+                # checking stop so a client disconnect unblocks us.
+                while not stop.is_set():
+                    try:
+                        out.put(item, timeout=0.5)
+                        break
+                    except queue.Full:
+                        continue
+                else:
+                    return  # stop was set during the wait
         except BaseException as exc:  # surface producer errors to the consumer
-            out.put(exc)
+            _put_terminal(exc)
         finally:
-            out.put(_STREAM_DONE)
+            _put_terminal(_STREAM_DONE)
 
     t = threading.Thread(target=_worker, daemon=True, name="chat-stream-producer")
     t.start()
@@ -495,7 +570,10 @@ async def _iter_sync_in_thread(factory, *args, **kwargs) -> asyncio.Queue:
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest) -> StreamingResponse:
+async def chat_stream(
+    request: ChatRequest,
+    _auth: None = Depends(require_token),
+) -> StreamingResponse:
     """NDJSON stream of the chat answer.
 
     Each line is a JSON object:
@@ -892,11 +970,21 @@ def run() -> None:
     """Console-script entry point declared in ``pyproject.toml``.
 
     Runs the FastAPI app on ``127.0.0.1:8011`` via uvicorn. We bind to
-    loopback only — the API has no auth and would be trivially
-    exploitable on a routable interface. Deployments that need a public
-    endpoint must add auth (e.g. a reverse proxy with a token) before
-    changing the host.
+    loopback only — the API is unauthenticated by default (set
+    ``MMRAG_API_TOKEN`` to guard destructive + LLM-quota endpoints, and
+    ``MMRAG_TRUSTED_HOSTS`` to widen the Host allow-list beyond loopback).
     """
+    import sys
+
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(
+            "mmrag-api — start the mm-asset-rag HTTP API + web UI.\n\n"
+            "  mmrag-api            # serve on http://127.0.0.1:8011\n\n"
+            "No CLI flags; configure via env vars (see .env.example / "
+            "docs/configuration.md). Bind is loopback-only by default; set "
+            "MMRAG_TRUSTED_HOSTS + MMRAG_API_TOKEN before exposing publicly."
+        )
+        return
     import uvicorn
 
     uvicorn.run("mm_asset_rag.api:app", host="127.0.0.1", port=8011, log_level="info")

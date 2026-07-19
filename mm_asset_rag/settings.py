@@ -343,6 +343,11 @@ class Settings(BaseSettings):
     paddleocr_vl_use_doc_orientation_classify: bool = False
     paddleocr_vl_use_doc_unwarping: bool = False
     paddleocr_vl_use_chart_recognition: bool = False
+    # Comma-separated extra hosts allowed for OCR image downloads (SSRF
+    # allow-list extension). By default only the host of ``paddleocr_vl_job_url``
+    # is allowed; set this to permit its result-CDN hosts. Private/loopback/
+    # link-local IPs are always refused.
+    paddleocr_vl_image_hosts: str = ""
 
     # ─── Parser defaults (drives /upload; UI can override per request) ───
     # NOTE: pdf_parser / enable_ocr / enable_vlm / image_provider / auto_index

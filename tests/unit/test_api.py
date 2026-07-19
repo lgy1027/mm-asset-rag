@@ -779,7 +779,7 @@ def test_upload_preview_body_size_limit_allows_normal_batch(
     assert response.status_code == 200, response.text
 
 
-def test_safe_stream_error_strips_urls_and_caps_length() -> None:
+def test_safe_stream_error_strips_urls_and_caps_length(monkeypatch) -> None:
     """``_safe_stream_error`` strips URLs (provider hosts, inlined userinfo)
     and caps the message so a streamed error event leaks no topology."""
     from mm_asset_rag.api import _STREAM_ERR_MAX_CHARS, _safe_stream_error
@@ -806,3 +806,58 @@ def test_safe_stream_error_strips_urls_and_caps_length() -> None:
 
     # Empty message still yields something non-empty.
     assert _safe_stream_error(Exception())
+
+    # requests.ConnectionError / ReadTimeout render with the host quoted
+    # and NO http(s):// prefix — the URL regex alone misses these, so we
+    # also strip host='...' and bare host:port. Otherwise the provider
+    # host (or an in-house VLM domain) leaks to the streamed error event.
+    # The bare ``Connection to <host> timed out`` form is scrubbed by
+    # matching the configured provider host exactly, so set one here.
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    get_settings.cache_clear()
+    conn_err = Exception(
+        "HTTPSConnectionPool(host='api.openai.com', port=443): "
+        "Max retries exceeded with url: /v1/chat/completions "
+        "(Caused by ConnectTimeoutError(<urllib3.connection.HTTPSConnection "
+        "object at 0x...>, 'Connection to api.openai.com timed out'))"
+    )
+    out = _safe_stream_error(conn_err)
+    assert "api.openai.com" not in out, out
+    assert "<host>" in out
+
+
+def test_require_token_treats_empty_string_as_unset(client: TestClient, monkeypatch) -> None:
+    """An empty/whitespace ``MMRAG_API_TOKEN`` is treated as unset (no auth).
+
+    A misconfigured ``MMRAG_API_TOKEN=`` must not silently read as
+    "enabled with empty token" — ``compare_digest("", "")`` would let any
+    request through. So we fall back to no-op the same way unset does.
+    """
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("MMRAG_API_TOKEN", "   ")
+    get_settings.cache_clear()
+    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+        mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
+        response = client.post("/tasks/abc/retry")
+    # 404 from the route body, not 401 from the guard — proves the guard passed.
+    assert response.status_code == 404
+
+
+def test_answer_chat_endpoints_require_token_when_set(client: TestClient, monkeypatch) -> None:
+    """/answer and /chat spend LLM quota, so they are guarded like /eval once
+    a token is configured (mirrors the destructive endpoints' guard)."""
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("MMRAG_API_TOKEN", "secret")
+    get_settings.cache_clear()
+    assert client.post("/answer", json={"question": "q"}).status_code == 401
+    assert client.post("/chat", json={"question": "q"}).status_code == 401
+    # /chat/stream is an LLM-quota endpoint too — guarded the same way.
+    assert client.post("/chat/stream", json={"question": "q"}).status_code == 401
+    # Non-streaming read endpoint stays open.
+    with patch("mm_asset_rag.api.get_service") as m:
+        m.return_value.list_assets.return_value = []
+        assert client.get("/assets").status_code == 200

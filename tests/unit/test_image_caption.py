@@ -36,7 +36,11 @@ def _enable(monkeypatch, *, enabled: bool = True, creds=("http://vlm/v1", "sk", 
 
     ``vlm_creds`` is a read-only pydantic property backed by the ``vlm_*``
     fields, so creds are injected by setting those fields directly (not the
-    property). The flag is a plain field too.
+    property). The flag is a plain field too. When ``creds`` is the
+    "unconfigured" triple we also clear the ``openai_*`` fallback fields —
+    ``vlm_creds`` falls back to ``OPENAI_*``, so on a host whose real .env
+    has OPENAI_* set, leaving them alone would let the "unconfigured" case
+    still look configured (and the test would not be a no-op).
     """
     from mm_asset_rag.settings import get_settings
 
@@ -46,6 +50,10 @@ def _enable(monkeypatch, *, enabled: bool = True, creds=("http://vlm/v1", "sk", 
         monkeypatch.setattr(s, "vlm_base_url", None)
         monkeypatch.setattr(s, "vlm_api_key", None)
         monkeypatch.setattr(s, "vlm_model", None)
+        # Clear the OPENAI_* fallback too, or vlm_creds still resolves.
+        monkeypatch.setattr(s, "openai_base_url", None)
+        monkeypatch.setattr(s, "openai_api_key", None)
+        monkeypatch.setattr(s, "openai_model", None)
     else:
         monkeypatch.setattr(s, "vlm_base_url", creds[0])
         monkeypatch.setattr(s, "vlm_api_key", creds[1])
@@ -185,3 +193,23 @@ def test_multiple_figures_in_one_chunk_deduped(tmp_home, monkeypatch):
     assert "路线图" in docs[0].text
     assert "产品矩阵" in docs[0].text
     assert docs[0].text.count("图片描述:") == 1  # single appended block
+
+
+def test_image_abs_path_rejects_traversal(tmp_home) -> None:
+    """``_image_abs_path`` confines the resolved path to ``parsed/<asset_id>/`` —
+    absolute paths, ``..`` traversal, and symlinks pointing outside are all
+    refused (returns None) even though the path may technically exist."""
+    from mm_asset_rag.image_caption import _image_abs_path
+    from mm_asset_rag.paths import get_parsed_dir
+
+    # Write a legitimate image at the real parsed dir (get_parsed_dir resolves
+    # MM_ASSET_RAG_HOME, which tmp_home points at a fresh tmp dir).
+    legit = get_parsed_dir() / "a1" / "images" / "fig1.png"
+    legit.parent.mkdir(parents=True, exist_ok=True)
+    legit.write_bytes(b"\x89PNG\r\n\x1a\n")
+    assert _image_abs_path("a1", "images/fig1.png") is not None
+    # Absolute path escapes the base dir.
+    assert _image_abs_path("a1", "/etc/passwd") is None
+    # Parent traversal escapes the base dir.
+    assert _image_abs_path("a1", "../other_asset/secret.png") is None
+    assert _image_abs_path("a1", "images/../../secret.png") is None

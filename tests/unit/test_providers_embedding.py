@@ -53,10 +53,16 @@ def test_provider_alias_still_raises(monkeypatch) -> None:
 
 @responses.activate
 def test_provider_embed_texts_success(monkeypatch) -> None:
-    s = Settings(_env_file=None)
+    # ``Settings(_env_file=None)`` skips the on-disk .env but STILL reads
+    # os.environ, so a host with EMBEDDING_BASE_URL set (e.g. local ollama)
+    # would leak into ``creds[1]`` and the request would miss the mock.
+    # Use the isolated-settings helper that strips the embedding env vars.
+    s = _isolated_settings(monkeypatch)
     s.openai_api_key = "test-key"
     s.openai_base_url = "https://api.example.com/v1"
     s.openai_model = "text-embed-3-small"
+    s.embedding_api_key = "test-key"
+    s.embedding_base_url = "https://api.example.com/v1"
     s.embedding_model = "text-embed-3-small"
 
     responses.post(
@@ -73,10 +79,12 @@ def test_provider_embed_texts_success(monkeypatch) -> None:
 def test_provider_embed_texts_retries_on_429(monkeypatch) -> None:
     monkeypatch.setenv("EMBEDDING_RETRY_COUNT", "3")
     monkeypatch.setenv("EMBEDDING_REQUEST_INTERVAL", "0")
-    s = Settings(_env_file=None)
+    s = _isolated_settings(monkeypatch)
     s.openai_api_key = "test-key"
     s.openai_base_url = "https://api.example.com/v1"
     s.openai_model = "text-embed-3-small"
+    s.embedding_api_key = "test-key"
+    s.embedding_base_url = "https://api.example.com/v1"
     s.embedding_model = "text-embed-3-small"
     s.embedding_retry_count = 3
     s.embedding_request_interval = 0
@@ -99,10 +107,12 @@ def test_provider_embed_texts_retries_on_429(monkeypatch) -> None:
 
 @responses.activate
 def test_provider_honors_batch_size(monkeypatch) -> None:
-    s = Settings(_env_file=None)
+    s = _isolated_settings(monkeypatch)
     s.openai_api_key = "test-key"
     s.openai_base_url = "https://api.example.com/v1"
     s.openai_model = "text-embed-3-small"
+    s.embedding_api_key = "test-key"
+    s.embedding_base_url = "https://api.example.com/v1"
     s.embedding_model = "text-embed-3-small"
     s.embedding_batch_size = 2
     s.embedding_request_interval = 0

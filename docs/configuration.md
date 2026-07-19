@@ -14,10 +14,10 @@ $MM_ASSET_RAG_HOME/
 │   └── documents/           # confirmed office/text (docx/pptx/xlsx/html/md/txt)
 ├── .preview-cache/<id>/     # short-lived upload preview files
 ├── parsed/<asset_id>/       # PDF page markdown / image OCR JSON
-├── captions/<asset_id>.json # VLM captions
+├── captions/<asset_id>.jsonl # VLM captions
 ├── indexes/qdrant/          # local Qdrant persistence
 ├── documents.jsonl          # ParsedDocument store
-└── tasks.jsonl              # background task history
+└── tasks.db                  # background task history (SQLite)
 ```
 
 There is no `asset_manifest.json`; uploaded files are auto-sniffed and converted into `Asset` objects during `/upload/confirm`.
@@ -307,6 +307,7 @@ The threshold default of `10` is tuned for genuinely scanned (image-only) PDFs, 
 | `PADDLEOCR_VL_USE_DOC_ORIENTATION_CLASSIFY` | `false` | Paddle option |
 | `PADDLEOCR_VL_USE_DOC_UNWARPING` | `false` | Paddle option |
 | `PADDLEOCR_VL_USE_CHART_RECOGNITION` | `false` | Paddle option |
+| `PADDLEOCR_VL_IMAGE_HOSTS` | unset | Comma-separated extra hosts allowed for OCR image downloads (SSRF allow-list extension; default: only the `PADDLEOCR_VL_JOB_URL` host). Private/loopback/link-local IPs are always refused. |
 
 ## Example `.env`
 

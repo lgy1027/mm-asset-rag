@@ -254,3 +254,57 @@ def test_submit_paddleocr_vl_job_uses_settings(
     assert captured["headers"]["Authorization"] == "bearer token"
     assert captured["data"]["model"] == "custom-model"
     assert captured["timeout"] == 12.0
+
+
+def test_ocr_image_url_allowed_blocks_ssrf(monkeypatch) -> None:
+    """The OCR image-download allow-list refuses private/loopback/metadata
+    hosts and any host not on the configured PaddleOCR endpoint domain.
+
+    A crafted PDF can make the OCR service echo back an internal URL; the
+    fetcher must refuse it instead of becoming an SSRF proxy.
+    """
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example.com/api/v2/ocr/jobs")
+    monkeypatch.delenv("PADDLEOCR_VL_IMAGE_HOSTS", raising=False)
+    get_settings.cache_clear()
+    # Same-domain CDN image: allowed.
+    assert pdf_parser._ocr_image_url_allowed("https://ocr.example.com/imgs/a.png") is True
+    # Different domain: refused.
+    assert pdf_parser._ocr_image_url_allowed("https://evil.example.com/x.png") is False
+    # AWS metadata endpoint: refused.
+    assert pdf_parser._ocr_image_url_allowed("http://169.254.169.254/latest/meta-data/") is False
+    # RFC1918 / loopback: refused even though scheme is http.
+    assert pdf_parser._ocr_image_url_allowed("http://10.0.0.5/internal") is False
+    assert pdf_parser._ocr_image_url_allowed("http://127.0.0.1:8080/x") is False
+    # Non-http(s) / unparseable: refused.
+    assert pdf_parser._ocr_image_url_allowed("ftp://x/y") is False
+    assert pdf_parser._ocr_image_url_allowed("not a url") is False
+
+
+def test_ocr_image_url_allowed_extra_hosts(monkeypatch) -> None:
+    """PADDLEOCR_VL_IMAGE_HOSTS lets a deployer allow an extra CDN host."""
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example.com/jobs")
+    monkeypatch.setenv("PADDLEOCR_VL_IMAGE_HOSTS", "cdn.example.com, cdn2.example.com")
+    get_settings.cache_clear()
+    assert pdf_parser._ocr_image_url_allowed("https://cdn.example.com/a.png") is True
+    assert pdf_parser._ocr_image_url_allowed("https://cdn2.example.com/a.png") is True
+    assert pdf_parser._ocr_image_url_allowed("https://other.example.com/a.png") is False
+
+
+def test_ocr_image_url_allowed_blocks_ipv6_private(monkeypatch) -> None:
+    """IPv6 private/loopback/link-local forms are refused too (the allow-list
+    check uses ipaddress which handles IPv6, not just IPv4 dotted quads)."""
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example.com/jobs")
+    monkeypatch.delenv("PADDLEOCR_VL_IMAGE_HOSTS", raising=False)
+    get_settings.cache_clear()
+    assert pdf_parser._ocr_image_url_allowed("http://[::1]/x") is False  # loopback
+    assert pdf_parser._ocr_image_url_allowed("http://[fe80::1]/x") is False  # link-local
+    assert pdf_parser._ocr_image_url_allowed("http://[fc00::1]/x") is False  # ULA private

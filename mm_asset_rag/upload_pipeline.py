@@ -562,7 +562,17 @@ class UploadPipeline:
         self.confirm_state_root.mkdir(parents=True, exist_ok=True)
         lock_path = self.confirm_state_root / f"{cache_id}.lock"
         if fcntl is not None:
-            fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+            # O_NOFOLLOW: refuse to open a symlink at the lock path. A local
+            # attacker who can write under MM_ASSET_RAG_HOME could otherwise
+            # pre-create the lock file as a symlink to a sensitive file, and
+            # flock would lock the *target* (briefly blocking other access).
+            try:
+                fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+            except OSError as exc:
+                # Pre-existing symlink / path traversal — bail loudly.
+                raise UploadCommitError(
+                    f"refusing to open lock file {lock_path} (symlink?)"
+                ) from exc
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX)
                 try:

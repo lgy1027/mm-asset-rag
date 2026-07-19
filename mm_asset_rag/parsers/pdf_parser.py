@@ -14,6 +14,7 @@ Image parsing supports OCR HTTP and an OpenAI-compatible VLM caption.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import time
 import urllib.parse
@@ -200,7 +201,12 @@ def submit_paddleocr_vl_job(file_path: Path | str) -> str:
             )
 
     if response.status_code != 200:
-        raise RuntimeError(f"PaddleOCR-VL submit failed: {response.status_code} {response.text}")
+        # Don't put ``response.text`` in the exception message — it is the
+        # upstream service's raw error body (version/trace/internal host) and
+        # can leak via the streamed error event. Log it server-side, surface
+        # only the status code to callers.
+        print(f"PaddleOCR-VL submit failed: {response.status_code} {response.text}")
+        raise RuntimeError(f"PaddleOCR-VL submit failed: HTTP {response.status_code}")
     return str(response.json()["data"]["jobId"])
 
 
@@ -234,7 +240,8 @@ def poll_paddleocr_vl_job(job_id: str) -> str:
 
         attempt = 0  # reset on success
         if response.status_code != 200:
-            raise RuntimeError(f"PaddleOCR-VL poll failed: {response.status_code} {response.text}")
+            print(f"PaddleOCR-VL poll failed: {response.status_code} {response.text}")
+            raise RuntimeError(f"PaddleOCR-VL poll failed: HTTP {response.status_code}")
         payload = response.json()["data"]
         state = payload["state"]
         if state == "done":
@@ -268,10 +275,21 @@ def _download_ocr_images(page_result: dict, images_dir: Path) -> dict[str, str]:
     md_images = (page_result.get("markdown") or {}).get("images") or {}
     output_images = page_result.get("outputImages") or {}
 
+    # Cap how many bytes a single OCR image fetch may pull. A malicious or
+    # buggy OCR service could point at an unbounded stream and fill the disk.
+    max_bytes = get_settings().upload_max_file_bytes
+
     for url in list(md_images.keys()) + list(output_images.keys()):
         if not isinstance(url, str) or not url.startswith(("http://", "https://")):
             continue
         if url in mapping:
+            continue
+        # SSRF guard: the OCR service is trusted, but the URLs it returns come
+        # from the *parsed PDF's* content. A crafted PDF could make the OCR
+        # service echo back an internal / metadata endpoint (169.254.169.254,
+        # 127.x, RFC1918). Refuse to fetch those.
+        if not _ocr_image_url_allowed(url):
+            print(f"OCR image download refused (non-allowed host): {url}")
             continue
         try:
             digest = hashlib.md5(url.encode()).hexdigest()[:12]
@@ -281,13 +299,69 @@ def _download_ocr_images(page_result: dict, images_dir: Path) -> dict[str, str]:
                 suffix = ".png"
             local_abs = images_dir / f"img_{digest}{suffix}"
             if not local_abs.exists():
-                resp = requests.get(url, timeout=60)
-                resp.raise_for_status()
-                local_abs.write_bytes(resp.content)
+                # Stream + cap: read in chunks and abort once the cap is hit,
+                # so an unbounded response can't exhaust disk/memory.
+                written = 0
+                with requests.get(url, stream=True, timeout=60) as resp:
+                    resp.raise_for_status()
+                    with local_abs.open("wb") as out:
+                        for chunk in resp.iter_content(chunk_size=1 << 20):
+                            if not chunk:
+                                continue
+                            written += len(chunk)
+                            if written > max_bytes:
+                                raise OSError(f"OCR image exceeds {max_bytes} bytes: {url}")
+                            out.write(chunk)
             mapping[url] = f"images/{local_abs.name}"
         except Exception as exc:
             print(f"OCR image download skipped ({url}): {exc}")
     return mapping
+
+
+def _ocr_image_url_allowed(url: str) -> bool:
+    """True iff ``url`` points at an explicitly allowed OCR-image host.
+
+    Allow-listing is conservative: by default only the host of the
+    configured PaddleOCR-VL job endpoint is allowed (its result CDN is on
+    the same domain). Any other host — including every private/loopback/
+    link-local IP — is refused, blocking the SSRF vector where a crafted PDF
+    makes the OCR service return an internal URL. Set
+    ``paddleocr_vl_image_hosts`` (comma-separated, env
+    ``PADDLEOCR_VL_IMAGE_HOSTS``) to allow extra CDN hosts.
+    """
+    from urllib.parse import urlparse
+
+    try:
+        host = urlparse(url).hostname
+    except Exception:
+        return False
+    if not host:
+        return False
+    # Always refuse private / loopback / link-local / metadata IPs even if
+    # someone mis-configures the allow-list — belt and suspenders.
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved):
+        return False
+    s = get_settings()
+    allowed: set[str] = set()
+    job_url = s.paddleocr_vl_job_url
+    if job_url:
+        try:
+            h = urlparse(job_url).hostname
+            if h:
+                allowed.add(h)
+        except Exception:
+            pass
+    # Extra hosts from settings (comma-separated) — allows the OCR service's
+    # result-CDN domains. Private/loopback IPs were already refused above.
+    for h in s.paddleocr_vl_image_hosts.split(","):
+        h = h.strip()
+        if h:
+            allowed.add(h)
+    return host in allowed
 
 
 def build_ir_paddleocr_vl(asset: Asset) -> DocumentIR:

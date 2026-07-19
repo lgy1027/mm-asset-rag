@@ -84,7 +84,7 @@ Unsupported or over-limit files return a preview with `sniff.source_type="unknow
 
 ## `POST /upload/confirm`
 
-Applies user edits to preview cards, moves confirmed files into `assets/pdfs/` or `assets/images/`, and starts a background parse + index task.
+Applies user edits to preview cards, moves confirmed files into `assets/pdfs/`, `assets/images/`, or `assets/documents/`, and starts a background parse + index task.
 
 ```json
 // request
@@ -140,7 +140,7 @@ The `current` field reflects the worker's last position: `parsing N/M`, `text in
 
 ## `GET /tasks`
 
-Lists every task known to the service (in-memory + history loaded from `$MM_ASSET_RAG_HOME/tasks.jsonl`).
+Lists every task known to the service (in-memory + history loaded from `$MM_ASSET_RAG_HOME/tasks.db`).
 
 ## `POST /tasks/{task_id}/retry`
 
@@ -191,7 +191,7 @@ Return every non-deleted asset recorded in the content-hash index.
 
 ## `DELETE /assets/{asset_id}`
 
-Best-effort cleanup of every trace of `asset_id`. Removes the source file, `parsed/<id>/`, `captions/<id>.json`, the matching `documents.jsonl` rows, the Qdrant text + image points, and tombstone the asset index entry.
+Best-effort cleanup of every trace of `asset_id`. Removes the source file, `parsed/<id>/`, `captions/<id>.{jsonl,json}` (document embedded-figure captions use `.jsonl`; image assets use `.json`), the matching `documents.jsonl` rows, the Qdrant text + image points, and tombstone the asset index entry.
 
 ```json
 // response
@@ -271,6 +271,17 @@ Synchronous answer: retrieval + grounded LLM completion in one call.
 ```
 
 If no LLM is configured (missing `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`), the response contains an evidence-summary `answer` instead of failing.
+
+## `POST /chat`
+
+Same as `/answer` but takes a `ChatRequest` (`question` + routing fields `mode` / `image_path` / `top_k`) and runs the full retrieve + grounded-LLM flow in one non-streaming call. Useful when you don't want NDJSON streaming. Returns the same shape as `/answer` (`question`, `answer`, `sources`).
+
+```json
+// request
+{ "question": "which document covers RAG?", "mode": "hybrid", "top_k": 5 }
+```
+
+Like `/answer`, `/chat` spends LLM quota, so once `MMRAG_API_TOKEN` is set it is guarded the same way as the other write/quota endpoints (see [Configuration](configuration.md)).
 
 ## `POST /chat/stream`
 

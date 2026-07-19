@@ -4,17 +4,17 @@ All data lives under a single directory pointed to by ``MM_ASSET_RAG_HOME``
 (or ``~/.mm_asset_rag`` if the variable is not set). Layout::
 
     $MM_ASSET_RAG_HOME/
-    ├── assets/                  # user-supplied PDFs / images (auto-sniffed)
+    ├── assets/                  # user-supplied files (auto-sniffed on confirm)
     │   ├── pdfs/                # PDFs uploaded via /upload/confirm
-    │   └── images/              # images uploaded via /upload/confirm
+    │   ├── images/              # images uploaded via /upload/confirm
+    │   └── documents/           # office/text (docx/pptx/xlsx/html/md)
     ├── .preview-cache/<id>/     # short-lived cache for /upload/preview
     ├── parsed/<asset_id>/       # PDF page-level markdown / image OCR JSON
-    ├── captions/<asset_id>.json # VLM captions
+    ├── captions/<asset_id>.jsonl  # VLM captions (image asset: .json single-object)
     ├── indexes/
-    │   ├── text/                # LlamaIndex storage
     │   └── qdrant/              # Qdrant local persistence
     ├── documents.jsonl          # unified ParsedDocument store
-    ├── tasks.jsonl              # background task history
+    ├── tasks.db                 # background task history (SQLite)
     ├── asset_index.jsonl        # content-hash → asset_id index (append-only)
     └── eval_report.json
 """
