@@ -684,7 +684,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
                 <span style="margin-left:auto;color:var(--muted);font-size:11px">${escapeHtml(t.kind)}</span>
               </div>
               <div style="font-size:11px;color:var(--muted);margin-top:2px">
-                ${escapeHtml((t.current || '').slice(0, 60))}${originSuffix}
+                ${escapeHtml((t.current || '').slice(0, 60))}${escapeHtml(originSuffix)}
               </div>
               <div style="margin-top:4px;display:flex;gap:4px;align-items:center">
                 <select data-retry-mode="${escapeHtml(t.task_id)}" style="font-size:11px" ${isRetryable ? "" : "disabled"}>
