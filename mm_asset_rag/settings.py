@@ -38,6 +38,23 @@ class Settings(BaseSettings):
     # ─── Paths ───────────────────────────────────────────────────────────
     mm_asset_rag_home: Path | None = None
 
+    # ─── API auth / host guard ───────────────────────────────────────────
+    # A static bearer token guarding the destructive + write endpoints
+    # (DELETE /assets/*, /tasks/*/retry, /upload/preview, /upload/confirm,
+    # /eval). Leave unset to keep the zero-config loopback default (no
+    # auth) — only set this when exposing the API beyond localhost. Clients
+    # pass it as ``Authorization: Bearer <token>`` or ``X-API-Key: <token>``.
+    # Read endpoints (/search /answer /chat /assets /tasks /health) stay
+    # open so the bundled web UI works without a token.
+    mmrag_api_token: str | None = None
+    # Comma-separated trusted Host headers for ``TrustedHostMiddleware``.
+    # Default locks the API to loopback (``127.0.0.1``, ``localhost``) so a
+    # browser cannot reach it via DNS rebinding. When deploying behind a
+    # reverse proxy / on a public host, set this to your public hostname(s)
+    # (e.g. ``rag.example.com``) or ``*`` to disable the check. ``*`` alone
+    # is unsafe without also setting ``mmrag_api_token``.
+    mmrag_trusted_hosts: str | None = None
+
     # ─── LLM (OpenAI-compatible chat completion) ─────────────────────────
     openai_api_key: str | None = None
     openai_base_url: str | None = None

@@ -17,7 +17,10 @@ from mm_asset_rag.api import app
 
 @pytest.fixture
 def client(tmp_home) -> TestClient:
-    return TestClient(app)
+    # base_url pins the Host header to ``127.0.0.1`` so requests clear the
+    # TrustedHostMiddleware (which defaults to loopback only). Production
+    # callers reach the API on 127.0.0.1/localhost the same way.
+    return TestClient(app, base_url="http://127.0.0.1")
 
 
 @pytest.fixture
@@ -496,3 +499,118 @@ def test_get_asset_endpoint_404(client: TestClient) -> None:
         fake_service.get_asset_detail.return_value = None
         response = client.get("/assets/missing")
     assert response.status_code == 404
+
+
+# ─── Auth (MMRAG_API_TOKEN) ──────────────────────────────────────────────
+#
+# The token guard is opt-in: unset = zero-config loopback (no auth). When
+# set, the destructive + write endpoints require the token; read endpoints
+# stay open so the bundled web UI keeps working without one.
+
+
+def _with_token_env(monkeypatch, token: str | None) -> None:
+    """Set/unset ``MMRAG_API_TOKEN`` and clear the settings cache so the
+    next ``get_settings()`` sees it (the dependency reads settings per
+    request, not at import)."""
+    from mm_asset_rag.settings import get_settings
+
+    if token is None:
+        monkeypatch.delenv("MMRAG_API_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("MMRAG_API_TOKEN", token)
+    get_settings.cache_clear()
+
+
+def test_auth_disabled_by_default_no_token_required(client: TestClient, monkeypatch) -> None:
+    """Zero-config default: no MMRAG_API_TOKEN → guarded endpoints are open."""
+    _with_token_env(monkeypatch, None)
+    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+        # /tasks/{id}/retry hits require_token; with no token configured it
+        # must pass the guard (then 404 on the unknown task id).
+        mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
+        response = client.post("/tasks/abc/retry")
+    # 404 from the route body, not 401 from the guard — proves the guard passed.
+    assert response.status_code == 404
+
+
+def test_auth_enabled_blocks_write_without_token(client: TestClient, monkeypatch) -> None:
+    """With MMRAG_API_TOKEN set, a write endpoint without a token → 401."""
+    _with_token_env(monkeypatch, "secret")
+    response = client.post("/upload/confirm", json={"edits": []})
+    assert response.status_code == 401
+    assert response.headers.get("www-authenticate") is not None
+
+
+def test_auth_enabled_blocks_delete_without_token(client: TestClient, monkeypatch) -> None:
+    _with_token_env(monkeypatch, "secret")
+    response = client.delete("/assets/whatever")
+    assert response.status_code == 401
+
+
+def test_auth_rejects_wrong_token(client: TestClient, monkeypatch) -> None:
+    _with_token_env(monkeypatch, "secret")
+    response = client.post("/upload/confirm", json={"edits": []}, headers={"X-API-Key": "wrong"})
+    assert response.status_code == 401
+
+
+def test_auth_accepts_x_api_key_header(client: TestClient, monkeypatch) -> None:
+    _with_token_env(monkeypatch, "secret")
+    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+        mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
+        response = client.post("/tasks/abc/retry", headers={"X-API-Key": "secret"})
+    # Guard passed → 404 from the route body, not 401.
+    assert response.status_code == 404
+
+
+def test_auth_accepts_bearer_header(client: TestClient, monkeypatch) -> None:
+    _with_token_env(monkeypatch, "secret")
+    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+        mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
+        response = client.post("/tasks/abc/retry", headers={"Authorization": "Bearer secret"})
+    assert response.status_code == 404
+
+
+def test_auth_read_endpoints_stay_open_when_token_set(client: TestClient, monkeypatch) -> None:
+    """Read endpoints (/search /answer /assets /tasks) stay open even with a
+    token configured — the bundled web UI's same-origin fetches carry no
+    Authorization header."""
+    _with_token_env(monkeypatch, "secret")
+    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+        mock_get_service.return_value.list_assets.return_value = []
+        response = client.get("/assets")
+    assert response.status_code == 200
+
+
+def test_auth_eval_endpoint_guarded(client: TestClient, monkeypatch) -> None:
+    _with_token_env(monkeypatch, "secret")
+    response = client.post("/eval", json={"top_k": 5})
+    assert response.status_code == 401
+
+
+def test_auth_token_is_case_insensitive_scheme(client: TestClient, monkeypatch) -> None:
+    """``Authorization: bearer <t>`` (lowercase scheme) is accepted too."""
+    _with_token_env(monkeypatch, "secret")
+    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+        mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
+        response = client.post("/tasks/abc/retry", headers={"Authorization": "bearer secret"})
+    assert response.status_code == 404
+
+
+def test_resolve_trusted_hosts_defaults_to_loopback(monkeypatch) -> None:
+    from mm_asset_rag.api import _resolve_trusted_hosts
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.delenv("MMRAG_TRUSTED_HOSTS", raising=False)
+    get_settings.cache_clear()
+    hosts = _resolve_trusted_hosts()
+    assert "127.0.0.1" in hosts
+    assert "localhost" in hosts
+
+
+def test_resolve_trusted_hosts_configurable(monkeypatch) -> None:
+    from mm_asset_rag.api import _resolve_trusted_hosts
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("MMRAG_TRUSTED_HOSTS", "rag.example.com, api.example.com")
+    get_settings.cache_clear()
+    assert _resolve_trusted_hosts() == ["rag.example.com", "api.example.com"]
