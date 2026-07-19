@@ -24,29 +24,29 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "python-dotenv>=1.0",
-    "pydantic>=2.5",
-    "pydantic-settings>=2.0",
-    "pillow>=10.0",
-    "requests>=2.31",
-    "PyMuPDF>=1.23",
-    "qdrant-client>=1.7",
-    "fastembed>=0.5",
-    "fastapi>=0.110",
-    "uvicorn>=0.27",
-    "python-multipart>=0.0.9",
-    "jieba>=0.42",
+    "python-dotenv>=1.0,<2.0",
+    "pydantic>=2.5,<3.0",
+    "pydantic-settings>=2.0,<3.0",
+    "pillow>=10.0,<13.0",
+    "requests>=2.31,<3.0",
+    "PyMuPDF>=1.23,<2.0",
+    "qdrant-client>=1.7,<2.0",
+    "fastembed>=0.5,<1.0",
+    "fastapi>=0.110,<1.0",
+    "uvicorn>=0.27,<1.0",
+    "python-multipart>=0.0.9,<1.0",
+    "jieba>=0.42,<1.0",
     # Office/text document parsing (docx/pptx/xlsx/html/md). MarkItDown is
     # the default document backend (pure Python, no ML stack); the format
     # converters ride along via the [docx,pptx,xlsx] extras so a bare
     # install parses Office docs out of the box. docling remains available
     # as the optional heavy backend via the [docling] extra.
-    "markitdown[docx,pptx,xlsx]>=0.1.6",
+    "markitdown[docx,pptx,xlsx]>=0.1.6,<1.0",
 ]
 
 [project.optional-dependencies]
-clip = ["sentence-transformers>=2.2"]
-docling = ["docling>=2.0"]
+clip = ["sentence-transformers>=2.2,<6.0"]
+docling = ["docling>=2.0,<3.0"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",
@@ -55,6 +55,9 @@ dev = [
     "ruff>=0.4",
     "build>=1.0",
     "twine>=4.0",
+    # tests/unit/test_sentence_transformer_embedder.py 直接 `import numpy as np`;
+    # 显式声明,避免靠 fastembed 传递间接可用。
+    "numpy>=1.26,<3.0",
 ]
 
 [project.scripts]
