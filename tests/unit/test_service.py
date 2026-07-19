@@ -1233,3 +1233,63 @@ def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
     # Only the first asset was parsed; the checkpoint before #2 saw cancel.
     assert parsed_ids == [a1.asset_id]
     assert rec.status == "cancelled"
+
+
+def test_index_phase_stops_when_cancelled(tmp_home: Path) -> None:
+    """The index phase checks _is_cancelled at each progress tick (one per
+    upsert batch) via _progress → raises _TaskCancelled, which the ingest
+    worker catches cleanly (no failed/failed_index status flip).
+
+    Covers L1's index-stage cancel path (the parse-stage checkpoint is
+    covered by test_worker_stops_at_checkpoint_when_cancelled)."""
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.service import _run_ingest_task
+
+    service = IngestService()
+    # Pretend parse already finished successfully (parse_status=done) so
+    # _run_ingest_task proceeds straight to the index phase.
+    rec = TaskRecord(
+        task_id="idxcancel01",
+        kind="ingest",
+        status="done",
+        total=1,
+        finished_at=None,
+    )
+    service._tasks[rec.task_id] = rec
+    service._cancel_flags[rec.task_id] = __import__("threading").Event()
+    parse_options = ParseOptions(assets=[])
+
+    # Skip the real parse stage — we only want to drive the index path.
+    def fake_parse(_svc, _rec, _opts):
+        # Leave rec as parse-done so _run_ingest_task continues to index.
+        _svc._patch(_rec, status="done", current="parse done")
+
+    ticks = {"n": 0}
+
+    class FakeBackend:
+        def upsert_text(self, *, progress_cb=None, force_recreate=False):
+            # First tick: normal. Second tick: cancel arrives mid-index.
+            ticks["n"] += 1
+            if progress_cb:
+                progress_cb(1, 10, "indexing")
+            # Simulate cancel arriving between batches.
+            service._cancel_flags[rec.task_id].set()
+            service._patch(rec, status="cancelled", finished_at=time.time(), current="cancelled")
+            # Next progress tick should raise _TaskCancelled.
+            if progress_cb:
+                progress_cb(2, 10, "indexing")  # this raises _TaskCancelled
+            return 1, "text_coll"
+
+        def upsert_image(self, *, progress_cb=None, force_recreate=False):
+            return 1, "img_coll"
+
+    with (
+        patch.object(svc_mod, "_run_parse_task", fake_parse),
+        patch.object(svc_mod, "get_backend", lambda name: FakeBackend()),
+    ):
+        _run_ingest_task(service, rec, parse_options)
+
+    # The _TaskCancelled was caught cleanly; status stays cancelled (not
+    # flipped to failed/failed_index by the BaseException branch).
+    assert rec.status == "cancelled"
+    assert ticks["n"] == 1  # upsert_text ran (and was interrupted at tick 2)
