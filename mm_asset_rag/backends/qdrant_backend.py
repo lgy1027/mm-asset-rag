@@ -717,8 +717,11 @@ def build_qdrant_text_index(
         # the target so a concurrent query (or a crash mid-write) can
         # never observe a half-written IDF file. ``os.replace`` is
         # atomic on POSIX and Windows; readers either see the old
-        # table or the new one, never a truncated one.
-        tmp_path = idf_path.with_name(idf_path.name + ".tmp")
+        # table or the new one, never a truncated one. The temp name
+        # carries pid + thread id so two concurrent builds don't clobber
+        # each other's temp file (which would let one ``os.replace`` a
+        # half-written file from the other).
+        tmp_path = idf_path.with_name(f".{idf_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp_path.write_text(
             json.dumps(bm25_zh_idf, ensure_ascii=False),
             encoding="utf-8",

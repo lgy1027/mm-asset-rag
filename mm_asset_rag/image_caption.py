@@ -50,9 +50,23 @@ def _image_abs_path(asset_id: str, image_rel_path: str) -> Path | None:
     Returns ``None`` when the file is missing so the caller can skip it
     without raising — an unrenderable figure shouldn't abort captioning the
     rest.
+
+    Defense-in-depth: refuse paths that escape ``parsed/<asset_id>/``
+    (absolute paths, ``..`` traversal, or symlinks resolving outside).
+    ``image_rel_path`` comes from parser-emitted metadata today, but
+    bounding it stops a future parser path bug from reading arbitrary files.
     """
-    candidate = get_parsed_dir() / asset_id / image_rel_path
-    return candidate if candidate.exists() else None
+    base = get_parsed_dir() / asset_id
+    candidate = base / image_rel_path
+    try:
+        resolved = candidate.resolve()
+    except (OSError, RuntimeError):
+        return None
+    try:
+        resolved.relative_to(base.resolve())
+    except ValueError:
+        return None
+    return resolved if resolved.exists() else None
 
 
 def _load_cache(cache_path: Path) -> dict[str, str]:
