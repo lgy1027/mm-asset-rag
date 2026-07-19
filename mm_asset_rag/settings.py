@@ -359,6 +359,12 @@ class Settings(BaseSettings):
     document_parser: Literal["markitdown", "docling"] = "markitdown"
     enable_ocr: bool = False
     enable_vlm: bool = False
+    # 图片嵌入 provider 选择。``lite`` 当前是占位字符串:并没有独立实现的轻量
+    # 图片 embedder,实际图片索引依赖 [clip] extra 提供的 sentence-transformers
+    # CLIP(``get_default_image_embedder`` 只实例化 CLIP)。因此未安装 [clip] 时
+    # ``lite`` 的效果是"图片跳过索引"而非"用轻量 embedder 索引";``sentence_transformers``
+    # 显式要求 CLIP。保留 ``lite`` 选项仅为向后兼容旧 .env,行为上等价于"未配置
+    # 图片 embedder"。要启用图片索引请安装 [clip] extra,此字段无需改动。
     image_provider: Literal["lite", "sentence_transformers"] = "lite"
     auto_index: bool = True
 

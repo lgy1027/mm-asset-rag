@@ -46,7 +46,6 @@ def command_parse(args: argparse.Namespace) -> None:
     it previews each file, accepts every supported preview as-is, then
     schedules parse + index through ``IngestService``.
     """
-    load_env()
     file_paths = [Path(p).expanduser() for p in args.files]
     missing = [str(p) for p in file_paths if not p.exists()]
     if missing:
@@ -98,7 +97,6 @@ def command_reindex(args: argparse.Namespace) -> None:
     ``--yes`` skips the interactive confirmation — useful for CI / scripts
     and for the "switch CLIP model" recipe in ``docs/eval-report-v3.md``.
     """
-    load_env()
     from .backends.qdrant_backend import QdrantLockHeldError
     from .service import get_service
 
@@ -142,7 +140,6 @@ def safe_print(text: str) -> None:
 
 
 def command_search(args: argparse.Namespace) -> None:
-    load_env()
     if args.mode == "image-to-image" and not args.image:
         raise RuntimeError("--image is required for image-to-image search")
     try:
@@ -160,7 +157,6 @@ def command_search(args: argparse.Namespace) -> None:
 
 
 def command_eval(args: argparse.Namespace) -> None:
-    load_env()
     if args.v2:
         from .evaluation_v2 import run_eval_v2, write_eval_report_v2
 
@@ -181,13 +177,11 @@ def command_eval(args: argparse.Namespace) -> None:
 
 
 def command_answer(args: argparse.Namespace) -> None:
-    load_env()
     safe_print(answer_json(args.question, top_k=args.top_k))
 
 
 def command_retry(args: argparse.Namespace) -> None:
     """Re-run a previously failed / partial / interrupted task."""
-    load_env()
     service = get_service()
     service.load_history()
     try:
@@ -210,7 +204,6 @@ def command_retry(args: argparse.Namespace) -> None:
 
 def command_delete(args: argparse.Namespace) -> None:
     """Delete an asset (best-effort across disk, parsed, captions, Qdrant, index)."""
-    load_env()
     if not args.dry_run and not args.yes:
         confirm = input(
             f"Delete asset {args.asset_id}? This will remove its file, parsed/, "
@@ -352,6 +345,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    # Load .env once at the CLI entry point. ``load_dotenv()`` walks up
+    # from the cwd to find a ``.env`` file, so this preserves the
+    # "run ``mmrag`` from any subdirectory" behaviour. Individual
+    # subcommands no longer call ``load_env()`` themselves — pydantic
+    # ``Settings`` reads ``.env`` from the cwd automatically, and the
+    # single call here populates ``os.environ`` for the residual
+    # ``os.environ.get(...)`` sites that still need it.
+    load_env()
     parser = build_parser()
     args = parser.parse_args()
     args.func(args)

@@ -429,19 +429,26 @@ class UploadConfirmRequest(BaseModel):
 
 
 @app.get("/health")
-def health() -> dict[str, object]:
+def health(
+    deep: bool = Query(False, description="probe LLM/embedder config completeness"),
+) -> dict[str, object]:
     """Liveness + index state.
 
-    ``text_index_exists`` / ``image_index_exists`` now probe the actual
-    Qdrant collections (previously they checked the stale ``indexes/text``
+    ``text_index_exists`` / ``image_index_exists`` probe the actual Qdrant
+    collections (previously they checked the stale ``indexes/text``
     LlamaIndex-era directory, which reported false even when the index was
     healthy). Both degrade to ``False`` if the Qdrant client can't answer
-    (e.g. local-mode lock held by another process) — health must never
-    500.
+    (e.g. local-mode lock held by another process) — health must never 500.
+
+    ``?deep=true`` adds config-completeness probes: ``llm_configured``
+    (OPENAI_* or VLM_* triple complete) and ``embedder_configured``
+    (embedding creds resolvable). These don't make an outbound LLM call
+    (no quota spend); they only check the configured triples so a
+    docker/编排 healthcheck can tell "will /answer work" from /health.
     """
     assets_dir = get_assets_dir()
     asset_files = [p for p in assets_dir.rglob("*") if p.is_file()] if assets_dir.exists() else []
-    return {
+    payload: dict[str, object] = {
         "status": "ok",
         "version": __version__,
         "assets": len(asset_files),
@@ -451,6 +458,13 @@ def health() -> dict[str, object]:
         "vector_backend": "qdrant",
         "model": get_settings().openai_model or "",
     }
+    if deep:
+        s = get_settings()
+        b, k, m = s.llm_creds
+        eb, ek, em = s.text_embedding_creds
+        payload["llm_configured"] = bool(b and k and m)
+        payload["embedder_configured"] = bool(eb and ek and em)
+    return payload
 
 
 def _qdrant_collection_alive(kind: str) -> bool:
@@ -878,6 +892,30 @@ def retry_task(
         "force": rec.force,
         "failed_only": rec.failed_only,
         "uploaded": rec.uploaded_files,
+    }
+
+
+@app.post("/tasks/{task_id}/cancel")
+def cancel_task(
+    task_id: str,
+    _auth: None = Depends(require_token),
+) -> dict[str, object]:
+    """Request cooperative cancellation of a running task.
+
+    Sets a per-task stop flag the worker checks between assets; the task
+    is marked ``cancelled`` (terminal). A task that is already terminal
+    (done/failed/interrupted/cancelled) is returned unchanged. Cancellation
+    is cooperative — a task deep in parsing one large asset finishes that
+    asset first. 404 for an unknown task_id.
+    """
+    try:
+        rec = get_service().cancel_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "task_id": rec.task_id,
+        "status": rec.status,
+        "finished_at": rec.finished_at,
     }
 
 

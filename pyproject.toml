@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [
-    { name = "liguoyu", email = "guoyu.li@lcfuturecenter.com" },
+    { name = "lgy1027", email = "lgy1027@users.noreply.github.com" },
 ]
 keywords = ["multimodal-retrieval", "cross-modal", "vector-search", "rag", "qdrant", "clip", "hybrid-search"]
 classifiers = [

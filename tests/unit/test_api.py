@@ -57,6 +57,22 @@ def test_health_endpoint_reports_status(client: TestClient) -> None:
     assert body["vector_backend"] == "qdrant"
     assert body["assets"] == 0
     assert body["version"] == "0.1.0"
+    # Shallow health has no config-completeness probes.
+    assert "llm_configured" not in body
+    assert "embedder_configured" not in body
+
+
+def test_health_deep_reports_config_completeness(client: TestClient) -> None:
+    """?deep=true adds llm_configured / embedder_configured without making an
+    outbound LLM call (no quota spend) — a docker healthcheck can tell
+    'will /answer work' from /health."""
+    response = client.get("/health?deep=true")
+    assert response.status_code == 200
+    body = response.json()
+    assert "llm_configured" in body
+    assert "embedder_configured" in body
+    assert isinstance(body["llm_configured"], bool)
+    assert isinstance(body["embedder_configured"], bool)
 
 
 def test_root_serves_bundled_ui(client: TestClient) -> None:
@@ -299,6 +315,30 @@ def test_retry_task_endpoint_accepts_force_and_failed_only(client: TestClient) -
     kwargs = fake_service.retry_task.call_args.kwargs
     assert kwargs["force"] is True
     assert kwargs["failed_only"] is True
+
+
+def test_cancel_task_endpoint_routes_to_service(client: TestClient) -> None:
+    """POST /tasks/{id}/cancel calls IngestService.cancel_task and returns the
+    task's status (terminal after cancel). 404 for unknown id."""
+    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+        from mm_asset_rag.service import TaskRecord
+
+        fake_service = mock_get_service.return_value
+        fake_service.cancel_task.return_value = TaskRecord(
+            task_id="abc123def456", kind="ingest", status="cancelled"
+        )
+        response = client.post("/tasks/abc123def456/cancel")
+    assert response.status_code == 200
+    assert response.json()["task_id"] == "abc123def456"
+    assert response.json()["status"] == "cancelled"
+    fake_service.cancel_task.assert_called_once_with("abc123def456")
+
+
+def test_cancel_task_404_for_unknown(client: TestClient) -> None:
+    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+        mock_get_service.return_value.cancel_task.side_effect = KeyError("nope")
+        response = client.post("/tasks/unknown/cancel")
+    assert response.status_code == 404
 
 
 def test_chat_stream_endpoint_emits_sources_and_done(client: TestClient) -> None:

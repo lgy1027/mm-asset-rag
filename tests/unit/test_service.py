@@ -1146,3 +1146,38 @@ def test_list_tasks_surfaces_memory_only_recs_not_yet_persisted(tmp_home: Path) 
     listed = service.list_tasks()
     ids = [t.task_id for t in listed]
     assert "memonly01" in ids
+
+
+def test_cancel_task_marks_running_task_cancelled(tmp_home: Path) -> None:
+    """cancel_task sets the stop flag and patches status → cancelled."""
+    service = IngestService()
+    rec = TaskRecord(task_id="runtask0001", kind="ingest", status="running", total=3)
+    service._tasks[rec.task_id] = rec
+
+    out = service.cancel_task(rec.task_id)
+
+    assert out.task_id == rec.task_id
+    assert out.status == "cancelled"
+    assert rec.status == "cancelled"
+    assert rec.finished_at is not None
+    # The per-task stop flag was created and set.
+    assert service._is_cancelled(rec.task_id)
+
+
+def test_cancel_task_unknown_raises(tmp_home: Path) -> None:
+    service = IngestService()
+    with pytest.raises(KeyError, match="unknown task"):
+        service.cancel_task("does-not-exist")
+
+
+def test_cancel_task_terminal_task_is_noop(tmp_home: Path) -> None:
+    """Cancelling an already-terminal task returns it unchanged (no resurrect)."""
+    service = IngestService()
+    rec = TaskRecord(task_id="donetask001", kind="ingest", status="done", total=1)
+    service._tasks[rec.task_id] = rec
+
+    out = service.cancel_task(rec.task_id)
+
+    assert out.status == "done"  # not flipped to cancelled
+    # Still records a stop flag (harmless), but status untouched.
+    assert service._is_cancelled(rec.task_id)

@@ -154,10 +154,13 @@ class TaskStatus(str, Enum):
     PARTIAL = "partial"
     FAILED = "failed"
     INTERRUPTED = "interrupted"
+    CANCELLED = "cancelled"
 
     @classmethod
     def terminal(cls) -> set[TaskStatus]:
-        return {cls.DONE, cls.PARTIAL, cls.FAILED, cls.INTERRUPTED}
+        # ``cancelled`` is terminal — once set, the worker stops at the next
+        # checkpoint and never flips back to running.
+        return {cls.DONE, cls.PARTIAL, cls.FAILED, cls.INTERRUPTED, cls.CANCELLED}
 
 
 class AssetStatus(str, Enum):
@@ -268,6 +271,12 @@ class IngestService:
         self._settings = settings or get_settings()
         self._tasks: dict[str, TaskRecord] = {}
         self._stream_events: dict[str, list[tuple[threading.Event, dict[str, object]]]] = {}
+        # Per-task cancellation flags. ``_spawn`` creates one when a task
+        # starts; ``cancel_task`` sets it; the worker checks it at each
+        # asset checkpoint and stops cleanly. Daemon threads can't be
+        # force-interrupted, so cancel is cooperative — a task mid-parse of
+        # one large asset still finishes that asset before stopping.
+        self._cancel_flags: dict[str, threading.Event] = {}
 
     # ─── Public API used by both FastAPI and CLI ─────────────────────────
 
@@ -871,6 +880,7 @@ class IngestService:
 
     def _spawn(self, target, rec: TaskRecord, options: ParseOptions) -> None:
         """Start a daemon thread for the parse / ingest work."""
+        self._cancel_flags[rec.task_id] = threading.Event()
         thread = threading.Thread(
             target=target,
             args=(self, rec, options),
@@ -878,6 +888,41 @@ class IngestService:
             daemon=True,
         )
         thread.start()
+
+    def _is_cancelled(self, task_id: str) -> bool:
+        """True iff ``cancel_task`` was called for ``task_id``."""
+        flag = self._cancel_flags.get(task_id)
+        return flag is not None and flag.is_set()
+
+    def cancel_task(self, task_id: str) -> TaskRecord:
+        """Request cooperative cancellation of a running task.
+
+        Sets the per-task stop flag; the worker checks it at each asset
+        checkpoint (between parse/index of individual assets) and stops
+        cleanly, marking the task ``cancelled``. A task that's already
+        terminal stays untouched (calling cancel on a done/failed task is
+        a no-op that just returns its current record). Unknown task_id
+        raises ``KeyError``.
+
+        Daemon threads can't be force-killed, so a task currently deep in
+        parsing/indexing one large asset finishes that asset before the
+        flag takes effect — this is a cooperative, not preemptive, cancel.
+        """
+        with self._TASKS_LOCK:
+            rec = self._tasks.get(task_id)
+        if rec is None:
+            raise KeyError(f"unknown task {task_id}")
+        flag = self._cancel_flags.setdefault(task_id, threading.Event())
+        flag.set()
+        # If the task is already terminal, don't resurrect it as cancelled.
+        if rec.status not in TaskStatus.terminal():
+            self._patch(
+                rec,
+                status=TaskStatus.CANCELLED,
+                finished_at=time.time(),
+                current="cancelled by request",
+            )
+        return rec
 
     def _patch(self, rec: TaskRecord, **fields: Any) -> None:
         # Hold ``_TASKS_LOCK`` across both the setattr *and* the
@@ -1298,6 +1343,17 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
     target.parent.mkdir(parents=True, exist_ok=True)
     local_statuses: dict[str, str] = {}
     for i, asset in enumerate(assets, start=1):
+        # Cooperative cancellation: if cancel_task was called between
+        # assets, stop now and mark the task cancelled. The assets parsed
+        # so far are already on disk (parsed/ + documents.jsonl); the
+        # caller can retry the rest.
+        if service._is_cancelled(rec.task_id):
+            service._patch(
+                rec,
+                processed=i - 1,
+                current=f"cancelled before asset {asset.asset_id}",
+            )
+            return
         try:
             from .paths import get_parsed_dir
 
@@ -1405,6 +1461,10 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
     _run_parse_task(service, rec, options)
     if rec.status == TaskStatus.FAILED:
         service._patch(rec, finished_at=time.time())
+        return
+    if rec.status == TaskStatus.CANCELLED:
+        # Cancelled mid-parse — skip the index stage. cancel_task already
+        # set status + finished_at; nothing more to do.
         return
     parse_status = rec.status
 

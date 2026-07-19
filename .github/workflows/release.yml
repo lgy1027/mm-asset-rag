@@ -1,0 +1,47 @@
+name: Release
+
+# 触发条件:推送 `v*` 形态的 tag(例如 `v0.1.0`、`v1.2.3`)。
+# 打 tag 前请确认:
+#   1. 已在 GitHub Settings → Secrets and variables → Actions 配置 `PYPI_API_TOKEN`
+#      (PyPI account-scoped token,见 https://pypi.org/manage/account/token/)。
+#   2. tag 形如 `v0.1.0`,不带 build 元数据;动作会基于 tag refname 自动取版本。
+#   3. 本地 `uv lock` 已与 `pyproject.toml` 对齐,`uv build` 产物可干净构建。
+on:
+  push:
+    tags:
+      - "v*"
+
+# 最小权限原则:发布动作只需要读仓库内容与写 PyPI(由 action 内部通过 OIDC/secret 处理)。
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    name: Build sdist + wheel and publish to PyPI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v2
+        with:
+          version: "latest"
+
+      - name: Build sdist + wheel
+        # `uv build` 在仓库根目录生成 `dist/` 下的 sdist(.tar.gz)与 wheel(.whl)。
+        # 等价于 `python -m build`,但直接复用 uv 缓存,无需额外装 build 包。
+        run: uv build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # 不要在此硬编码 token。token 通过 GitHub Secrets 注入:
+        #   Secrets → Actions → New repository secret → Name: PYPI_API_TOKEN
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
