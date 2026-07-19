@@ -138,7 +138,7 @@ def test_eval_endpoint_v2_path_routes_to_run_eval_v2() -> None:
         # The endpoint imports ``run_eval_v2`` lazily inside the handler
         # (``from .evaluation_v2 import run_eval_v2``), so patching the
         # attribute on the module is enough.
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1")
         response = client.post("/eval", json={"v2": True, "top_k": 5})
 
     assert response.status_code == 200
@@ -171,7 +171,7 @@ def test_eval_endpoint_v1_default_unchanged() -> None:
     from mm_asset_rag.api import app
 
     with patch("mm_asset_rag.api.run_eval", return_value=[]):
-        client = TestClient(app)
+        client = TestClient(app, base_url="http://127.0.0.1")
         response = client.post("/eval", json={})
 
     assert response.status_code == 200
