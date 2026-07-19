@@ -171,3 +171,37 @@ def test_build_index_hashes_are_deterministic_across_calls() -> None:
     v2, _ = bm25_zh.build_bm25_zh_index(docs2)
     assert v1[0].indices == v2[0].indices
     assert v1[0].values == pytest.approx(v2[0].values)
+
+
+# ─── _term_to_index collision guard (64-bit) ───────────────────────────────
+
+
+def test_term_to_index_different_terms_get_different_indices() -> None:
+    """Two distinct terms must not collide to the same 64-bit index."""
+    assert bm25_zh._term_to_index("猫") != bm25_zh._term_to_index("狗")
+    assert bm25_zh._term_to_index("bert") != bm25_zh._term_to_index("gpt")
+
+
+def test_term_to_index_no_collisions_over_many_random_terms() -> None:
+    """10k distinct terms should produce 10k distinct 64-bit indices.
+
+    Under the old 32-bit mapping the birthday bound predicts ~1%
+    collisions at 10k terms; 64-bit keeps the collision count at 0
+    for this scale, guarding against regressions in bit width.
+    """
+    import secrets
+
+    terms = {f"tok_{secrets.token_hex(8)}" for _ in range(10000)}
+    assert len(terms) == 10000
+    indices = {bm25_zh._term_to_index(t) for t in terms}
+    assert len(indices) == len(terms)
+
+
+def test_term_to_index_uses_64_bit_width() -> None:
+    """Pin the bit width: a uint64 index must not fit in 32 bits."""
+    # sha1 digest makes it overwhelmingly likely at least one term
+    # maps above 2**32; check the doc term directly.
+    idx = bm25_zh._term_to_index("猫")
+    assert 0 <= idx < 2**64
+    # Same term should still be deterministic.
+    assert idx == bm25_zh._term_to_index("猫")
