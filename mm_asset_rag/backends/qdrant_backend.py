@@ -144,20 +144,46 @@ def _embed_bm25(texts: list[str]) -> list[models.SparseVector]:
 # file on every ``mmrag search``.
 
 _BM25_ZH_IDF_CACHE: dict | None = None
+_BM25_ZH_IDF_LOCK = threading.Lock()
+
+
+def invalidate_bm25_zh_idf_cache() -> None:
+    """Drop the in-process Chinese BM25 IDF cache.
+
+    ``build_qdrant_text_index`` persists the per-corpus IDF table to
+    ``$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json`` once per rebuild.
+    The query side caches the file contents in-process
+    (``_BM25_ZH_IDF_CACHE``) so repeated ``mmrag search`` calls don't
+    re-read the file. In server mode (long-lived API process) the cache
+    outlives a reindex triggered from a separate CLI, so the query path
+    would keep using the stale IDF table — recall drifts out of sync
+    with the freshly rebuilt collection.
+
+    ``service`` should call this after ``reindex`` / ``parse`` finishes
+    so the next query re-reads the on-disk IDF table.
+    """
+    global _BM25_ZH_IDF_CACHE
+    with _BM25_ZH_IDF_LOCK:
+        _BM25_ZH_IDF_CACHE = None
 
 
 def _load_bm25_zh_idf() -> dict | None:
     """Load the persisted Chinese BM25 IDF table (cached in-process)."""
     global _BM25_ZH_IDF_CACHE
-    if _BM25_ZH_IDF_CACHE is not None:
-        return _BM25_ZH_IDF_CACHE
+    with _BM25_ZH_IDF_LOCK:
+        if _BM25_ZH_IDF_CACHE is not None:
+            return _BM25_ZH_IDF_CACHE
     idf_path = get_indexes_dir() / "bm25_zh_idf.json"
     if not idf_path.exists():
         return None
     try:
-        _BM25_ZH_IDF_CACHE = json.loads(idf_path.read_text(encoding="utf-8"))
+        data = json.loads(idf_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    # Only the cache assignment is guarded; the file read above is
+    # outside the lock so two threads don't serialize on disk IO.
+    with _BM25_ZH_IDF_LOCK:
+        _BM25_ZH_IDF_CACHE = data
     return _BM25_ZH_IDF_CACHE
 
 
@@ -381,6 +407,17 @@ def get_qdrant_client() -> QdrantClient:
         # Remote mode: each call returns its own client. Qdrant
         # server handles concurrency; the in-process cache would
         # just hold a connection alive longer than necessary.
+        # If we previously cached a *local* client (deployer flipped
+        # ``QDRANT_URL`` on at runtime), close it so its local-file
+        # ``.lock`` and the underlying storage fd are released —
+        # otherwise the lock stays held for the rest of the process
+        # even though we no longer use that client.
+        with _QDRANT_CLIENT_LOCK:
+            if _QDRANT_CLIENT is not None:
+                with contextlib.suppress(Exception):
+                    _QDRANT_CLIENT.close()
+                _QDRANT_CLIENT = None
+                _QDRANT_CLIENT_KEY = None
         return QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
 
     qdrant_path = get_indexes_dir() / "qdrant"
@@ -623,10 +660,21 @@ def build_qdrant_text_index(
         )
         idf_path = get_indexes_dir() / "bm25_zh_idf.json"
         idf_path.parent.mkdir(parents=True, exist_ok=True)
-        idf_path.write_text(
+        # Atomic replace: write to a temp file then ``os.replace`` onto
+        # the target so a concurrent query (or a crash mid-write) can
+        # never observe a half-written IDF file. ``os.replace`` is
+        # atomic on POSIX and Windows; readers either see the old
+        # table or the new one, never a truncated one.
+        tmp_path = idf_path.with_name(idf_path.name + ".tmp")
+        tmp_path.write_text(
             json.dumps(bm25_zh_idf, ensure_ascii=False),
             encoding="utf-8",
         )
+        os.replace(tmp_path, idf_path)
+        # The just-written file invalidates any in-process cache from
+        # an earlier build (server mode: same process, reindex via
+        # separate path). Drop the cache so the next query re-reads.
+        invalidate_bm25_zh_idf_cache()
 
     batch_size = batch_size or max(1, get_settings().qdrant_upsert_batch_size)
     embedder = get_default_text_embedder()
