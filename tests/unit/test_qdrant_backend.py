@@ -6,7 +6,10 @@ pure functions, no Qdrant / no embedding model required.
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock
+
+import pytest
 
 from mm_asset_rag.backends.qdrant_backend import (
     _STOP_TOKENS,
@@ -556,3 +559,83 @@ def test_text_to_image_does_not_short_circuit_on_zero_overlap(
     # Did not short-circuit: query_points was called.
     assert fake_qdrant_client.query_points.called
     assert out == []
+
+
+# ─── collection-missing degradation ──────────────────────────────────────
+# A fresh install (or one that has only ingested one modality) has no
+# matching collection yet. Each search route must degrade to an empty
+# result instead of crashing hybrid_search — symmetric across text /
+# text-to-image / image-to-image.
+
+
+def test_qdrant_text_search_degrades_when_collection_missing(monkeypatch) -> None:
+    """``_hybrid_text_query`` raising "not found" → empty list, not a raise."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    def _raise_not_found(*args, **kwargs):
+        raise ValueError("Collection `multimodal_text_2560d` not found")
+
+    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _raise_not_found)
+    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+    )
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
+    )
+    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+
+    assert qdrant_backend.qdrant_text_search("query", top_k=5) == []
+
+
+def test_qdrant_text_search_re_raises_non_missing_value_error(monkeypatch) -> None:
+    """A ValueError that isn't "collection not found" must still propagate."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    def _raise_other(*args, **kwargs):
+        raise ValueError("totally unrelated error")
+
+    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _raise_other)
+    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+    )
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
+    )
+    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+
+    with pytest.raises(ValueError, match="unrelated"):
+        qdrant_backend.qdrant_text_search("query", top_k=5)
+
+
+def test_qdrant_image_to_image_search_degrades_when_collection_missing(
+    monkeypatch, fake_qdrant_client
+) -> None:
+    """image→image route degrades to [] when the image collection is absent."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    fake_qdrant_client.query_points.side_effect = ValueError(
+        "Collection `multimodal_image_512d` not found"
+    )
+    monkeypatch.setattr(qdrant_backend, "get_qdrant_client", lambda: fake_qdrant_client)
+    monkeypatch.setattr(qdrant_backend, "image_collection", lambda dim: "multimodal_image_512d")
+
+    class _Provider:
+        def embed_image(self, path):
+            return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(qdrant_backend, "get_default_image_embedder", lambda: _Provider())
+
+    assert qdrant_backend.qdrant_image_to_image_search(Path("any.png"), top_k=5) == []
+
+
+def test_is_collection_missing_predicate() -> None:
+    """The shared predicate keys on Qdrant's ``not found`` ValueError only."""
+    from mm_asset_rag.backends.qdrant_backend import _is_collection_missing
+
+    assert _is_collection_missing(ValueError("Collection X not found")) is True
+    assert _is_collection_missing(ValueError("something else")) is False
+    assert _is_collection_missing(RuntimeError("not found")) is False
