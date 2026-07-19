@@ -36,7 +36,11 @@ def _enable(monkeypatch, *, enabled: bool = True, creds=("http://vlm/v1", "sk", 
 
     ``vlm_creds`` is a read-only pydantic property backed by the ``vlm_*``
     fields, so creds are injected by setting those fields directly (not the
-    property). The flag is a plain field too.
+    property). The flag is a plain field too. When ``creds`` is the
+    "unconfigured" triple we also clear the ``openai_*`` fallback fields —
+    ``vlm_creds`` falls back to ``OPENAI_*``, so on a host whose real .env
+    has OPENAI_* set, leaving them alone would let the "unconfigured" case
+    still look configured (and the test would not be a no-op).
     """
     from mm_asset_rag.settings import get_settings
 
@@ -46,6 +50,10 @@ def _enable(monkeypatch, *, enabled: bool = True, creds=("http://vlm/v1", "sk", 
         monkeypatch.setattr(s, "vlm_base_url", None)
         monkeypatch.setattr(s, "vlm_api_key", None)
         monkeypatch.setattr(s, "vlm_model", None)
+        # Clear the OPENAI_* fallback too, or vlm_creds still resolves.
+        monkeypatch.setattr(s, "openai_base_url", None)
+        monkeypatch.setattr(s, "openai_api_key", None)
+        monkeypatch.setattr(s, "openai_model", None)
     else:
         monkeypatch.setattr(s, "vlm_base_url", creds[0])
         monkeypatch.setattr(s, "vlm_api_key", creds[1])

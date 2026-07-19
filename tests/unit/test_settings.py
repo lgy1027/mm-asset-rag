@@ -19,6 +19,9 @@ def _clear_settings_cache():
 
 def test_defaults_applied_when_no_env(monkeypatch):
     # Strip any .env-inherited values so defaults are tested in isolation.
+    # Covers every field asserted below; a host with a real .env (e.g. a
+    # developer's CLIP_MODEL=OFA-Sys/...) would otherwise leak through
+    # ``Settings(_env_file=None)`` (it still reads os.environ).
     for key in (
         "MM_ASSET_RAG_HOME",
         "OPENAI_API_KEY",
@@ -31,6 +34,8 @@ def test_defaults_applied_when_no_env(monkeypatch):
         "AUTO_INDEX",
         "QDRANT_UPSERT_BATCH_SIZE",
         "LLM_TIMEOUT",
+        "CLIP_MODEL",
+        "DOCUMENT_PARSER",
     ):
         monkeypatch.delenv(key, raising=False)
 
