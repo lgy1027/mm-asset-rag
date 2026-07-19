@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import queue
+import threading
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
@@ -238,6 +240,58 @@ def chat(request: ChatRequest) -> dict[str, object]:
     }
 
 
+# Sentinel pushed onto the bridge queue to signal "no more items" (either the
+# sync generator finished or the worker thread exited, normally or via error).
+_STREAM_DONE: object = object()
+
+
+async def _iter_sync_in_thread(factory, *args, **kwargs) -> asyncio.Queue:
+    """Bridge a *sync* generator into the event loop as an ``async`` queue.
+
+    ``factory(*args, **kwargs)`` returns a fresh sync generator (called inside
+    the worker thread so any blocking setup — e.g. the OpenAI SDK's first
+    HTTP read — runs off the loop). Each yielded item is pushed onto a
+    ``queue.Queue``; the consumer awaits ``queue.get`` via ``to_thread`` so it
+    stays responsive to client disconnects (``asyncio.CancelledError``).
+
+    This is the fix for the previous "buffer-all" ``chat_stream``: it ran
+    ``list(stream_answer_chunks(...))`` in one ``to_thread`` call, so the
+    client saw its first token only after the *entire* LLM response finished
+    — defeating the NDJSON streaming contract and burning LLM tokens after a
+    mid-stream client disconnect (the sync ``list(...)`` couldn't be cancelled).
+
+    Returns the queue; the caller iterates it until it sees ``_STREAM_DONE``.
+    On cancellation the caller drops the queue and the orphaned worker exits
+    on its next ``put`` (the queue is unbounded, so ``put`` never blocks — it
+    just finishes; see the worker's ``stop`` check). The worker is a daemon
+    thread, so a runaway producer that ignores ``stop`` (e.g. blocked inside
+    the SDK with no chance to check it) is reaped at process exit rather than
+    pinning the loop forever.
+    """
+    out: queue.Queue = queue.Queue()
+    stop = threading.Event()
+
+    def _worker():
+        try:
+            for item in factory(*args, **kwargs):
+                if stop.is_set():
+                    return
+                out.put(item)
+        except BaseException as exc:  # surface producer errors to the consumer
+            out.put(exc)
+        finally:
+            out.put(_STREAM_DONE)
+
+    t = threading.Thread(target=_worker, daemon=True, name="chat-stream-producer")
+    t.start()
+
+    # Give the caller a handle to signal cancellation. Stashed on the queue
+    # object so the gen() closure below can reach it without a closure var.
+    out.stop = stop  # type: ignore[attr-defined]
+    out.thread = t  # type: ignore[attr-defined]
+    return out
+
+
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest) -> StreamingResponse:
     """NDJSON stream of the chat answer.
@@ -255,6 +309,9 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     """
 
     async def gen():
+        # Bridge object for the producer thread; created lazily so the
+        # ``finally`` below can tell whether the producer ever started.
+        bridge: asyncio.Queue | None = None
         try:
             hits = await asyncio.to_thread(
                 dispatch_search,
@@ -271,19 +328,30 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 + "\n"
             )
 
-            # ``stream_answer_chunks`` is a sync generator (the OpenAI
-            # SDK yields its stream chunks synchronously). Run the
-            # blocking producer in a worker thread and ``await`` each
-            # chunk so the event loop stays responsive to client
-            # disconnects (``asyncio.CancelledError`` propagates
-            # through ``to_thread`` and stops further yield).
-            def produce():
-                return list(stream_answer_chunks(request.question, hits))
-
-            chunks = await asyncio.to_thread(produce)
-            for chunk in chunks:
-                yield json.dumps({"event": "token", "text": chunk}, ensure_ascii=False) + "\n"
+            # ``stream_answer_chunks`` is a sync generator (the OpenAI SDK
+            # yields its stream chunks synchronously). Bridge it onto the
+            # event loop with a thread + queue so each token is yielded as
+            # soon as the SDK emits it (true streaming, not buffer-all) and
+            # a client disconnect cancels this coroutine — we then signal
+            # the worker to stop instead of letting it run the full LLM
+            # response to completion.
+            bridge = await _iter_sync_in_thread(stream_answer_chunks, request.question, hits)
+            while True:
+                item = await asyncio.to_thread(bridge.get)
+                if item is _STREAM_DONE:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                yield json.dumps({"event": "token", "text": item}, ensure_ascii=False) + "\n"
             yield json.dumps({"event": "done"}, ensure_ascii=False) + "\n"
+        except asyncio.CancelledError:
+            # Client disconnected mid-stream. Tell the producer thread to
+            # stop (it checks ``stop`` between yields); let the loop's
+            # default cancellation handling proceed by re-raising so
+            # Starlette tears down the response cleanly.
+            if bridge is not None:
+                bridge.stop.set()  # type: ignore[attr-defined]
+            raise
         except Exception as exc:
             yield json.dumps({"event": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
 
