@@ -63,7 +63,13 @@ def test_uniform_weights_use_fusion_query(monkeypatch) -> None:
 
 
 def test_non_uniform_weights_use_rrf_query(monkeypatch) -> None:
-    """A non-1.0 weight triggers ``RrfQuery(rrf=Rrf(weights=[...]))``."""
+    """A non-1.0 weight triggers ``RrfQuery(rrf=Rrf(weights=[...]))``.
+
+    No Chinese sparse vector is supplied, so the zh prefetch is absent —
+    the weights list must therefore have one entry per *actual* prefetch
+    (dense + bm25_en = 2), not a phantom third slot for a channel that
+    isn't in the prefetch list.
+    """
     s = _settings()
     s.rrf_weight_dense = 1.5
     s.rrf_weight_bm25 = 1.0
@@ -74,8 +80,30 @@ def test_non_uniform_weights_use_rrf_query(monkeypatch) -> None:
     qdrant_backend._hybrid_text_query(client, "coll", [0.1, 0.2], _sv(), None, top_k=5)
     q = client.last_kwargs["query"]
     assert isinstance(q, models.RrfQuery)
-    assert q.rrf.weights == [1.5, 1.0, 1.0]
+    assert q.rrf.weights == [1.5, 1.0]
     assert q.rrf.k == RRF_K
+
+
+def test_weights_length_matches_prefetch_count(monkeypatch) -> None:
+    """Weights list length must equal the number of prefetches, always.
+
+    Regression guard: previously the bm25_zh weight occupied a slot
+    unconditionally even when its prefetch was skipped, producing a
+    length mismatch (3 weights, 2 prefetches) that Qdrant would misapply.
+    """
+    s = _settings()
+    s.rrf_weight_dense = 1.5  # non-uniform → forces RrfQuery path
+    s.rrf_weight_bm25 = 1.0
+    s.rrf_weight_bm25_zh = 2.0  # ignored: no zh prefetch in this call
+    monkeypatch.setattr(qdrant_backend, "get_settings", lambda: s)
+
+    client = _StubClient()
+    qdrant_backend._hybrid_text_query(client, "coll", [0.1, 0.2], _sv(), None, top_k=5)
+    q = client.last_kwargs["query"]
+    assert isinstance(q, models.RrfQuery)
+    # Only dense + bm25_en prefetches exist → exactly 2 weights.
+    assert q.rrf.weights == [1.5, 1.0]
+    assert len(q.rrf.weights) == len(client.last_kwargs["prefetch"])
 
 
 def test_weights_are_positional_to_prefetches(monkeypatch) -> None:
