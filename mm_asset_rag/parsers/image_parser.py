@@ -1,6 +1,5 @@
 import base64
 import json
-import os
 import urllib.request
 from pathlib import Path
 
@@ -13,8 +12,9 @@ from ..settings import get_settings
 
 
 def call_ocr_http(image_path: Path) -> list[dict[str, object]]:
-    url = os.environ.get("OCR_HTTP_URL", "http://127.0.0.1:8000/ocr")
-    timeout = float(os.environ.get("OCR_HTTP_TIMEOUT", "60"))
+    s = get_settings()
+    url = s.ocr_http_url or "http://127.0.0.1:8000/ocr"
+    timeout = float(s.ocr_http_timeout)
     body = json.dumps(
         {
             "image_base64": base64.b64encode(image_path.read_bytes()).decode("ascii"),
@@ -52,7 +52,8 @@ def normalize_ocr_blocks(payload: dict[str, object]) -> list[dict[str, object]]:
 
 
 def call_vlm_caption(image_path: Path) -> str:
-    base_url, api_key, model = get_settings().vlm_creds
+    s = get_settings()
+    base_url, api_key, model = s.vlm_creds
     if not base_url or not api_key or not model:
         return ""
 
@@ -61,8 +62,8 @@ def call_vlm_caption(image_path: Path) -> str:
     mime = "jpeg" if suffix == "jpg" else suffix
     payload = {
         "model": model,
-        "temperature": float(os.environ.get("VLM_TEMPERATURE", "0.1")),
-        "max_tokens": int(os.environ.get("VLM_MAX_TOKENS", "2000")),
+        "temperature": float(s.vlm_temperature),
+        "max_tokens": int(s.vlm_max_tokens),
         "messages": [
             {
                 "role": "user",
@@ -84,7 +85,7 @@ def call_vlm_caption(image_path: Path) -> str:
         url,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         json=payload,
-        timeout=float(os.environ.get("VLM_TIMEOUT", "120")),
+        timeout=float(s.vlm_timeout),
     )
     response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]

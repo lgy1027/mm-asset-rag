@@ -1,4 +1,4 @@
-"""Regression set for retrieval quality.
+"""Regression set for retrieval quality (v1 historical baseline).
 
 The set is split into three groups:
 
@@ -22,6 +22,15 @@ Use :func:`run_eval` to compute the raw results and
 ``$MM_ASSET_RAG_HOME/eval_report.json``. The full per-query details
 plus aggregate metrics (hit_rate, MRR, NDCG@k, MAP, ...) are dumped
 as JSON.
+
+This module is the v6-corrected historical baseline; the newer
+:mod:`mm_asset_rag.evaluation_v2` is the active development surface.
+The shared pure helpers — :func:`strip_trailing_hash`, :func:`_match`,
+:func:`_normalize_id_list`, and :func:`_expand` — live in
+:mod:`mm_asset_rag.evaluation_v2` and are re-exported here so v1 keeps
+its public surface (``EVAL_CASES``, ``run_eval``, ``EvalResult``) while
+de-duplicating the matcher / normalisation logic. v2 never imports v1,
+so there is no circular dependency.
 """
 
 from __future__ import annotations
@@ -30,6 +39,14 @@ import json
 import re
 from dataclasses import asdict, dataclass
 
+# Shared pure helpers live in evaluation_v2 (the new-generation module).
+# v2 never imports v1, so importing here is cycle-free.
+from .evaluation_v2 import (
+    _expand,
+    _match,
+    _normalize_id_list,
+    strip_trailing_hash,
+)
 from .metrics import aggregate_metrics
 from .paths import get_asset_index_path, get_eval_report
 from .retrieval import hybrid_search
@@ -341,53 +358,6 @@ class EvalResult:
     group: str  # "en", "zh", or "legacy"
 
 
-def strip_trailing_hash(asset_id: str) -> str:
-    """Normalise an asset id for eval matching.
-
-    Drops a trailing ``_<8-hex>`` content-hash suffix (the per-parse
-    SHA that distinguishes re-parses of the same source) and casefolds
-    the remainder so ``Rich feature hierarchies`` matches
-    ``Rich Feature Hierarchies for Accurate Object Detection And Semantic Segmentation_b857cf69``.
-    Returns the original string (casefolded) when no hash suffix is
-    present, so bare model names like ``Alexnet`` still compare cleanly.
-    """
-    if not asset_id:
-        return ""
-    if "_" in asset_id:
-        head, _, tail = asset_id.rpartition("_")
-        if len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
-            return head.casefold()
-    return asset_id.casefold()
-
-
-def _match(actual: list[str], expected: list[str]) -> int | None:
-    """Return 1-based rank of the first hit, or ``None`` if missed.
-
-    Matching is normalised + bidirectional-substring:
-
-    1. Both ids are run through :func:`strip_trailing_hash` (drop the
-       ``_<8-hex>`` hash suffix + ``casefold``) so a re-parse with a
-       different SHA and a different casing still counts as the same
-       document (the R-CNN failure: the retriever returned
-       ``Rich Feature Hierarchies for Accurate Object Detection And Semantic Segmentation_b857cf69``
-       but the expected was ``Rich feature hierarchies`` — case-sensitive
-       substring + hash mismatch marked it a miss).
-    2. A hit is ``norm_expected in norm_actual or norm_actual in norm_expected``
-       — symmetric containment covers bare→full and full→bare pairs.
-    """
-    for rank, act in enumerate(actual, start=1):
-        norm_act = strip_trailing_hash(act)
-        for exp in expected:
-            if not exp:
-                continue
-            norm_exp = strip_trailing_hash(exp)
-            if not norm_exp:
-                continue
-            if norm_exp in norm_act or norm_act in norm_exp:
-                return rank
-    return None
-
-
 def run_eval(top_k: int = 5) -> list[EvalResult]:
     """Run the full regression set against the live index.
 
@@ -440,21 +410,18 @@ def _expand_bare_expected_to_full(bare_ids: list[str], full_ids: set[str]) -> li
     """Expand a list of bare expected ids (e.g. ``"Caltech Airplanes"``)
     to all full hashed asset_ids that start with the bare prefix.
 
-    Used by the image-route evals so that the strict set match inside
-    :func:`aggregate_metrics` accepts any of the 3 Caltech-101 samples
-    as a valid hit instead of only the exact ``Caltech Airplanes 01_*``
-    one would happen to test against.
+    Thin wrapper over :func:`mm_asset_rag.evaluation_v2._expand` (which
+    handles a single prefix) so v1 keeps its list-in / list-out call
+    sites. Used by the image-route evals so that the strict set match
+    inside :func:`aggregate_metrics` accepts any of the 3 Caltech-101
+    samples as a valid hit instead of only the exact
+    ``Caltech Airplanes 01_*`` one would happen to test against.
     """
     expanded: list[str] = []
     for bare in bare_ids:
-        matches = sorted(f for f in full_ids if f.startswith(bare))
-        if matches:
-            expanded.extend(matches)
-        else:
-            # Bare id isn't a prefix of any full id (e.g. user gave
-            # the full id verbatim). Keep as-is so the strict match
-            # still works for full-id cases.
-            expanded.append(bare)
+        for f in _expand(bare, full_ids):
+            if f not in expanded:
+                expanded.append(f)
     return expanded
 
 
@@ -558,23 +525,6 @@ def run_image_to_image_eval(cases: list[dict] | None = None, top_k: int = 5) -> 
             )
         )
     return results
-
-
-def _normalize_id_list(ids: list[str]) -> list[str]:
-    """Normalise an id list for aggregate_metrics' strict set match.
-
-    ``aggregate_metrics`` (in :mod:`mm_asset_rag.metrics`) uses exact
-    set membership, so a re-parse with a different ``_<8-hex>`` suffix
-    would otherwise count as a miss. We strip the hash + casefold here
-    (keeping it in the eval harness only — metrics itself stays
-    exact-set semantics for non-eval consumers).
-    """
-    out: list[str] = []
-    for aid in ids:
-        norm = strip_trailing_hash(aid)
-        if norm and norm not in out:
-            out.append(norm)
-    return out
 
 
 def write_eval_report(results: list[EvalResult], path=None) -> None:

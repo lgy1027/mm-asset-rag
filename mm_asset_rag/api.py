@@ -41,14 +41,11 @@ from .answer import answer_question, stream_answer_chunks
 from .backends.qdrant_backend import (
     get_qdrant_client,
 )
-from .config import load_env
 from .evaluation import run_eval
 from .paths import (
     get_assets_dir,
     get_documents_jsonl,
-    get_indexes_dir,
     get_preview_cache_dir,
-    get_text_index_dir,
     safe_parsed_image_path,
 )
 from .service import (
@@ -433,7 +430,15 @@ class UploadConfirmRequest(BaseModel):
 
 @app.get("/health")
 def health() -> dict[str, object]:
-    load_env()
+    """Liveness + index state.
+
+    ``text_index_exists`` / ``image_index_exists`` now probe the actual
+    Qdrant collections (previously they checked the stale ``indexes/text``
+    LlamaIndex-era directory, which reported false even when the index was
+    healthy). Both degrade to ``False`` if the Qdrant client can't answer
+    (e.g. local-mode lock held by another process) — health must never
+    500.
+    """
     assets_dir = get_assets_dir()
     asset_files = [p for p in assets_dir.rglob("*") if p.is_file()] if assets_dir.exists() else []
     return {
@@ -441,11 +446,28 @@ def health() -> dict[str, object]:
         "version": __version__,
         "assets": len(asset_files),
         "documents_jsonl_exists": get_documents_jsonl().exists(),
-        "text_index_exists": get_text_index_dir().exists(),
-        "image_index_exists": (get_indexes_dir() / "qdrant").exists(),
+        "text_index_exists": _qdrant_collection_alive("text"),
+        "image_index_exists": _qdrant_collection_alive("image"),
         "vector_backend": "qdrant",
         "model": get_settings().openai_model or "",
     }
+
+
+def _qdrant_collection_alive(kind: str) -> bool:
+    """True iff the active Qdrant collection for ``kind`` ('text'/'image') exists.
+
+    Swallows every error: /health must stay 200 even when Qdrant local-mode
+    is locked by another process, the server is unreachable, or no
+    collection has been created yet.
+    """
+    try:
+        from .backends.qdrant_backend import get_qdrant_client, image_collection, text_collection
+
+        client = get_qdrant_client()
+        name = text_collection() if kind == "text" else image_collection()
+        return bool(client.collection_exists(name))
+    except Exception:
+        return False
 
 
 @app.post("/search")
@@ -657,7 +679,6 @@ async def upload_preview(
     into a short-lived incoming directory, lets ``UploadPipeline`` sniff and
     optionally VLM-tag them, then returns preview cards for the web UI.
     """
-    load_env()
     if not files:
         raise HTTPException(status_code=400, detail="no files uploaded")
 

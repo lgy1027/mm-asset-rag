@@ -78,6 +78,14 @@ def get_indexes_dir() -> Path:
 
 
 def get_text_index_dir() -> Path:
+    """Legacy, unused — text index lives in Qdrant now (``indexes/qdrant``).
+
+    Retained for backward compatibility with callers that still probe this
+    directory (e.g. ``api.py:/health``'s ``text_index_exists`` KPI). The
+    LlamaIndex-era ``indexes/text`` directory is no longer written to by the
+    ingest pipeline; new code should read the Qdrant collection state via
+    :func:`get_qdrant_path` instead. Do not add new callers.
+    """
     return get_indexes_dir() / "text"
 
 
