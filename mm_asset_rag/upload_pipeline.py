@@ -635,8 +635,16 @@ class UploadPipeline:
             display_title = (
                 edit.title if edit and edit.title else effective_title
             ) or sniffed.title
-            safe_stem = _slugify(display_title, max_len=settings.upload_slug_max_len)
-            base_asset_id = f"{safe_stem}_{preview_id[:8]}"
+            # asset_id derives from the *original filename stem*, not the
+            # (possibly LLM-generated) display_title, so the asset's stable
+            # key doesn't drift when auto_meta re-guesses a different title
+            # on re-parse — that drift broke eval matching (a doc titled
+            # "责任联宝 ESG年度答卷" got asset_id "ESG与可持续发展…" after
+            # the LLM plucked an inner-page heading as the title). The
+            # display_title still flows to title_override below for the
+            # human-facing name; only the key is pinned to the filename.
+            id_stem = _slugify(source_path.stem, max_len=settings.upload_slug_max_len)
+            base_asset_id = f"{id_stem}_{preview_id[:8]}"
             suffix = _suffix_for(source_path, sniffed.source_type)
             content_sha = self._sha256_file(source_path)
             existing = asset_index.find_by_sha256(content_sha)

@@ -304,6 +304,44 @@ def test_confirm_with_user_edits(
     assert a.tags == ["custom", "manual", "tags"]
 
 
+def test_confirm_asset_id_pinned_to_filename_not_auto_title(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    """asset_id derives from the *original filename stem*, not the
+    LLM-generated auto title, so the stable key doesn't drift when
+    auto_meta re-guesses a different title on re-parse. Regression: a
+    doc "责任联宝 ESG年度答卷" had its asset_id become an inner-page
+    heading ("ESG与可持续发展…") after the LLM plucked that as the
+    title, breaking eval matching and cache stability."""
+    # Isolate the asset_index so a same-sha256 asset from the real home
+    # (or a prior test) doesn't short-circuit to a pre-existing asset_id
+    # via content-hash dedup — that path returns the *old* id and would
+    # mask whether the new-id derivation is filename-based.
+    monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    _stub_vlm_image(monkeypatch, {"title": "Auto Title From LLM"})
+    pipeline.preview([(png_file.name, png_file)])
+    cache_id = _get_cache_id(home)
+
+    import json as _json
+
+    manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
+    preview_id = next(iter(manifest))
+    assets = pipeline.confirm(cache_id, [UserEdits(preview_id=preview_id)])
+    a = assets[0]
+    # asset_id starts with the filename stem ("beach"), not the LLM title.
+    assert a.asset_id.startswith("beach"), (
+        f"asset_id {a.asset_id!r} should derive from filename, not LLM title"
+    )
+    # The LLM title still reaches the human-facing title field.
+    assert a.title == "Auto Title From LLM"
+
+
 def test_confirm_rejected_skipped(
     monkeypatch: pytest.MonkeyPatch,
     pipeline: UploadPipeline,
