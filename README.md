@@ -13,7 +13,7 @@ A small, self-contained Python package for **multimodal retrieval** over user-up
 - **Four retrieval routes**: text→text (dense + BM25 sparse fused with RRF), text→image (CLIP), image→image (CLIP), and a weighted hybrid that merges all routes by rank. One dispatch picks the route from the query shape.
 - **Cross-modal retrieval**: embedded figures in PDFs and Office docs are extracted and (optionally) given VLM captions so a text query can hit a figure-only slide; a `find images similar to this one` query hits the CLIP image collection. The same asset store feeds both.
 - **Upload-first ingestion**: no `asset_manifest.json`. `/upload/preview` sniffs file magic bytes, extracts dimensions / PDF metadata, optionally asks a VLM for title / description / tags, then `/upload/confirm` parses and indexes.
-- **Parsing**: PyMuPDF (local) or PaddleOCR-VL (API, better for scanned PDFs) for PDFs; MarkItDown / docling for Office docs; OCR + VLM captioning for images.
+- **Parsing**: PyMuPDF (local, default) or PaddleOCR-VL (API, better for scanned PDFs) or docling (local, layout-aware) for PDFs; MarkItDown (default) or docling for Office docs (docx/pptx/xlsx/html); OCR + VLM captioning for images.
 - **Indexing**: Qdrant (local file or server). Text points carry dense + BM25 + Chinese-aware BM25-zh sparse vectors; image points carry CLIP vectors.
 - **Optional generation**: OpenAI-compatible chat completion with strict evidence grounding and NDJSON streaming. When no LLM is configured, `/answer` and `/chat` return an evidence summary instead of failing — retrieval still works.
 - **Web UI**: a bundled single-page HTML (`mm_asset_rag/web/index.html`) served by FastAPI for upload preview, task status, and chat.
@@ -81,15 +81,19 @@ mmrag search "which document covers retrieval-augmented generation?"
 mmrag answer "which document covers retrieval-augmented generation?"
 ```
 
-CLI ingestion is also upload-first:
+CLI ingestion is also upload-first (PDFs, images, and Office docs — docx/pptx/xlsx/html/md):
 
 ```bash
-mmrag parse ./paper.pdf ./photo.jpg
+mmrag parse ./paper.pdf ./photo.jpg ./deck.pptx
 mmrag reindex
 mmrag search "find the beach photo"
 ```
 
 > **Qdrant local-file lock is single-process.** While `mmrag-api` is running, run `mmrag reindex` from another terminal and it will fail with a "storage already accessed" lock error. Either stop the API first, or point `QDRANT_URL` at a Qdrant server for concurrent access.
+
+**Task control:** a long parse/index task can be cancelled cooperatively — `POST /tasks/{id}/cancel` sets a stop flag the worker checks between assets (it finishes the current asset, then stops and marks the task `cancelled`). `mmrag retry` re-runs the remaining assets.
+
+**Health check:** `GET /health` returns liveness + index state; `GET /health?deep=true` adds `llm_configured` / `embedder_configured` (config-completeness, no LLM call / no quota) so an orchestrator can tell whether `/answer` and `/search` will work.
 
 ## Upload flow
 
