@@ -93,7 +93,7 @@ def build_ir_docling(asset: Asset) -> DocumentIR:
 
     # ── Tables → markdown body blocks ───────────────────────────────────
     for item in doc.tables:
-        md = _safe_table_markdown(item)
+        md = _safe_table_markdown(item, doc)
         if not md:
             continue
         page, bbox = _prov(item, doc)
@@ -210,13 +210,28 @@ def _bbox_from_rect(rect) -> BBox | None:
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def _safe_table_markdown(item) -> str:
-    """Export a docling TableItem to markdown, tolerating API differences."""
+def _safe_table_markdown(item, doc=None) -> str:
+    """Export a docling TableItem to markdown, tolerating API differences.
+
+    docling >=2.112 deprecates ``TableItem.export_to_markdown()`` without a
+    ``doc`` argument (the call still works but warns, and a future major
+    may drop it). Pass ``doc`` when available; fall back to a no-arg call
+    for older docling (<2.112) whose method doesn't accept it, so the
+    ``[docling]`` extra keeps working across the pinned ``>=2.0,<3.0``
+    range.
+    """
     for method_name in ("export_to_markdown", "to_markdown"):
         method = getattr(item, method_name, None)
         if callable(method):
             try:
-                return str(method()).strip()
+                # Try the modern (doc=...) call first; TypeError on an older
+                # method that rejects the kwarg falls through to the bare call.
+                return str(method(doc=doc)).strip()
+            except TypeError:
+                try:
+                    return str(method()).strip()
+                except Exception:
+                    continue
             except Exception:
                 continue
     return ""
