@@ -33,29 +33,29 @@ Compared to larger frameworks:
 
 ## Installation
 
-The package is not yet published to PyPI. Install from source (clone or a release tarball):
+Install the latest release from PyPI:
 
 ```bash
-git clone https://github.com/lgy1027/mm-asset-rag
-cd mm-asset-rag
-pip install -e .            # core: text + image (lite) retrieval, FastAPI web UI
+pip install mm-asset-rag   # core: text + image (lite) retrieval, FastAPI web UI
 ```
 
 Optional CLIP-based image embeddings (recommended if you want text→image / image→image routes on real image corpora):
 
 ```bash
-pip install -e ".[clip]"    # sentence-transformers CLIP
+pip install "mm-asset-rag[clip]"     # sentence-transformers CLIP
 ```
 
 Optional multi-format Office document parsing (docx/pptx/xlsx/html) beyond the default MarkItDown:
 
 ```bash
-pip install -e ".[docling]" # layout-aware docling parser (heavier, pulls torch/transformers)
+pip install "mm-asset-rag[docling]"  # layout-aware docling parser (heavier, pulls torch/transformers)
 ```
 
-For local development:
+For local development from source:
 
 ```bash
+git clone https://github.com/lgy1027/mm-asset-rag
+cd mm-asset-rag
 pip install -e ".[dev,clip]"
 ```
 
