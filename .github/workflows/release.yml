@@ -46,6 +46,25 @@ jobs:
         # 等价于 `python -m build`,但直接复用 uv 缓存,无需额外装 build 包。
         run: uv build
 
+      - name: Verify sdist long-description
+        # PyPI 项目页展示的 README 取自 sdist 的 PKG-INFO 长描述。若发布期
+        # README 仍写 "not yet published / source install" 之类的过时指引
+        # (历史上 v0.1.0 因 tag 在 README 修复之前而发出错误描述),会误导
+        # 新用户。发布前校验长描述含 PyPI 安装指引、不含发布前措辞。
+        run: |
+          python - <<'PY'
+          import glob, tarfile
+          (sd,) = glob.glob("dist/*.tar.gz")
+          with tarfile.open(sd) as t:
+              name = next(n for n in t.getnames() if n.endswith("/PKG-INFO"))
+              info = t.extractfile(name).read().decode("utf-8", "replace")
+          # Body after the headers (first blank line).
+          body = info.split("\n\n", 1)[-1]
+          assert "pip install mm-asset-rag" in body, "sdist README 缺 PyPI 安装指引"
+          assert "not yet published" not in body, "sdist README 仍含发布前措辞"
+          print("sdist long-description OK")
+          PY
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         # 发布鉴权:配了 PYPI_API_TOKEN secret 就用它;否则走 PyPI trusted

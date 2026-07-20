@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+from mm_asset_rag import __version__
 from mm_asset_rag.api import app
 
 
@@ -56,7 +57,7 @@ def test_health_endpoint_reports_status(client: TestClient) -> None:
     assert body["status"] == "ok"
     assert body["vector_backend"] == "qdrant"
     assert body["assets"] == 0
-    assert body["version"] == "0.1.0"
+    assert body["version"] == __version__
     # Shallow health has no config-completeness probes.
     assert "llm_configured" not in body
     assert "embedder_configured" not in body
