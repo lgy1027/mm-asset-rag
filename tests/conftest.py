@@ -41,6 +41,55 @@ def fake_qdrant_client(monkeypatch) -> MagicMock:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_env_file(monkeypatch):
+    """Keep the project-root ``.env`` out of the test process.
+
+    Two channels load ``.env`` and both must be blocked, or a developer's
+    local ``.env`` (git-ignored, so CI is fine) overrides code defaults
+    (``AUTO_META_ENABLED`` / ``RERANKER_ENABLED`` / ``ENRICH_CHUNK_WITH_KEYWORDS``
+    / ``PDF_EXTRACT_IMAGES`` / ``CONTEXTUAL_ENABLED``) and turns tests that
+    assert those defaults red:
+
+    1. :func:`mm_asset_rag.config.load_env` calls ``python-dotenv``'s
+       ``load_dotenv()``, which *populates* ``os.environ`` from ``.env``.
+       ``get_service()`` calls ``load_env()`` on first use, so any test
+       that touches the ingest service leaks the ``.env`` values into the
+       process env for every later test.
+    2. pydantic-settings' ``Settings.model_config["env_file"] == ".env"``
+       re-reads the file on each ``get_settings()`` rebuild.
+
+    We block both: no-op ``load_env`` so ``os.environ`` is never seeded
+    from ``.env``, and ``env_file=None`` so pydantic doesn't re-read it.
+    The ``_service`` singleton is also reset so the next ``get_service()``
+    rebuilds under the isolated env (it may have been created earlier with
+    ``.env``-tainted settings). Tests that genuinely want a setting
+    override set the env var explicitly via ``monkeypatch.setenv``.
+    """
+    from mm_asset_rag import config
+    from mm_asset_rag.settings import Settings, get_settings
+
+    # Patch the underlying load_dotenv on the config module so every
+    # ``load_env()`` caller — including ``service.get_service()`` which
+    # captured ``load_env`` at import time (``from .config import
+    # load_env``) and would otherwise bypass a ``config.load_env``
+    # monkeypatch — becomes a no-op. This stops ``.env`` values from
+    # being seeded into ``os.environ`` for the rest of the process.
+    monkeypatch.setattr(config, "load_dotenv", lambda *a, **kw: None)
+    monkeypatch.setattr(config, "load_env", lambda: None)
+    original_env_file = Settings.model_config.get("env_file")
+    Settings.model_config["env_file"] = None
+    get_settings.cache_clear()
+    # Drop a process-wide IngestService built under any prior (possibly
+    # .env-tainted) settings so the next get_service() rebuilds clean.
+    import mm_asset_rag.service as service_mod
+
+    monkeypatch.setattr(service_mod, "_service", None)
+    yield
+    Settings.model_config["env_file"] = original_env_file
+    get_settings.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _clear_settings_cache():
     """Drop the ``Settings`` singleton around each test.
 
