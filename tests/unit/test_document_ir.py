@@ -21,6 +21,7 @@ from mm_asset_rag.parsers.document_ir import (
     Block,
     DocumentIR,
     ImageRef,
+    _coalesce_blocks,
     ir_to_documents,
     looks_scanned,
 )
@@ -332,3 +333,64 @@ def test_ir_to_documents_plain_text_chunk_still_enriched(tmp_path: Path) -> None
     docs = ir_to_documents(ir)
     assert len(docs) >= 1
     assert "关键词" in docs[0].text
+
+
+# ─── _coalesce_blocks (docling / paddle leaf-block merging) ────────────────
+
+
+def test_coalesce_blocks_merges_same_section_leaves() -> None:
+    """A heading followed by body leaves on the same page collapses into one
+    section block — the leaf-per-item shape docling emits would otherwise
+    become one micro-chunk per leaf."""
+    blocks = [
+        Block(text="Intro", page=0, heading="Intro", level=1),
+        Block(text="first body line", page=0),
+        Block(text="second body line", page=0),
+    ]
+    out = _coalesce_blocks(blocks, target_chars=2000)
+    assert len(out) == 1
+    assert out[0].heading == "Intro"
+    assert "first body line" in out[0].text
+    assert "second body line" in out[0].text
+
+
+def test_coalesce_blocks_starts_new_section_on_heading() -> None:
+    """A second heading opens a new section block rather than merging into
+    the previous section."""
+    blocks = [
+        Block(text="A", page=0, heading="A", level=1),
+        Block(text="body-a", page=0),
+        Block(text="B", page=0, heading="B", level=1),
+        Block(text="body-b", page=0),
+    ]
+    out = _coalesce_blocks(blocks, target_chars=2000)
+    assert len(out) == 2
+    assert [b.heading for b in out] == ["A", "B"]
+    assert "body-a" in out[0].text and "body-b" not in out[0].text
+    assert "body-b" in out[1].text
+
+
+def test_coalesce_blocks_splits_on_page_change() -> None:
+    """A page change closes the current section so a heading's section does
+    not bleed across pages."""
+    blocks = [
+        Block(text="H", page=0, heading="H", level=1),
+        Block(text="page0 body", page=0),
+        Block(text="page1 body", page=1),
+    ]
+    out = _coalesce_blocks(blocks, target_chars=2000)
+    assert len(out) == 2
+    assert "page0 body" in out[0].text
+    assert "page1 body" in out[1].text
+    assert out[1].page == 1
+
+
+def test_coalesce_blocks_caps_headingless_run() -> None:
+    """A long run of body blocks with no heading is split at target_chars so
+    the downstream splitter gets splitter-friendly chunks, not one giant."""
+    body = "x" * 300
+    blocks = [Block(text=body, page=0) for _ in range(10)]
+    out = _coalesce_blocks(blocks, target_chars=1000)
+    # target 1000 / 300-per-block → ~3-4 blocks per section.
+    assert len(out) >= 3
+    assert all(len(b.text) <= 1000 + 300 for b in out)

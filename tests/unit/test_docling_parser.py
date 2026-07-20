@@ -209,6 +209,77 @@ def test_build_ir_docling_picture_ref_reaches_chunk_meta(tmp_path, tmp_home, mon
     )
 
 
+def test_build_ir_docling_coalesces_leaf_blocks_into_fewer_chunks(
+    tmp_path, tmp_home, monkeypatch
+) -> None:
+    """docling emits one leaf block per text item; ir_to_documents must
+    coalesce same-section leaves into section-sized chunks instead of
+    emitting one micro-chunk per leaf (the regression this guards: a real
+    docling parse produced 199 chunks, 86% under 100 chars, starving BM25
+    + dense retrieval and inflating the point count). Heading blocks keep
+    their heading on the resulting chunk's ``section`` metadata."""
+
+    # A heading followed by several short body items on the same page —
+    # the pre-coalesce shape that produced hundreds of micro-chunks.
+    texts = [
+        _text_item("Architecture Overview", label="section_header", page_no=1),
+        _text_item("The encoder maps input to latent.", label="paragraph", page_no=1),
+        _text_item("The decoder reconstructs from latent.", label="paragraph", page_no=1),
+        _text_item("A normalization step sits between.", label="paragraph", page_no=1),
+    ]
+    _install_docling_stub(monkeypatch, texts=texts)
+
+    from mm_asset_rag.parsers.document_ir import ir_to_documents
+
+    ir = build_ir_docling(_asset(tmp_home))
+    docs = ir_to_documents(ir)
+    # Coalesced to one section chunk, not four leaf chunks.
+    assert len(docs) <= 2, f"expected <=2 coalesced chunks, got {len(docs)}"
+    # The heading reaches the chunk's section metadata (not just a label
+    # the splitter drops).
+    sections = [d.metadata.get("section") for d in docs if d.metadata.get("section")]
+    assert any("Architecture Overview" in s for s in sections), (
+        f"heading did not reach chunk section metadata: {sections}"
+    )
+
+
+def test_build_ir_docling_coalesced_chunk_still_attaches_picture(
+    tmp_path, tmp_home, monkeypatch
+) -> None:
+    """After coalescing, a picture ref injected into a page's last leaf block
+    still survives into the merged section's chunk ``meta["images"]`` —
+    coalescing must not break image↔chunk association."""
+
+    class FakePIL:
+        def save(self, path: Path, format: str = "PNG") -> None:
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_bytes(b"\x89PNG-fake")
+
+    picture = SimpleNamespace(
+        prov=[_prov(1, None)],
+        get_image=MagicMock(return_value=FakePIL()),
+        self_ref="pic0",
+    )
+    # Multiple body items on page 1: the picture ref lands on the page's
+    # last block, which coalescing then merges into the section body.
+    texts = [
+        _text_item(
+            "A first paragraph of substantial body content here.", label="paragraph", page_no=1
+        ),
+        _text_item("A second paragraph continuing the same section.", label="paragraph", page_no=1),
+    ]
+    _install_docling_stub(monkeypatch, texts=texts, pictures=[picture])
+
+    from mm_asset_rag.parsers.document_ir import ir_to_documents
+
+    ir = build_ir_docling(_asset(tmp_home))
+    docs = ir_to_documents(ir)
+    chunk_image_paths = [img["path"] for d in docs for img in (d.metadata.get("images") or [])]
+    assert any(p.startswith("images/docling_") for p in chunk_image_paths), (
+        f"picture did not reach coalesced chunk meta.images: {chunk_image_paths}"
+    )
+
+
 def test_build_ir_docling_picture_on_image_only_page_gets_standalone_block(
     tmp_path, tmp_home, monkeypatch
 ) -> None:

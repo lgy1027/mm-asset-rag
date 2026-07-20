@@ -148,6 +148,78 @@ def looks_scanned(
     return total < text_threshold_per_page * page_count
 
 
+def _coalesce_blocks(blocks: list[Block], *, target_chars: int) -> list[Block]:
+    """Merge consecutive same-section leaf blocks into coarser section blocks.
+
+    Adapters that emit one ``Block`` per text item (docling's reading-order
+    walk; PaddleOCR-VL's per-region markdown) produce a block list far finer
+    than a retrieval chunk should be — on a real PDF docling yields ~200
+    blocks averaging ~34 chars each, 86% under 100 chars. Feeding each into
+    ``recursive_split`` independently then yields hundreds of micro-chunks
+    that starve BM25 (no surrounding context tokens) and dense retrieval
+    (too little signal), and inflate the Qdrant point count ~16x. PyMuPDF
+    is unaffected: it emits one block per *page*, already coarse.
+
+    This pass collapses the leaf list into section-sized blocks *before* the
+    splitter runs, so the splitter sees the same kind of long, coherent
+    input the PyMuPDF path does:
+
+    * a heading block (``heading`` non-empty) starts a new section and keeps
+      its heading + level — the heading becomes the chunk's ``section``;
+    * following body blocks on the same page accumulate into that section
+      until the next heading or page break, joined by ``\\n``;
+    * a page change also closes the section (a heading's section shouldn't
+      bleed across page boundaries);
+    * image-ref lines (``![](images/...)``) live inside block text and
+      carry through the join untouched, so per-sub-chunk image association
+      (``extract_markdown_image_refs``) still works on the merged text.
+
+    ``target_chars`` caps a section's accumulated text so a long run of
+    body blocks with no heading still gets split into splitter-friendly
+    chunks rather than one giant block; the splitter then does the final
+    token-budget cut.
+    """
+    coalesced: list[Block] = []
+    current: Block | None = None
+    for block in blocks:
+        text = (block.text or "").strip()
+        if not text:
+            continue
+        is_heading = bool(block.heading)
+        # Flush on heading start or page change so sections don't cross
+        # structural / page boundaries.
+        if current is not None and (is_heading or block.page != current.page):
+            coalesced.append(current)
+            current = None
+        if is_heading:
+            # A heading block carries its own text as the heading; start a
+            # fresh section seeded with that heading text as the body too,
+            # so the heading words themselves are searchable (not just a
+            # section label the splitter drops).
+            current = Block(
+                text=text,
+                page=block.page,
+                bbox=block.bbox,
+                heading=block.heading,
+                level=block.level,
+            )
+        else:
+            if current is None:
+                # Body before any heading — start an anonymous section.
+                current = Block(text=text, page=block.page, bbox=block.bbox)
+            else:
+                # Accumulate into the current section; cap so a heading-less
+                # run doesn't build one oversized block.
+                if len(current.text) >= target_chars:
+                    coalesced.append(current)
+                    current = Block(text=text, page=block.page, bbox=block.bbox)
+                else:
+                    current.text = current.text + "\n" + text
+    if current is not None:
+        coalesced.append(current)
+    return coalesced
+
+
 def ir_to_documents(ir: DocumentIR) -> list:
     """Turn one ``DocumentIR`` into the flat ``ParsedDocument`` chunk list.
 
@@ -202,7 +274,18 @@ def ir_to_documents(ir: DocumentIR) -> list:
     # earlier ones' cached context. A single monotonic counter across all
     # blocks keeps ``chunk_index`` unique within the asset.
     global_chunk_index = 0
-    for block in ir.blocks:
+    # Coalesce the per-text-item leaf blocks (docling / PaddleOCR-VL) into
+    # section-sized blocks before splitting, so the splitter sees coherent
+    # long input like the PyMuPDF path does — otherwise each leaf becomes
+    # its own micro-chunk (86% under 100 chars on a real docling parse),
+    # starving BM25 + dense retrieval and inflating the point count. PyMuPDF
+    # already emits one block per page, so it passes through unchanged.
+    iter_blocks = (
+        ir.blocks
+        if is_pymupdf
+        else _coalesce_blocks(ir.blocks, target_chars=max(settings.chunk_target_tokens * 4, 2000))
+    )
+    for block in iter_blocks:
         page = block.page
         markdown_path = markdown_path_by_page.get(page, "") if page is not None else ""
         hint = ir.page_hints.get(page) if page is not None else None
@@ -238,7 +321,7 @@ def ir_to_documents(ir: DocumentIR) -> list:
                 overlap_tokens=settings.chunk_overlap_tokens,
                 count_tokens=count_tokens,
             )
-            sections = [Section(heading="", body=p, bbox=block.bbox) for p in pieces]
+            sections = [Section(heading=block.heading, body=p, bbox=block.bbox) for p in pieces]
 
         # Group this page's images for association. PyMuPDF collects them
         # here (bbox-based); PaddleOCR resolves refs per-sub-chunk below
