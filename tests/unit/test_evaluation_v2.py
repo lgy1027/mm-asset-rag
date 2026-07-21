@@ -71,6 +71,25 @@ def test_match_uses_title_stripping_to_avoid_hash_substring() -> None:
     assert _match(actuals, expected) is None
 
 
+def test_match_slug_normalises_hyphen_and_spaces() -> None:
+    """A filename-style hyphenated id must match the spaced paper title —
+    the real-world case that broke eval self-consistency: ``clip.pdf``
+    uploads as ``attention-is-all-you-need_<hash>`` while the eval expected
+    set uses the spaced title ``Attention Is All You Need``."""
+    actuals = ["attention-is-all-you-need_0c713762"]
+    expected = ["Attention Is All You Need"]
+    assert _match(actuals, expected) == 1
+
+
+def test_match_stacked_hash_collapses_to_bare_title() -> None:
+    """A double-stacked hash suffix (source filename carried its own hash,
+    upload added another) must collapse to the bare title so a bare
+    expected id still matches."""
+    actuals = ["Resnext_69df8de4_903a9c76"]
+    expected = ["Resnext"]
+    assert _match(actuals, expected) == 1
+
+
 def test_expand_returns_all_hash_variants() -> None:
     full = {
         "Codex_a1b2c3d4",

@@ -39,7 +39,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .metrics import aggregate_metrics
+from .metrics import _is_relevant, aggregate_metrics
 from .paths import get_asset_index_path, get_eval_report
 
 # ── ZH queries on the English arxiv corpus (cross-language) ────────────
@@ -349,16 +349,14 @@ def strip_trailing_hash(asset_id: str) -> str:
 
 
 def _match(actual: list[str], expected: list[str]) -> int | None:
+    # Relevance is the normalised bidirectional-substring check shared with
+    # ``aggregate_metrics`` (via ``metrics._is_relevant``), so per-query
+    # ``hit``/``rank`` and the aggregate ``hit_rate``/``MRR``/``NDCG`` agree
+    # by construction — a bare short title matches a longer returned id both
+    # here and in the reported metrics.
     for rank, act in enumerate(actual, start=1):
-        norm_act = strip_trailing_hash(act)
-        for exp in expected:
-            if not exp:
-                continue
-            norm_exp = strip_trailing_hash(exp)
-            if not norm_exp:
-                continue
-            if norm_exp in norm_act or norm_act in norm_exp:
-                return rank
+        if _is_relevant(act, expected):
+            return rank
     return None
 
 
@@ -509,12 +507,14 @@ def run_image_to_image_eval_v2(top_k: int = 5) -> list[V2Result]:
 
 
 def _normalize_id_list(ids: list[str]) -> list[str]:
-    """Normalise an id list for aggregate_metrics' strict set match.
+    """Strip ``_<8-hex>`` hash suffixes + casefold, dedup preserving order.
 
-    Strips the ``_<8-hex>`` hash suffix + casefolds so a re-parse with
-    a different content hash doesn't dilute the aggregate scores. Kept
-    in the eval harness so :mod:`mm_asset_rag.metrics` stays exact-set
-    for non-eval consumers.
+    Used to collapse duplicate hash variants of the same document before
+    writing them into the eval report's ``expected_ids``/``actual_ids``
+    fields (so a re-parse producing a new hash doesn't bloat the stored
+    lists). :mod:`mm_asset_rag.metrics` applies its own normalisation on
+    top when computing relevance, so this pre-pass is purely cosmetic for
+    the report payload — it does not change any metric value.
     """
     out: list[str] = []
     for aid in ids:
