@@ -1240,11 +1240,14 @@ def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
 
 def test_do_parse_keeps_cancelled_when_cancel_during_last_asset(tmp_home: Path) -> None:
     """If the user cancels *during* the last asset's parse (past the
-    per-asset checkpoint at the loop top), ``cancel_task`` has already
-    set status=CANCELLED. The final ``_patch`` must not overwrite it
-    back to DONE/PARTIAL — that would flip the UI from "cancelled" to
-    "done" and lose the cancel request. Regression: the final patch
-    computed status=DONE unconditionally."""
+    per-asset checkpoint at the loop top), ``cancel_task`` has set the
+    cancel flag but may not have patched status=CANCELLED yet (flag.set
+    and the status patch in cancel_task are two non-atomic steps). The
+    final ``_patch`` must set status=CANCELLED explicitly — otherwise the
+    task stays ``running`` and ``load_history`` rewrites it to
+    ``interrupted`` on next boot, losing the cancel request. Regression:
+    the final patch only set finished_at/current, not status, when the
+    cancel flag was set."""
     import mm_asset_rag.service as svc_mod
     from mm_asset_rag.schema import ParsedDocument
     from mm_asset_rag.service import _do_parse
@@ -1257,12 +1260,13 @@ def test_do_parse_keeps_cancelled_when_cancel_during_last_asset(tmp_home: Path) 
     service._cancel_flags[rec.task_id] = __import__("threading").Event()
 
     def fake_parser(asset, **kwargs):
-        # On the LAST asset, simulate cancel_task being called mid-parse:
-        # the checkpoint at the loop top has already passed, so the loop
-        # body completes this asset, then reaches the final _patch.
+        # On the LAST asset, simulate cancel_task's flag being set but
+        # the status patch NOT yet applied (the race window between
+        # cancel_task's flag.set and its _patch(status=CANCELLED)). The
+        # final _patch in _do_parse must set status=CANCELLED itself.
         if asset.asset_id == a2.asset_id:
             service._cancel_flags[rec.task_id].set()
-            service._patch(rec, status="cancelled", finished_at=time.time(), current="cancelled")
+            # Deliberately do NOT patch status — leave it "running".
         return [ParsedDocument(text="x", metadata={"asset_id": asset.asset_id})]
 
     def fake_get_parser(kind, name):
@@ -1282,8 +1286,8 @@ def test_do_parse_keeps_cancelled_when_cancel_during_last_asset(tmp_home: Path) 
     finally:
         svc_mod.get_parser = orig
 
-    # The cancel must stick — not be overwritten to done/partial by the
-    # final _patch that runs after the loop completes the last asset.
+    # The cancel must stick — _do_parse set CANCELLED explicitly even
+    # though cancel_task hadn't patched status yet.
     assert rec.status == "cancelled", f"expected cancelled, got {rec.status!r}"
 
 
@@ -1345,3 +1349,51 @@ def test_index_phase_stops_when_cancelled(tmp_home: Path) -> None:
     # flipped to failed/failed_index by the BaseException branch).
     assert rec.status == "cancelled"
     assert ticks["n"] == 1  # upsert_text ran (and was interrupted at tick 2)
+
+
+def test_index_success_patch_does_not_overwrite_cancel(tmp_home: Path) -> None:
+    """If cancel arrives *after* the last index progress tick but *before*
+    the success _patch at the end of _run_ingest_task, the success patch
+    must not overwrite CANCELLED with parse_status (done/partial). Symmetric
+    with the parse-stage cancel guard. Regression: the success patch set
+    status=parse_status unconditionally, flipping the UI from "cancelled"
+    to "done"."""
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.service import _run_ingest_task
+
+    service = IngestService()
+    rec = TaskRecord(
+        task_id="idxcancel02",
+        kind="ingest",
+        status="done",
+        total=1,
+        finished_at=None,
+    )
+    service._tasks[rec.task_id] = rec
+    service._cancel_flags[rec.task_id] = __import__("threading").Event()
+    parse_options = ParseOptions(assets=[])
+
+    def fake_parse(_svc, _rec, _opts):
+        _svc._patch(_rec, status="done", current="parse done")
+
+    class FakeBackend:
+        def upsert_text(self, *, progress_cb=None, force_recreate=False):
+            if progress_cb:
+                progress_cb(1, 10, "indexing")
+            # Cancel arrives AFTER the last tick, BEFORE the success patch.
+            # Only set the flag — don't patch status (the race window
+            # _run_ingest_task's final patch must guard).
+            service._cancel_flags[rec.task_id].set()
+            return 1, "text_coll"
+
+        def upsert_image(self, *, progress_cb=None, force_recreate=False):
+            return 1, "img_coll"
+
+    with (
+        patch.object(svc_mod, "_run_parse_task", fake_parse),
+        patch.object(svc_mod, "get_backend", lambda name: FakeBackend()),
+    ):
+        _run_ingest_task(service, rec, parse_options)
+
+    # The success patch must not have overwritten CANCELLED with done.
+    assert rec.status == "cancelled", f"expected cancelled, got {rec.status!r}"

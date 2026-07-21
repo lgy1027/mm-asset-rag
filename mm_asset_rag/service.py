@@ -1286,33 +1286,38 @@ def _remove_asset_rows_from_documents_jsonl(asset_ids: set[str]) -> int:
         return 0
     removed = 0
     tmp_path = docs_path.with_suffix(docs_path.suffix + ".tmp")
-    # Hold the documents.jsonl cross-process lock across the read → tmp →
-    # replace so a concurrent appender (another ingest worker in this or a
-    # different process) can't keep writing to the now-unlinked inode
-    # after os.replace swaps the file out — those appends would vanish.
+    # Hold the documents.jsonl cross-process lock across read → tmp-write
+    # → os.replace. The replace *must* be inside the lock: if it ran
+    # outside, a concurrent appender could grab the lock right after we
+    # release it, open("a") the old inode, and we'd then os.replace-swap
+    # docs_path out from under it — the appender's writes would land in
+    # the now-unlinked inode and vanish. Nest the two file contexts so a
+    # dst.open failure doesn't leak the src fd.
     with documents_jsonl_lock(docs_path):
         src = docs_path.open("r", encoding="utf-8")
-        dst = tmp_path.open("w", encoding="utf-8")
         try:
-            for line in src:
-                stripped = line.strip()
-                if not stripped:
+            dst = tmp_path.open("w", encoding="utf-8")
+            try:
+                for line in src:
+                    stripped = line.strip()
+                    if not stripped:
+                        dst.write(line)
+                        continue
+                    try:
+                        obj = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        dst.write(line)
+                        continue
+                    meta = obj.get("metadata") if isinstance(obj, dict) else None
+                    if isinstance(meta, dict) and str(meta.get("asset_id", "")) in asset_ids:
+                        removed += 1
+                        continue
                     dst.write(line)
-                    continue
-                try:
-                    obj = json.loads(stripped)
-                except json.JSONDecodeError:
-                    dst.write(line)
-                    continue
-                meta = obj.get("metadata") if isinstance(obj, dict) else None
-                if isinstance(meta, dict) and str(meta.get("asset_id", "")) in asset_ids:
-                    removed += 1
-                    continue
-                dst.write(line)
+            finally:
+                dst.close()
         finally:
             src.close()
-            dst.close()
-    os.replace(tmp_path, docs_path)
+        os.replace(tmp_path, docs_path)
     return removed
 
 
@@ -1473,14 +1478,16 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
 
     merged_statuses = {**rec.asset_statuses, **local_statuses}
     # If the user cancelled during the last asset's parse (past the
-    # per-asset checkpoint at the loop top), ``cancel_task`` already set
-    # status=CANCELLED (terminal). Don't overwrite it back to DONE/PARTIAL
-    # here — that would make the UI flip from "cancelled" to "done" and
-    # lose the cancel request. Keep the terminal status, still surface the
-    # final progress + per-asset outcomes so the partial work is visible.
+    # per-asset checkpoint at the loop top), ``cancel_task`` may or may not
+    # have patched status=CANCELLED yet — ``flag.set()`` and the status
+    # patch in ``cancel_task`` are two steps and not atomic. Set it
+    # explicitly here so the task can't end up ``running`` (which would
+    # let ``load_history`` rewrite it to "interrupted" on next boot,
+    # losing the cancel request). Idempotent if cancel_task already set it.
     if service._is_cancelled(rec.task_id) or rec.status == TaskStatus.CANCELLED:
         service._patch(
             rec,
+            status=TaskStatus.CANCELLED,
             finished_at=time.time(),
             current=f"cancelled: parsed={parsed} skipped={skipped} failed={failed}",
             asset_statuses=merged_statuses,
@@ -1571,6 +1578,21 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
         new_statuses = dict(rec.asset_statuses)
         for aid in indexed_targets:
             new_statuses[aid] = "indexed"
+        # Symmetric with _do_parse's final patch: if cancel arrived between
+        # the last _progress tick and here (the tick is the only cancel
+        # checkpoint in the index loop), cancel_task may have patched
+        # status=CANCELLED or only set the flag. Set CANCELLED explicitly
+        # so we don't overwrite it with parse_status (done/partial) — that
+        # would flip the UI from "cancelled" to "done" and lose the request.
+        if service._is_cancelled(rec.task_id) or rec.status == TaskStatus.CANCELLED:
+            service._patch(
+                rec,
+                status=TaskStatus.CANCELLED,
+                finished_at=time.time(),
+                current=f"cancelled after index · text={text_n} image={image_n}",
+                asset_statuses=new_statuses,
+            )
+            return
         service._patch(
             rec,
             current=f"index built · text={text_n} image={image_n}",

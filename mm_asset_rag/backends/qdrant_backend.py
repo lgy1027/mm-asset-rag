@@ -149,12 +149,12 @@ def _embed_bm25(texts: list[str]) -> list[models.SparseVector]:
 # cached table even after a separate ``mmrag reindex`` CLI rewrites the
 # file on disk, but the next ``_load_bm25_zh_idf`` call sees the new
 # mtime and re-reads. (An in-process ``invalidate`` flag alone can't
-# reach another process.) Each load also re-checks mtime inside the
-# lock so the read + cache-store pair is atomic against a concurrent
-# ``invalidate`` — previously the file read was outside the lock, so a
-# reindex could ``invalidate`` (a no-op while the cache was already
-# ``None``) between the read and the store, letting stale data land
-# back in the cache with nothing left to invalidate it.
+# reach another process.) The file ``stat()`` and ``read_text()`` run
+# outside the lock (so concurrent loads don't serialise on disk IO);
+# the cache hit check and the cache store are each under the lock. The
+# read+store pair isn't atomic, but it can't let stale data get "stuck"
+# the way the pre-mtime flag-only cache could: every load re-checks
+# mtime, so a rewrite mid-load just means the *next* load re-reads.
 
 _BM25_ZH_IDF_CACHE: tuple[int, dict] | None = None  # (mtime_ns, table)
 _BM25_ZH_IDF_LOCK = threading.Lock()
@@ -181,10 +181,16 @@ def _load_bm25_zh_idf() -> dict | None:
     The cache is keyed by the file's ``stat().st_mtime_ns`` so it
     auto-invalidates when the file is rewritten — by this process's own
     reindex (``invalidate_bm25_zh_idf_cache`` then mtime change) or by a
-    separate CLI process (mtime change alone, no in-process call). Both
-    the mtime check and the read happen under the lock so the load is
-    atomic against a concurrent ``invalidate`` (the race that previously
-    let stale data stick in the cache with nothing to re-invalidate it).
+    separate CLI process (mtime change alone, no in-process call). The
+    file ``stat()`` and ``read_text()`` run *outside* the lock (so two
+    concurrent loads don't serialise on disk IO), but the cache hit
+    check + the cache store are each under the lock. That isn't a fully
+    atomic read-store pair, but it's safe: if a reindex rewrites the
+    file mid-load, either the load read the old bytes (mtime still old,
+    cache stores old mtime — and the *next* load sees the new mtime and
+    re-reads) or the new bytes (mtime new, cache stores new). The stale
+    data can't get "stuck" the way the pre-mtime flag-only cache could,
+    because every load re-checks mtime.
     """
     global _BM25_ZH_IDF_CACHE
     idf_path = get_indexes_dir() / "bm25_zh_idf.json"

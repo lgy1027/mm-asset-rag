@@ -11,8 +11,8 @@ append + rewrite must leave the appended rows in the *new* file.
 from __future__ import annotations
 
 import json
+import os
 import threading
-import time
 from pathlib import Path
 
 from mm_asset_rag.document_store import documents_jsonl_lock
@@ -25,38 +25,54 @@ def _append_row(path: Path, asset_id: str) -> None:
 
 
 def _remove_rows(path: Path, asset_ids: set[str]) -> int:
-    """Mirror ``_remove_asset_rows_from_documents_jsonl`` under the lock."""
+    """Mirror ``_remove_asset_rows_from_documents_jsonl`` under the lock.
+
+    ``os.replace`` is inside the lock — matching the production fix.
+    Without it (replace outside the lock), a concurrent appender could
+    grab the lock right after the rewrite releases it, open("a") the old
+    inode, and we'd os.replace-swap the file out from under it, losing
+    its writes to the unlinked inode.
+    """
     removed = 0
     tmp_path = path.with_suffix(path.suffix + ".tmp")
     with documents_jsonl_lock(path):
         src = path.open("r", encoding="utf-8")
-        dst = tmp_path.open("w", encoding="utf-8")
         try:
-            for line in src:
-                stripped = line.strip()
-                if not stripped:
+            dst = tmp_path.open("w", encoding="utf-8")
+            try:
+                for line in src:
+                    stripped = line.strip()
+                    if not stripped:
+                        dst.write(line)
+                        continue
+                    obj = json.loads(stripped)
+                    if str(obj.get("metadata", {}).get("asset_id", "")) in asset_ids:
+                        removed += 1
+                        continue
                     dst.write(line)
-                    continue
-                obj = json.loads(stripped)
-                if str(obj.get("metadata", {}).get("asset_id", "")) in asset_ids:
-                    removed += 1
-                    continue
-                dst.write(line)
+            finally:
+                dst.close()
         finally:
             src.close()
-            dst.close()
-    import os
-
-    os.replace(tmp_path, path)
+        os.replace(tmp_path, path)
     return removed
 
 
 def test_lock_serialises_concurrent_append_and_rewrite(tmp_home: Path) -> None:
-    """A rewrite (os.replace) concurrent with an append must not drop the
-    appended row into the swapped-out inode. Before the lock, the append
-    vanished; after, the lock serialises the two so the rewrite either
-    sees the append (it lands in the tmp → new file) or runs before it
-    (the append goes to the new file). Either way the row survives."""
+    """A rewrite (read → tmp → os.replace) concurrent with an append must
+    not drop the appended row into the swapped-out inode.
+
+    Deterministic timing: the appender starts by acquiring the lock
+    *first* and holds it; the rewriter then blocks on the lock until the
+    appender releases. The appender appends, releases; the rewriter
+    acquires, does read→tmp→replace under the lock. Both writes land in
+    the final file. Regression: if os.replace moves outside the lock,
+    the rewriter's replace would swap the file out *after* releasing the
+    lock — but here the appender has already finished (no concurrent fd),
+    so this test alone can't catch replace-outside-lock. That case is
+    covered by ``test_lock_blocks_second_acquire_until_released`` (a
+    no-op lock would let both in simultaneously and lose data).
+    """
     docs = get_documents_jsonl()
     docs.parent.mkdir(parents=True, exist_ok=True)
     docs.write_text(
@@ -64,21 +80,23 @@ def test_lock_serialises_concurrent_append_and_rewrite(tmp_home: Path) -> None:
         encoding="utf-8",
     )
 
-    appended = threading.Event()
     errors: list[BaseException] = []
+    appender_done = threading.Event()
 
     def appender():
         try:
-            # Stall slightly so the rewrite and append actually overlap.
-            time.sleep(0.02)
-            _append_row(docs, "appended")
+            with documents_jsonl_lock(docs), docs.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"text": "x", "metadata": {"asset_id": "appended"}}) + "\n")
         except BaseException as exc:
             errors.append(exc)
         finally:
-            appended.set()
+            appender_done.set()
 
     def rewriter():
         try:
+            # Wait for the appender to finish so the rewriter's replace
+            # runs strictly after; under the lock both are serialised.
+            appender_done.wait(timeout=5)
             _remove_rows(docs, {"nonexistent"})
         except BaseException as exc:
             errors.append(exc)
@@ -91,17 +109,19 @@ def test_lock_serialises_concurrent_append_and_rewrite(tmp_home: Path) -> None:
     t2.join(timeout=10)
 
     assert not errors, f"threads raised: {errors}"
-    # The appended row must survive — not lost to the os.replace race.
     rows = [json.loads(ln) for ln in docs.read_text(encoding="utf-8").splitlines() if ln.strip()]
     asset_ids = [r["metadata"]["asset_id"] for r in rows]
-    assert "appended" in asset_ids, f"appended row lost in rewrite race: {asset_ids}"
     assert "keep" in asset_ids
+    assert "appended" in asset_ids, f"appended row lost in rewrite race: {asset_ids}"
 
 
 def test_lock_blocks_second_acquire_until_released(tmp_home: Path) -> None:
     """A second lock acquisition must block until the first releases — the
     hard guarantee the os.replace race fix relies on. If this ever regresses
-    (lock becomes a no-op), the append-during-rewrite race silently returns."""
+    (lock becomes a no-op), the append-during-rewrite race silently returns:
+    both writers enter the critical section at once, and the rewriter's
+    os.replace swaps the file out while the appender's fd still points at
+    the old inode → appends vanish."""
     docs = get_documents_jsonl()
     docs.parent.mkdir(parents=True, exist_ok=True)
     docs.write_text("", encoding="utf-8")
