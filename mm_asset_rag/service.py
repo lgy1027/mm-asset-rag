@@ -39,6 +39,7 @@ from .asset_index import AssetIndexEntry
 from .assets import Asset, from_sniffed
 from .backends.qdrant_backend import delete_points_by_asset_id
 from .config import load_env
+from .document_store import documents_jsonl_lock
 from .paths import (
     get_assets_dir,
     get_captions_dir,
@@ -1138,6 +1139,11 @@ class IngestService:
             "enable_ocr": options.enable_ocr,
             "enable_vlm": options.enable_vlm,
             "image_provider": options.image_provider,
+            # Persisted so a retry of a ``--contextual`` task keeps the
+            # per-task override; without this the retry silently falls back
+            # to the global ``CONTEXTUAL_ENABLED`` and produces chunks
+            # without the context preamble, inconsistent with the original.
+            "contextual": options.contextual,
         }
 
     @staticmethod
@@ -1169,6 +1175,8 @@ class IngestService:
                 "sentence_transformers",
             }:
                 options.image_provider = image_provider
+            if isinstance(raw.get("contextual"), bool):
+                options.contextual = raw["contextual"]
         return options
 
     @staticmethod
@@ -1278,25 +1286,32 @@ def _remove_asset_rows_from_documents_jsonl(asset_ids: set[str]) -> int:
         return 0
     removed = 0
     tmp_path = docs_path.with_suffix(docs_path.suffix + ".tmp")
-    with (
-        docs_path.open("r", encoding="utf-8") as src,
-        tmp_path.open("w", encoding="utf-8") as dst,
-    ):
-        for line in src:
-            stripped = line.strip()
-            if not stripped:
+    # Hold the documents.jsonl cross-process lock across the read → tmp →
+    # replace so a concurrent appender (another ingest worker in this or a
+    # different process) can't keep writing to the now-unlinked inode
+    # after os.replace swaps the file out — those appends would vanish.
+    with documents_jsonl_lock(docs_path):
+        src = docs_path.open("r", encoding="utf-8")
+        dst = tmp_path.open("w", encoding="utf-8")
+        try:
+            for line in src:
+                stripped = line.strip()
+                if not stripped:
+                    dst.write(line)
+                    continue
+                try:
+                    obj = json.loads(stripped)
+                except json.JSONDecodeError:
+                    dst.write(line)
+                    continue
+                meta = obj.get("metadata") if isinstance(obj, dict) else None
+                if isinstance(meta, dict) and str(meta.get("asset_id", "")) in asset_ids:
+                    removed += 1
+                    continue
                 dst.write(line)
-                continue
-            try:
-                obj = json.loads(stripped)
-            except json.JSONDecodeError:
-                dst.write(line)
-                continue
-            meta = obj.get("metadata") if isinstance(obj, dict) else None
-            if isinstance(meta, dict) and str(meta.get("asset_id", "")) in asset_ids:
-                removed += 1
-                continue
-            dst.write(line)
+        finally:
+            src.close()
+            dst.close()
     os.replace(tmp_path, docs_path)
     return removed
 
@@ -1400,48 +1415,50 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
                 print(f"parse task failed for {asset.asset_id}: {exc}")
                 service._patch(rec, processed=i, current=f"error {asset.asset_id}: {exc}")
                 continue
-            with target.open("a", encoding="utf-8") as f:
-                # Image caption (text route): append a VLM-generated Chinese
-                # description for each embedded figure to its chunk's text so
-                # a figure-only slide / referenced diagram becomes searchable.
-                # Runs *before* Contextual Retrieval so the contextual LLM
-                # sees caption-enriched chunks. No-op when
-                # ``image_caption_enabled`` is off or ``VLM_*`` is unset (the
-                # function checks both). Cached under captions/<id>.jsonl
-                # (outside parsed/, so force re-parse reuses it).
-                if service._settings.image_caption_enabled and docs:
-                    from .image_caption import enrich_docs_with_image_captions
-                    from .paths import get_captions_dir as _gcd
+            # Enrichment (image caption + contextual) runs *before* the
+            # documents.jsonl lock so the (potentially slow, LLM-backed)
+            # enrichment doesn't hold the cross-process lock. Only the
+            # final append of rows is serialised.
+            if service._settings.image_caption_enabled and docs:
+                from .image_caption import enrich_docs_with_image_captions
+                from .paths import get_captions_dir as _gcd
 
-                    cap_cache = _gcd() / f"{asset.asset_id}.jsonl"
-                    service._patch(
-                        rec,
-                        current=f"image-caption: {asset.asset_id} ({len(docs)} chunks)",
-                    )
-                    enrich_docs_with_image_captions(
-                        docs, asset_id=asset.asset_id, cache_path=cap_cache
-                    )
-                # Contextual Retrieval: attach an LLM-generated context to each
-                # chunk before writing to documents.jsonl. On by default via
-                # ``Settings.contextual_enabled``; the per-task ``--contextual``
-                # flag forces it on. No-op (and no LLM cost) when OPENAI_* is
-                # unconfigured. Cached under parsed/<id>/context.jsonl so
-                # reindex reuses it.
-                if (options.contextual or service._settings.contextual_enabled) and docs:
-                    from .contextual import enrich_docs_with_context
+                cap_cache = _gcd() / f"{asset.asset_id}.jsonl"
+                service._patch(
+                    rec,
+                    current=f"image-caption: {asset.asset_id} ({len(docs)} chunks)",
+                )
+                enrich_docs_with_image_captions(docs, asset_id=asset.asset_id, cache_path=cap_cache)
+            # Contextual Retrieval: attach an LLM-generated context to each
+            # chunk before writing to documents.jsonl. On by default via
+            # ``Settings.contextual_enabled``; the per-task ``--contextual``
+            # flag forces it on. No-op (and no LLM cost) when OPENAI_* is
+            # unconfigured. Cached under parsed/<id>/context.jsonl so
+            # reindex reuses it.
+            if (options.contextual or service._settings.contextual_enabled) and docs:
+                from .contextual import enrich_docs_with_context
 
-                    cache_path = get_parsed_dir() / asset.asset_id / "context.jsonl"
-                    service._patch(
-                        rec,
-                        current=f"contextual: {asset.asset_id} ({len(docs)} chunks)",
-                    )
-                    enrich_docs_with_context(
-                        docs,
-                        asset_title=asset.title or asset.asset_id,
-                        cache_path=cache_path,
-                    )
-                for d in docs:
-                    f.write(json.dumps(d.to_json(), ensure_ascii=False) + "\n")
+                cache_path = get_parsed_dir() / asset.asset_id / "context.jsonl"
+                service._patch(
+                    rec,
+                    current=f"contextual: {asset.asset_id} ({len(docs)} chunks)",
+                )
+                enrich_docs_with_context(
+                    docs,
+                    asset_title=asset.title or asset.asset_id,
+                    cache_path=cache_path,
+                )
+            # Append under the documents.jsonl cross-process lock so the
+            # rows don't race a concurrent rewrite (os.replace in
+            # _remove_asset_rows_from_documents_jsonl) and vanish into a
+            # swapped-out inode.
+            with documents_jsonl_lock(target):
+                f = target.open("a", encoding="utf-8")
+                try:
+                    for d in docs:
+                        f.write(json.dumps(d.to_json(), ensure_ascii=False) + "\n")
+                finally:
+                    f.close()
             parsed += 1
             local_statuses[asset.asset_id] = "ok"
             service._patch(
@@ -1454,10 +1471,24 @@ def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) ->
             local_statuses[asset.asset_id] = "failed"
             service._patch(rec, processed=i, current=f"error {asset.asset_id}: {exc}")
 
+    merged_statuses = {**rec.asset_statuses, **local_statuses}
+    # If the user cancelled during the last asset's parse (past the
+    # per-asset checkpoint at the loop top), ``cancel_task`` already set
+    # status=CANCELLED (terminal). Don't overwrite it back to DONE/PARTIAL
+    # here — that would make the UI flip from "cancelled" to "done" and
+    # lose the cancel request. Keep the terminal status, still surface the
+    # final progress + per-asset outcomes so the partial work is visible.
+    if service._is_cancelled(rec.task_id) or rec.status == TaskStatus.CANCELLED:
+        service._patch(
+            rec,
+            finished_at=time.time(),
+            current=f"cancelled: parsed={parsed} skipped={skipped} failed={failed}",
+            asset_statuses=merged_statuses,
+        )
+        return
     status = (
         TaskStatus.DONE if failed == 0 and skipped + parsed == len(assets) else TaskStatus.PARTIAL
     )
-    merged_statuses = {**rec.asset_statuses, **local_statuses}
     service._patch(
         rec,
         status=status,

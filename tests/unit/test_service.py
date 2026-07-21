@@ -130,6 +130,7 @@ def test_parse_options_serialisation_roundtrip() -> None:
         document_parser="docling",
         enable_ocr=True,
         enable_vlm=False,
+        contextual=True,
     )
     snap = IngestService._serialise_options(options)
     assert snap == {
@@ -138,12 +139,14 @@ def test_parse_options_serialisation_roundtrip() -> None:
         "enable_ocr": True,
         "enable_vlm": False,
         "image_provider": "lite",
+        "contextual": True,
     }
     restored = IngestService._deserialise_options(snap, assets=[])
     assert restored.pdf_parser == "pymupdf"
     assert restored.document_parser == "docling"
     assert restored.enable_ocr is True
     assert restored.enable_vlm is False
+    assert restored.contextual is True
 
 
 def test_parse_options_serialisation_drops_invalid_values() -> None:
@@ -1233,6 +1236,55 @@ def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
     # Only the first asset was parsed; the checkpoint before #2 saw cancel.
     assert parsed_ids == [a1.asset_id]
     assert rec.status == "cancelled"
+
+
+def test_do_parse_keeps_cancelled_when_cancel_during_last_asset(tmp_home: Path) -> None:
+    """If the user cancels *during* the last asset's parse (past the
+    per-asset checkpoint at the loop top), ``cancel_task`` has already
+    set status=CANCELLED. The final ``_patch`` must not overwrite it
+    back to DONE/PARTIAL — that would flip the UI from "cancelled" to
+    "done" and lose the cancel request. Regression: the final patch
+    computed status=DONE unconditionally."""
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.schema import ParsedDocument
+    from mm_asset_rag.service import _do_parse
+
+    a1 = _make_asset(tmp_home, "a1.png")
+    a2 = _make_asset(tmp_home, "a2.png")
+    service = IngestService()
+    rec = TaskRecord(task_id="canceltask2", kind="parse", status="running", total=2)
+    service._tasks[rec.task_id] = rec
+    service._cancel_flags[rec.task_id] = __import__("threading").Event()
+
+    def fake_parser(asset, **kwargs):
+        # On the LAST asset, simulate cancel_task being called mid-parse:
+        # the checkpoint at the loop top has already passed, so the loop
+        # body completes this asset, then reaches the final _patch.
+        if asset.asset_id == a2.asset_id:
+            service._cancel_flags[rec.task_id].set()
+            service._patch(rec, status="cancelled", finished_at=time.time(), current="cancelled")
+        return [ParsedDocument(text="x", metadata={"asset_id": asset.asset_id})]
+
+    def fake_get_parser(kind, name):
+        class P:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def parse(self, asset, **kwargs):
+                return fake_parser(asset)
+
+        return P()
+
+    orig = svc_mod.get_parser
+    svc_mod.get_parser = fake_get_parser
+    try:
+        _do_parse(service, rec, ParseOptions(assets=[a1, a2]))
+    finally:
+        svc_mod.get_parser = orig
+
+    # The cancel must stick — not be overwritten to done/partial by the
+    # final _patch that runs after the loop completes the last asset.
+    assert rec.status == "cancelled", f"expected cancelled, got {rec.status!r}"
 
 
 def test_index_phase_stops_when_cancelled(tmp_home: Path) -> None:
