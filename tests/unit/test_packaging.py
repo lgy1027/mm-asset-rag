@@ -83,7 +83,7 @@ def test_version_matches_source(built_dist: Path) -> None:
     with zipfile.ZipFile(wheel) as z:
         meta = next(n for n in z.namelist() if n.endswith("METADATA"))
         text = z.read(meta).decode()
-    line = next(l for l in text.splitlines() if l.startswith("Version:"))
+    line = next(ln for ln in text.splitlines() if ln.startswith("Version:"))
     built = line.split(":", 1)[1].strip()
     assert built == __version__, f"wheel version {built} != source {__version__}"
     _ = sys  # silence linter on unused import in some configs
