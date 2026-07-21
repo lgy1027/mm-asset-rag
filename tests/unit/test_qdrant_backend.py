@@ -611,6 +611,36 @@ def test_qdrant_text_search_re_raises_non_missing_value_error(monkeypatch) -> No
         qdrant_backend.qdrant_text_search("query", top_k=5)
 
 
+def test_qdrant_text_search_degrades_on_remote_404(monkeypatch) -> None:
+    """Remote server mode (``QDRANT_URL``) raises ``UnexpectedResponse``
+    (not ``ValueError``) with HTTP 404 for a missing collection. The text
+    route must degrade to empty — the regression this guards: before the
+    remote case was handled, the ``except ValueError`` couldn't catch
+    ``UnexpectedResponse`` and ``hybrid_search`` crashed on a remote
+    instance that had only ingested one modality."""
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
+    from mm_asset_rag.backends import qdrant_backend
+
+    def _raise_remote_404(*args, **kwargs):
+        raise UnexpectedResponse(
+            status_code=404, reason_phrase="Not Found", content=b"", headers={}
+        )
+
+    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _raise_remote_404)
+    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+    )
+    monkeypatch.setattr(
+        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
+    )
+    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+
+    assert qdrant_backend.qdrant_text_search("query", top_k=5) == []
+
+
 def test_qdrant_image_to_image_search_degrades_when_collection_missing(
     monkeypatch, fake_qdrant_client
 ) -> None:
@@ -633,12 +663,37 @@ def test_qdrant_image_to_image_search_degrades_when_collection_missing(
 
 
 def test_is_collection_missing_predicate() -> None:
-    """The shared predicate keys on Qdrant's ``not found`` ValueError only."""
+    """The shared predicate keys on Qdrant's ``not found`` signal.
+
+    Both client modes must be recognised: local file mode raises a
+    ``ValueError`` with ``not found`` in the message; remote server mode
+    (``QDRANT_URL``) raises ``UnexpectedResponse`` with HTTP 404 (an
+    ``ApiException`` subclass, *not* a ``ValueError``). Before the remote
+    case was handled, a remote instance that had only ingested one modality
+    crashed ``hybrid_search`` instead of returning an empty route.
+    """
+    from qdrant_client.http.exceptions import UnexpectedResponse
+
     from mm_asset_rag.backends.qdrant_backend import _is_collection_missing
 
+    # Local file mode: ValueError with "not found".
     assert _is_collection_missing(ValueError("Collection X not found")) is True
     assert _is_collection_missing(ValueError("something else")) is False
     assert _is_collection_missing(RuntimeError("not found")) is False
+    # Remote server mode: 404 UnexpectedResponse.
+    assert (
+        _is_collection_missing(
+            UnexpectedResponse(status_code=404, reason_phrase="", content=b"", headers={})
+        )
+        is True
+    )
+    # A 500 from the remote server is a real error, not a missing collection.
+    assert (
+        _is_collection_missing(
+            UnexpectedResponse(status_code=500, reason_phrase="", content=b"", headers={})
+        )
+        is False
+    )
 
 
 # ─── invalidate_bm25_zh_idf_cache ─────────────────────────────────────────
@@ -654,8 +709,8 @@ def test_invalidate_bm25_zh_idf_cache_clears_cache() -> None:
     """Calling ``invalidate_bm25_zh_idf_cache`` resets the module cache to None."""
     from mm_asset_rag.backends import qdrant_backend
 
-    # Seed the cache with a sentinel value; the function should drop it.
-    qdrant_backend._BM25_ZH_IDF_CACHE = {"sentinel": 1.0}
+    # Seed the cache with a sentinel (mtime, table) pair; the function drops it.
+    qdrant_backend._BM25_ZH_IDF_CACHE = (1234567890, {"sentinel": 1.0})
     qdrant_backend.invalidate_bm25_zh_idf_cache()
     assert qdrant_backend._BM25_ZH_IDF_CACHE is None
 
@@ -666,6 +721,45 @@ def test_invalidate_bm25_zh_idf_cache_idempotent_on_none() -> None:
 
     qdrant_backend._BM25_ZH_IDF_CACHE = None
     qdrant_backend.invalidate_bm25_zh_idf_cache()
+    assert qdrant_backend._BM25_ZH_IDF_CACHE is None
+
+
+def test_load_bm25_zh_idf_rereads_when_file_mtime_changes(tmp_path, monkeypatch) -> None:
+    """The cache is keyed by the IDF file's mtime, so a rewrite (even from
+    a *separate* CLI process) is picked up on the next load without an
+    in-process ``invalidate`` call. This is the cross-process case an
+    in-process flag alone can't reach: API server caches v1, CLI reindex
+    writes v2 with a new mtime, API's next ``_load_bm25_zh_idf`` returns v2."""
+    import os
+    import time
+
+    from mm_asset_rag.backends import qdrant_backend
+
+    idf_path = tmp_path / "bm25_zh_idf.json"
+    monkeypatch.setattr(qdrant_backend, "get_indexes_dir", lambda: tmp_path)
+
+    # v1 on disk.
+    idf_path.write_text('{"v1": 1.0}', encoding="utf-8")
+    qdrant_backend._BM25_ZH_IDF_CACHE = None
+    assert qdrant_backend._load_bm25_zh_idf() == {"v1": 1.0}
+
+    # Ensure the next write gets a distinct mtime_ns (same-ns rewrite on a
+    # fast disk would otherwise mask the change). Bump mtime explicitly.
+    idf_path.write_text('{"v2": 2.0}', encoding="utf-8")
+    t = time.time() + 5
+    os.utime(idf_path, (t, t))
+    # No invalidate() call — the mtime change alone must force a re-read.
+    assert qdrant_backend._load_bm25_zh_idf() == {"v2": 2.0}
+
+
+def test_load_bm25_zh_idf_returns_none_when_file_missing(tmp_path, monkeypatch) -> None:
+    """A missing IDF file yields None and drops any stale cache rather than
+    returning a stale table."""
+    from mm_asset_rag.backends import qdrant_backend
+
+    monkeypatch.setattr(qdrant_backend, "get_indexes_dir", lambda: tmp_path)
+    qdrant_backend._BM25_ZH_IDF_CACHE = (999, {"stale": 1.0})
+    assert qdrant_backend._load_bm25_zh_idf() is None
     assert qdrant_backend._BM25_ZH_IDF_CACHE is None
 
 

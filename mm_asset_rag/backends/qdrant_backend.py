@@ -40,6 +40,7 @@ from pathlib import Path
 
 from fastembed import SparseTextEmbedding
 from qdrant_client import QdrantClient, models
+from qdrant_client.http.exceptions import UnexpectedResponse
 
 from ..document_store import read_documents
 from ..embedders import (
@@ -142,8 +143,20 @@ def _embed_bm25(texts: list[str]) -> list[models.SparseVector]:
 # IDF table to ``$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json`` once per
 # rebuild. The query side caches it in-process so we don't re-read the
 # file on every ``mmrag search``.
+#
+# The cache is versioned by the IDF file's ``stat`` mtime so it stays
+# correct across *process* boundaries: a long-lived API server keeps the
+# cached table even after a separate ``mmrag reindex`` CLI rewrites the
+# file on disk, but the next ``_load_bm25_zh_idf`` call sees the new
+# mtime and re-reads. (An in-process ``invalidate`` flag alone can't
+# reach another process.) Each load also re-checks mtime inside the
+# lock so the read + cache-store pair is atomic against a concurrent
+# ``invalidate`` — previously the file read was outside the lock, so a
+# reindex could ``invalidate`` (a no-op while the cache was already
+# ``None``) between the read and the store, letting stale data land
+# back in the cache with nothing left to invalidate it.
 
-_BM25_ZH_IDF_CACHE: dict | None = None
+_BM25_ZH_IDF_CACHE: tuple[int, dict] | None = None  # (mtime_ns, table)
 _BM25_ZH_IDF_LOCK = threading.Lock()
 
 
@@ -151,16 +164,11 @@ def invalidate_bm25_zh_idf_cache() -> None:
     """Drop the in-process Chinese BM25 IDF cache.
 
     ``build_qdrant_text_index`` persists the per-corpus IDF table to
-    ``$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json`` once per rebuild.
-    The query side caches the file contents in-process
-    (``_BM25_ZH_IDF_CACHE``) so repeated ``mmrag search`` calls don't
-    re-read the file. In server mode (long-lived API process) the cache
-    outlives a reindex triggered from a separate CLI, so the query path
-    would keep using the stale IDF table — recall drifts out of sync
-    with the freshly rebuilt collection.
-
-    ``service`` should call this after ``reindex`` / ``parse`` finishes
-    so the next query re-reads the on-disk IDF table.
+    ``$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json`` once per rebuild and
+    calls this so the same process's next query re-reads the file. For a
+    reindex from a *separate* CLI process, the on-disk mtime changes and
+    ``_load_bm25_zh_idf`` re-reads on its own — no cross-process signal
+    is needed (an in-process flag can't reach another process anyway).
     """
     global _BM25_ZH_IDF_CACHE
     with _BM25_ZH_IDF_LOCK:
@@ -168,23 +176,38 @@ def invalidate_bm25_zh_idf_cache() -> None:
 
 
 def _load_bm25_zh_idf() -> dict | None:
-    """Load the persisted Chinese BM25 IDF table (cached in-process)."""
+    """Load the persisted Chinese BM25 IDF table (cached in-process).
+
+    The cache is keyed by the file's ``stat().st_mtime_ns`` so it
+    auto-invalidates when the file is rewritten — by this process's own
+    reindex (``invalidate_bm25_zh_idf_cache`` then mtime change) or by a
+    separate CLI process (mtime change alone, no in-process call). Both
+    the mtime check and the read happen under the lock so the load is
+    atomic against a concurrent ``invalidate`` (the race that previously
+    let stale data stick in the cache with nothing to re-invalidate it).
+    """
     global _BM25_ZH_IDF_CACHE
-    with _BM25_ZH_IDF_LOCK:
-        if _BM25_ZH_IDF_CACHE is not None:
-            return _BM25_ZH_IDF_CACHE
     idf_path = get_indexes_dir() / "bm25_zh_idf.json"
-    if not idf_path.exists():
+    try:
+        mtime_ns = idf_path.stat().st_mtime_ns
+    except OSError:
+        # Missing file: drop any stale cache and signal "no IDF".
+        with _BM25_ZH_IDF_LOCK:
+            _BM25_ZH_IDF_CACHE = None
         return None
+    with _BM25_ZH_IDF_LOCK:
+        cached = _BM25_ZH_IDF_CACHE
+        if cached is not None and cached[0] == mtime_ns:
+            return cached[1]
     try:
         data = json.loads(idf_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
+        # Don't poison the cache with unparseable data; let the next
+        # well-formed write refresh it.
         return None
-    # Only the cache assignment is guarded; the file read above is
-    # outside the lock so two threads don't serialize on disk IO.
     with _BM25_ZH_IDF_LOCK:
-        _BM25_ZH_IDF_CACHE = data
-    return _BM25_ZH_IDF_CACHE
+        _BM25_ZH_IDF_CACHE = (mtime_ns, data)
+    return data
 
 
 def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
@@ -1211,7 +1234,7 @@ def qdrant_text_search(
             embed_sparse_vector=embed_sparse_query,
             embed_colbert_vector=embed_colbert_query,
         )
-    except ValueError as exc:
+    except (ValueError, UnexpectedResponse) as exc:
         # The text collection may not exist yet (e.g. a fresh install, or
         # an instance that has only ingested images). Degrade to an empty
         # result instead of crashing hybrid_search — mirrors the image
@@ -1242,12 +1265,23 @@ def _is_collection_missing(exc: BaseException) -> bool:
     A freshly installed instance (or one that has only ingested images /
     only ingested text) has no matching collection yet; the search routes
     must treat that as a clean empty result rather than crashing
-    ``hybrid_search``. Qdrant's client raises a ``ValueError`` whose
-    message contains ``not found`` for a missing collection — the same
-    signal the image routes already keyed on. Centralised here so all
-    three routes degrade symmetrically.
+    ``hybrid_search``. Centralised here so all three routes degrade
+    symmetrically.
+
+    Two client modes raise different exception types for a missing
+    collection, both of which must be recognised:
+
+    * **local file mode** raises ``ValueError`` with ``"not found"`` in
+      the message.
+    * **remote server mode** (``QDRANT_URL``) raises
+      ``UnexpectedResponse`` (an ``ApiException`` subclass, *not* a
+      ``ValueError``) with HTTP 404. Before this handled the remote
+      case, a remote instance that had only ingested one modality crashed
+      ``hybrid_search`` instead of returning an empty route.
     """
-    return isinstance(exc, ValueError) and "not found" in str(exc)
+    return (isinstance(exc, ValueError) and "not found" in str(exc)) or (
+        isinstance(exc, UnexpectedResponse) and getattr(exc, "status_code", None) == 404
+    )
 
 
 # ─── Sparse pre-filter for image search ─────────────────────────────────
@@ -1471,7 +1505,7 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
             limit=top_k,
             with_payload=True,
         ).points
-    except ValueError as exc:
+    except (ValueError, UnexpectedResponse) as exc:
         if not _is_collection_missing(exc):
             raise
         return []
@@ -1497,7 +1531,7 @@ def qdrant_image_to_image_search(image_path: Path, top_k: int = 5) -> list[Searc
             limit=top_k,
             with_payload=True,
         ).points
-    except ValueError as exc:
+    except (ValueError, UnexpectedResponse) as exc:
         if not _is_collection_missing(exc):
             raise
         return []
