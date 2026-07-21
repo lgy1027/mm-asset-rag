@@ -90,6 +90,24 @@ def test_match_stacked_hash_collapses_to_bare_title() -> None:
     assert _match(actuals, expected) == 1
 
 
+def test_match_hits_on_title_when_asset_id_doesnt() -> None:
+    """The CLIP case: the returned asset_id is a filename stem (clip) that
+    never matches the paper-title expected id, but the LLM-derived title
+    does. With AUTO_META on, hit.title carries that canonical title, so
+    passing an (asset_id, title) pair hits where a bare asset_id misses."""
+    actuals = [
+        ("clip_b14b418e", "Learning Transferable Visual Models From Natural Language Supervision")
+    ]
+    expected = ["Learning Transferable Visual Models From Natural Language Supervision"]
+    assert _match(actuals, expected) == 1
+
+
+def test_match_bare_asset_id_still_works_without_title() -> None:
+    """Backwards compat: a bare asset_id str (no title) still matches the
+    way it did before the title pairing was added — image route + old tests."""
+    assert _match(["Caltech Airplanes 01_9fe67b3f"], ["Caltech Airplanes"]) == 1
+
+
 def test_expand_returns_all_hash_variants() -> None:
     full = {
         "Codex_a1b2c3d4",

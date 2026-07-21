@@ -104,6 +104,38 @@ def test_hit_rate_substring_long_actual() -> None:
     assert hit_rate_at_k([long_id], ["Obsidian 的 10 大 AI Skill"], 5) == 1.0
 
 
+def test_is_relevant_pair_hits_on_title_when_id_misses() -> None:
+    """An ``(asset_id, title)`` pair hits when the title matches an expected
+    paper-title id even though the filename-stem asset_id doesn't — the CLIP
+    case: id ``clip_b14b418e`` vs expected ``Learning Transferable ...``."""
+    pair = (
+        "clip_b14b418e",
+        "Learning Transferable Visual Models From Natural Language Supervision",
+    )
+    assert (
+        _is_relevant(
+            pair, ["Learning Transferable Visual Models From Natural Language Supervision"]
+        )
+        is True
+    )
+    # the pair also still matches when expected aligns with the asset_id
+    assert _is_relevant(("clip_b14b418e", "Learning Transferable Visual Models"), ["clip"]) is True
+
+
+def test_hit_rate_pair_uses_title() -> None:
+    """hit_rate honours the (asset_id, title) pair — a title-only match counts."""
+    pair = (
+        "clip_b14b418e",
+        "Learning Transferable Visual Models From Natural Language Supervision",
+    )
+    assert (
+        hit_rate_at_k(
+            [pair], ["Learning Transferable Visual Models From Natural Language Supervision"], 5
+        )
+        == 1.0
+    )
+
+
 # ─── bounds: metrics must stay ≤ 1.0 under multi-match ──────────────────
 
 

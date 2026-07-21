@@ -85,20 +85,32 @@ def _matches(a_norm: str, b_norm: str) -> bool:
     return a_norm in b_norm or b_norm in a_norm
 
 
-def _is_relevant(actual_id: str, expected_ids: list[str]) -> bool:
-    """Prefix/equal match on normalised ids (see :func:`_matches`).
+def _actual_norm_candidates(actual: str | tuple[str, str]) -> list[str]:
+    """Normalised candidate slugs for one actual.
+
+    Accepts a bare ``asset_id`` (str) or an ``(asset_id, title)`` pair; for the
+    pair both are normalised into candidate slugs, so an expected paper-title
+    id can match either the returned asset's filename-stem id or its
+    LLM-derived title. Empty candidates are dropped.
+    """
+    values = actual if isinstance(actual, tuple) else (actual,)
+    out = [_normalize_id(v) for v in values]
+    return [n for n in out if n]
+
+
+def _is_relevant(actual_id: str | tuple[str, str], expected_ids: list[str]) -> bool:
+    """Bidirectional substring match on normalised ids (see :func:`_matches`).
 
     Mirrors ``evaluation_v2._match``: an actual id counts as relevant when,
-    after normalisation, it is a prefix of — or prefixed by / equal to — any
-    expected id. This tolerates the asymmetric shapes real data has (a bare
-    short title ``"Obsidian 的 10 大 AI Skill"`` expected vs a long full id
-    ``"Obsidian 的 10 大 AI Skill,第 1 名..._924b37db"`` returned), which a
-    plain set-equality check would mark as a miss.
+    after normalisation, it is a substring of — or contains — any expected id.
+    When ``actual_id`` is an ``(asset_id, title)`` pair, either matching is a
+    hit — this resolves the CLIP case where the returned id is
+    ``clip_b14b418e`` but the paper's canonical title is the expected id.
     """
-    na = _normalize_id(actual_id)
-    if not na:
-        return False
-    return any(_matches(na, _normalize_id(exp)) for exp in expected_ids)
+    for na in _actual_norm_candidates(actual_id):
+        if any(_matches(na, _normalize_id(exp)) for exp in expected_ids):
+            return True
+    return False
 
 
 def _expected_norm_dedup(expected_ids: Iterable[str]) -> list[str]:
@@ -119,7 +131,7 @@ def _expected_norm_dedup(expected_ids: Iterable[str]) -> list[str]:
 
 
 def _relevance_assignment(
-    actual_ids: list[str], expected_norm: list[str], k: int | None
+    actual_ids: list[str | tuple[str, str]], expected_norm: list[str], k: int | None
 ) -> list[bool]:
     """Greedy one-expected-per-actual relevance assignment over top-k.
 
@@ -136,15 +148,14 @@ def _relevance_assignment(
     assigned: list[bool] = []
     actuals = actual_ids if k is None else actual_ids[:k]
     for a in actuals:
-        na = _normalize_id(a)
+        cands = _actual_norm_candidates(a)
         idx = None
-        if na:
-            for i, ne in enumerate(expected_norm):
-                if i in claimed:
-                    continue
-                if _matches(na, ne):
-                    idx = i
-                    break
+        for i, ne in enumerate(expected_norm):
+            if i in claimed:
+                continue
+            if any(_matches(na, ne) for na in cands):
+                idx = i
+                break
         assigned.append(idx is not None)
         if idx is not None:
             claimed.add(idx)
@@ -156,7 +167,9 @@ def _relevant_set(expected: Iterable[str]) -> set[str]:
     return {e for e in expected if e}
 
 
-def hit_rate_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float:
+def hit_rate_at_k(
+    actual_ids: list[str | tuple[str, str]], expected_ids: list[str], k: int
+) -> float:
     """1.0 if any of the top-k ``actual_ids`` is relevant to ``expected_ids``.
 
     Relevance is normalised bidirectional substring (see :func:`_is_relevant`),
@@ -167,7 +180,7 @@ def hit_rate_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> flo
     return 1.0 if any(_is_relevant(a, expected_ids) for a in actual_ids[:k]) else 0.0
 
 
-def reciprocal_rank(actual_ids: list[str], expected_ids: list[str]) -> float:
+def reciprocal_rank(actual_ids: list[str | tuple[str, str]], expected_ids: list[str]) -> float:
     """1 / rank of the first relevant result, 0 if none."""
     if not _relevant_set(expected_ids):
         return 0.0
@@ -177,7 +190,9 @@ def reciprocal_rank(actual_ids: list[str], expected_ids: list[str]) -> float:
     return 0.0
 
 
-def precision_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float:
+def precision_at_k(
+    actual_ids: list[str | tuple[str, str]], expected_ids: list[str], k: int
+) -> float:
     """Fraction of the top-k results that are relevant. Empty expected → 0.
 
     Relevance is greedy one-expected-per-actual (see
@@ -196,7 +211,7 @@ def precision_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> fl
     return sum(1 for r in assigned if r) / len(topk)
 
 
-def recall_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float:
+def recall_at_k(actual_ids: list[str | tuple[str, str]], expected_ids: list[str], k: int) -> float:
     """Fraction of the relevant set that is matched by the top-k. Empty expected → 0.
 
     Denominator is the number of distinct expected documents (hash variants
@@ -210,7 +225,7 @@ def recall_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float
     return matched / len(expected_norm)
 
 
-def f1_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float:
+def f1_at_k(actual_ids: list[str | tuple[str, str]], expected_ids: list[str], k: int) -> float:
     """Harmonic mean of precision@k and recall@k. 0 if both are 0."""
     p = precision_at_k(actual_ids, expected_ids, k)
     r = recall_at_k(actual_ids, expected_ids, k)
@@ -219,7 +234,7 @@ def f1_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float:
     return 2 * p * r / (p + r)
 
 
-def average_precision(actual_ids: list[str], expected_ids: list[str]) -> float:
+def average_precision(actual_ids: list[str | tuple[str, str]], expected_ids: list[str]) -> float:
     """AP = sum_k (P(k) * rel(k)) / |relevant|.
 
     Standard definition; the denominator is the number of distinct relevant
@@ -247,7 +262,7 @@ def _log2(x: int) -> float:
     return math.log2(x)
 
 
-def dcg_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float:
+def dcg_at_k(actual_ids: list[str | tuple[str, str]], expected_ids: list[str], k: int) -> float:
     """Discounted cumulative gain at k (binary relevance, greedy assignment)."""
     expected_norm = _expected_norm_dedup(expected_ids)
     if not expected_norm:
@@ -261,7 +276,7 @@ def dcg_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float:
     return score
 
 
-def ndcg_at_k(actual_ids: list[str], expected_ids: list[str], k: int) -> float:
+def ndcg_at_k(actual_ids: list[str | tuple[str, str]], expected_ids: list[str], k: int) -> float:
     """NDCG@k with binary relevance; ideal DCG assumes the first |relevant|
     positions are all hits (and the rest don't matter).
 

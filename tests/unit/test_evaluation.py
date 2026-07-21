@@ -130,7 +130,7 @@ def test_run_eval_misses_when_assets_wrong() -> None:
                 route="text",
                 score=0.9,
                 asset_id="unrelated",
-                title="x",
+                title="",
                 source_type="pdf",
                 source_path="x.pdf",
             )
@@ -249,4 +249,46 @@ def test_write_eval_report_normalises_ids_for_metrics(tmp_path: Path) -> None:
     payload = json.loads(target.read_text(encoding="utf-8"))
     # hit_rate@1 in the aggregate block should be 1.0 once the two
     # hash variants normalise to the same bare title.
+    assert payload["metrics"]["all"]["hit_rate"]["1"] == 1.0
+
+
+def test_write_eval_report_handles_title_list_shorter_than_ids(tmp_path: Path) -> None:
+    """If actual_titles is shorter than actual_asset_ids (shouldn't happen in
+    production but a future code path might), zip_longest fills with "" so the
+    trailing asset_ids are still scored against expected — no silent drop."""
+    results = [
+        EvalResult(
+            query="q",
+            expected_asset_ids=["Alexnet"],
+            actual_asset_ids=["Alexnet_0c1c2b23", "Resnext_69df8de4"],
+            hit=True,
+            rank=1,
+            group="en",
+            actual_titles=["Learning Transferable"],  # only 1 title for 2 ids
+        )
+    ]
+    target = tmp_path / "report.json"
+    write_eval_report(results, path=target)
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    # Both actual_ids still scored (the 2nd falls back to bare asset_id).
+    assert payload["metrics"]["all"]["hit_rate"]["5"] == 1.0
+
+
+def test_write_eval_report_empty_titles_falls_back_to_asset_id(tmp_path: Path) -> None:
+    """When actual_titles is empty (image route / old reports), _agg falls back
+    to scoring on bare asset_ids — no crash, no empty actual_ids list."""
+    results = [
+        EvalResult(
+            query="q",
+            expected_asset_ids=["Alexnet_caaa534b"],
+            actual_asset_ids=["Alexnet_0c1c2b23"],
+            hit=True,
+            rank=1,
+            group="en",
+            actual_titles=[],
+        )
+    ]
+    target = tmp_path / "report.json"
+    write_eval_report(results, path=target)
+    payload = json.loads(target.read_text(encoding="utf-8"))
     assert payload["metrics"]["all"]["hit_rate"]["1"] == 1.0

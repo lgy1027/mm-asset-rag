@@ -38,6 +38,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import asdict, dataclass
+from itertools import zip_longest
 
 # Shared pure helpers live in evaluation_v2 (the new-generation module).
 # v2 never imports v1, so importing here is cycle-free.
@@ -356,6 +357,14 @@ class EvalResult:
     hit: bool
     rank: int | None  # 1-based rank of the first hit, None if missed
     group: str  # "en", "zh", or "legacy"
+    # Parallel to actual_asset_ids; the LLM-derived paper title per hit (empty
+    # when no title). Fed to metrics alongside the asset_id so a paper-title
+    # expected id matches the title, mirroring _match's contract.
+    actual_titles: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.actual_titles is None:
+            self.actual_titles = []
 
 
 def run_eval(top_k: int = 5) -> list[EvalResult]:
@@ -374,7 +383,6 @@ def run_eval(top_k: int = 5) -> list[EvalResult]:
     ):
         for case in cases:
             hits = hybrid_search(str(case["query"]), top_k=top_k)
-            actual = [hit.asset_id for hit in hits]
             # Resolve expected ids to the set of full ids the index
             # actually returns. Accepts both bare titles and full
             # ``<title>_<hash>`` ids, and expands to all hash variants
@@ -392,15 +400,16 @@ def run_eval(top_k: int = 5) -> list[EvalResult]:
                     # known asset — keep it as a literal expected so
                     # the strict match still has something to compare.
                     expected.append(str(item))
-            rank = _match(actual, expected)
+            rank = _match([(hit.asset_id, hit.title or "") for hit in hits], expected)
             results.append(
                 EvalResult(
                     query=str(case["query"]),
                     expected_asset_ids=expected,
-                    actual_asset_ids=actual,
+                    actual_asset_ids=[hit.asset_id for hit in hits],
                     hit=rank is not None,
                     rank=rank,
                     group=group,
+                    actual_titles=[hit.title or "" for hit in hits],
                 )
             )
     return results
@@ -551,7 +560,24 @@ def write_eval_report(results: list[EvalResult], path=None) -> None:
         return aggregate_metrics(
             [
                 {
-                    "actual_ids": _normalize_id_list(r.actual_asset_ids),
+                    # Pair each actual asset_id with its title so metrics can
+                    # match on the LLM-derived paper title too (mirrors _match's
+                    # contract → aggregate stays self-consistent with per_query).
+                    # zip_longest (not zip) guards against a future code path where
+                    # actual_titles and actual_asset_ids diverge in length — a
+                    # silent truncation there would drop trailing asset_ids and
+                    # skew the metrics. When no titles are present (image route /
+                    # old reports), fall back to the bare asset_id.
+                    "actual_ids": (
+                        [
+                            (aid, t) if t else aid
+                            for aid, t in zip_longest(
+                                r.actual_asset_ids, r.actual_titles, fillvalue=""
+                            )
+                        ]
+                        if r.actual_titles
+                        else list(r.actual_asset_ids)
+                    ),
                     "expected_ids": _normalize_id_list(r.expected_asset_ids),
                 }
                 for r in rs

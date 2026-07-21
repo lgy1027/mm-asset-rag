@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from itertools import zip_longest
 from pathlib import Path
 
 from .metrics import _is_relevant, aggregate_metrics
@@ -256,6 +257,15 @@ class V2Result:
     hit: bool
     rank: int | None
     group: str
+    # Parallel to actual_asset_ids; the LLM-derived paper title per hit (empty
+    # when no title, e.g. image route or pre-AUTO_META index). Kept separate
+    # so the reported actual_asset_ids stay plain ids while metrics still get
+    # the title to match paper-title expected ids.
+    actual_titles: list[str] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.actual_titles is None:
+            self.actual_titles = []
 
 
 def _bare_to_full(bare: str, full_ids: set[str]) -> str:
@@ -348,14 +358,33 @@ def strip_trailing_hash(asset_id: str) -> str:
     return asset_id.casefold()
 
 
-def _match(actual: list[str], expected: list[str]) -> int | None:
+def _actual_candidates(act: str | tuple[str, str]) -> list[str]:
+    """Normalise an actual entry to the list of id-strings to compare.
+
+    Accepts either a bare ``asset_id`` (str, for backwards compatibility with
+    image-route evals and unit tests) or an ``(asset_id, title)`` pair. For the
+    pair, both the asset_id and the title are candidates — a hit on either
+    counts as relevant. This is what lets the CLIP case resolve when the
+    retriever returns ``("clip_b14b418e", "Learning Transferable Visual Models
+    From Natural Language Supervision")`` and the expected id is the paper's
+    canonical title: the asset_id alone never matches, but the LLM-derived
+    title does.
+    """
+    if isinstance(act, tuple):
+        return [v for v in act if v]
+    return [act] if act else []
+
+
+def _match(actual: list[str | tuple[str, str]], expected: list[str]) -> int | None:
     # Relevance is the normalised bidirectional-substring check shared with
     # ``aggregate_metrics`` (via ``metrics._is_relevant``), so per-query
     # ``hit``/``rank`` and the aggregate ``hit_rate``/``MRR``/``NDCG`` agree
     # by construction — a bare short title matches a longer returned id both
-    # here and in the reported metrics.
+    # here and in the reported metrics. Each actual may carry a title too
+    # (see :func:`_actual_candidates`); the asset_id or the title matching any
+    # expected id is a hit at that rank.
     for rank, act in enumerate(actual, start=1):
-        if _is_relevant(act, expected):
+        if any(_is_relevant(c, expected) for c in _actual_candidates(act)):
             return rank
     return None
 
@@ -411,19 +440,25 @@ def run_text_to_text_eval_v2(
     ):
         for case in cases:
             hits = search(str(case["query"]), top_k)
-            actual = [hit.asset_id for hit in hits]
+            # Carry (asset_id, title) pairs for _match so it can hit on either.
+            # The asset_id is a filename stem (e.g. clip_b14b418e) which never
+            # matches a paper-title expected id; with AUTO_META on, hit.title is
+            # the LLM-derived canonical paper title, which does. The reported
+            # actual_asset_ids stay plain asset_ids for readability.
+            actual_pairs: list[tuple[str, str]] = [(hit.asset_id, hit.title or "") for hit in hits]
             expected: list[str] = []
             for item in case["expected_asset_ids"]:
                 expected.extend(_expand(str(item), ids))
-            rank = _match(actual, expected) if expected else None
+            rank = _match(actual_pairs, expected) if expected else None
             out.append(
                 V2Result(
                     query=str(case["query"]),
                     expected_asset_ids=expected,
-                    actual_asset_ids=actual,
+                    actual_asset_ids=[hit.asset_id for hit in hits],
                     hit=rank is not None,
                     rank=rank,
                     group=group,
+                    actual_titles=[hit.title or "" for hit in hits],
                 )
             )
     return out
@@ -534,7 +569,24 @@ def write_eval_report_v2(results_by_group: dict[str, list[V2Result]], path=None)
         return aggregate_metrics(
             [
                 {
-                    "actual_ids": _normalize_id_list(r.actual_asset_ids),
+                    # Pair each actual asset_id with its title so metrics can
+                    # match on the LLM-derived paper title too (matches the
+                    # per-query _match contract → aggregate stays self-consistent
+                    # with per_query hit/rank). Fall back to bare asset_id when
+                    # no titles (image route / old reports). zip_longest (not
+                    # zip) guards against a future code path where the two lists
+                    # diverge in length — silent truncation would drop trailing
+                    # asset_ids and skew the metrics.
+                    "actual_ids": (
+                        [
+                            (aid, t) if t else aid
+                            for aid, t in zip_longest(
+                                r.actual_asset_ids, r.actual_titles, fillvalue=""
+                            )
+                        ]
+                        if r.actual_titles
+                        else list(r.actual_asset_ids)
+                    ),
                     "expected_ids": _normalize_id_list(r.expected_asset_ids),
                 }
                 for r in rs
