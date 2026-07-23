@@ -209,6 +209,32 @@ class Settings(BaseSettings):
     # whole-document dense + BM25 signal anchors it. Corpus- and
     # model-agnostic: works for any embedder / reranker combination.
     reranker_hybrid_blend: float = 0.6
+    # Reranker provider backend. ``local`` runs the cross-encoder in-process
+    # via ``sentence_transformers.CrossEncoder`` (needs the [clip] extra + the
+    # model downloaded). ``siliconflow`` / ``dashscope`` call a hosted rerank
+    # API — no local model, latency is a single network round-trip and
+    # predictable for interactive search. The two providers speak *different*
+    # wire shapes (siliconflow: flat Cohere form; dashscope: DashScope-native
+    # nested form); the client handles the shape per-provider, so only
+    # ``reranker_api_key`` typically needs setting (base / model have
+    # per-provider defaults).
+    reranker_provider: Literal["local", "siliconflow", "dashscope"] = "local"
+    # Rerank API base URL (HTTP providers). Resolved in ``embedders.reranker``
+    # so this stays None → provider default.
+    # SiliconFlow: https://api.siliconflow.cn/v1/rerank (flat form).
+    # 百炼 (dashscope): https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+    #   (DashScope-native nested form, universal host — no workspaceId needed).
+    reranker_api_base: str | None = None
+    # Rerank API model (HTTP providers). Provider-appropriate default if None.
+    # SiliconFlow: BAAI/bge-reranker-v2-m3 ; 百炼: qwen3-rerank
+    # (百炼 gte-rerank-v2 / qwen3-vl-rerank also work at the native endpoint.)
+    reranker_api_model: str | None = None
+    # Rerank API key (HTTP providers). Bearer auth. Falls back to
+    # ``OPENAI_API_KEY`` when unset (same as the embedding / LLM creds).
+    reranker_api_key: str | None = None
+    # HTTP timeout (seconds) for the rerank API call. 30s is generous for a
+    # single batched request of ~30 candidates.
+    reranker_api_timeout: float = 30.0
 
     # ─── Semantic dedup ───────────────────────────────────────────────────
     # Cosine threshold for LlamaIndex-style asset dedup in ``asset_index``:

@@ -106,6 +106,26 @@ def _clear_settings_cache():
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_reranker_state():
+    """Reset the process-wide reranker singleton + unavailable flags around each test.
+
+    The reranker module holds process globals (``_INSTANCE`` / ``_UNAVAILABLE``
+    / ``_UNAVAILABLE_UNTIL``) that the existing autouse fixtures above do not
+    touch. Tests that exercise the sticky-unavailable path set these; without a
+    reset, a test that fails mid-assertion before its own ``reset_reranker()``
+    leaks ``_UNAVAILABLE`` (and the soft-sticky ``_UNAVAILABLE_UNTIL``) into
+    the next test and silently turns its ``get_default_reranker()`` to ``None``.
+    ``reset_reranker`` also clears the ``get_settings`` cache — idempotent with
+    ``_clear_settings_cache`` above.
+    """
+    from mm_asset_rag.embedders.reranker import reset_reranker
+
+    reset_reranker()
+    yield
+    reset_reranker()
+
+
 @pytest.fixture
 def fixed_vector(monkeypatch) -> None:
     """Pin both embedding providers to a fixed deterministic vector.

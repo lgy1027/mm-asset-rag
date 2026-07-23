@@ -194,15 +194,51 @@ This is the **text-route** path only: embedded figures are *not* sent to the CLI
 
 ## Two-stage reranker
 
-bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a candidate pool with dense + BM25, then score each `(query, doc)` pair with a cross-encoder. Catches high-score false positives that `MIN_SCORE` cannot. **Enabled by default** — it adds ~50-200ms latency per query and the model is ~2GB on first download (`BAAI/bge-reranker-v2-m3`). Runs locally via `sentence-transformers.CrossEncoder` (same dep as the bge-m3 embedder); no ollama / API. Disable with `RERANKER_ENABLED=false` when latency / download cost is a concern.
+bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a candidate pool with dense + BM25, then score each `(query, doc)` pair with a cross-encoder. Catches high-score false positives that `MIN_SCORE` cannot. **Enabled by default**.
+
+Two provider backends, selected by `RERANKER_PROVIDER`:
+
+- **`local`** (default) — runs `sentence_transformers.CrossEncoder` in-process. Same dep family as the bge-m3 embedder; no network. Needs the model downloaded (~2GB first run). Disable with `RERANKER_ENABLED=false` when latency / download cost is a concern.
+- **`siliconflow` / `dashscope`** — call a hosted rerank API. No local model, no `sentence-transformers` dep; latency is a single network round-trip, predictable for interactive search. The two providers speak **different wire shapes** (see below), handled by the same client.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `RERANKER_ENABLED` | `true` | Master switch (default on; set `false` to opt out) |
-| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | HuggingFace cross-encoder model id |
+| `RERANKER_PROVIDER` | `local` | `local` \| `siliconflow` \| `dashscope` |
+| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | HuggingFace cross-encoder model id (local provider) |
+| `RERANKER_API_BASE` | provider default | Rerank API URL (HTTP providers). SiliconFlow `https://api.siliconflow.cn/v1/rerank` (flat Cohere form); 百炼 `https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank` (DashScope-native nested form, universal host — no workspaceId needed) |
+| `RERANKER_API_MODEL` | provider default | Rerank API model (HTTP providers). SiliconFlow `BAAI/bge-reranker-v2-m3`; 百炼 `qwen3-rerank` |
+| `RERANKER_API_KEY` | → `OPENAI_API_KEY` | Rerank API key, Bearer auth. Falls back to `OPENAI_API_KEY` when unset (shared key config) |
+| `RERANKER_API_TIMEOUT` | `30.0` | HTTP timeout (seconds) for the rerank API call |
 | `RERANKER_TOP_N` | `30` | Candidates fetched from each route before rerank (≤ `QDRANT_HYBRID_PREFETCH_LIMIT`) |
 | `RERANKER_TOP_K` | unset (→ caller's `top_k`) | Final result count after rerank |
-| `RERANKER_HYBRID_BLEND` | `0.6` | Cross-encoder weight in the final blended rank (0 = hybrid only, 1 = pure reranker) |
+| `RERANKER_HYBRID_BLEND` | `0.6` | Reranker weight in the final blended rank (0 = hybrid only, 1 = pure reranker). Scale-free — works for any provider's score |
+
+**Wire shapes:** SiliconFlow speaks the flat Cohere form (`{model, query, documents, top_n}` → top-level `results[]`). 百炼 speaks the DashScope-native nested form (`{model, input:{query, documents}, parameters:{top_n}}` → `output.results[]`). Both rows use `{index, relevance_score}`; the client handles the shape per-provider so you don't.
+
+**HTTP provider example (硅基流动):**
+
+```bash
+RERANKER_ENABLED=true
+RERANKER_PROVIDER=siliconflow
+RERANKER_API_KEY=sk-xxx           # or reuse OPENAI_API_KEY
+```
+
+**百炼 (dashscope)** — uses the universal DashScope-native endpoint, only the key is needed (the OpenAI-compatible flat endpoint would need a per-user workspaceId subdomain and is not used):
+
+```bash
+RERANKER_ENABLED=true
+RERANKER_PROVIDER=dashscope
+RERANKER_API_KEY=sk-xxx           # DASHSCOPE_API_KEY value
+# RERANKER_API_MODEL=qwen3-rerank  # default; gte-rerank-v2 / qwen3-vl-rerank also
+                                   # work at the same native endpoint — just set this.
+```
+
+> Verified live (2026-07): 百炼 `qwen3-rerank` at the native endpoint returns 200 with just an API key, no workspace setup. On the chapter11 eval corpus it matches the local bge-reranker-v2-m3 (v1 hit@5 0.927 / v2 hit@5 0.714 vs local 0.927 / 0.735) — the two models are near-equivalent on this corpus, so the cloud provider trades the local model download for a network round-trip with no precision loss.
+
+> A misconfigured HTTP provider (no key) is detected at startup and treated as **unavailable** — `get_default_reranker` returns `None` and search silently skips the two-stage path, rather than 401ing on every query. A *runtime* API failure (transient 5xx / timeout / connection / non-JSON body) is retried once with a short backoff, then on final failure the search falls back to single-stage hybrid — no crash, with a `WARNING` log naming the provider / URL / status. **Stickiness is provider-declared**: an HTTP provider **soft-stickies** for 60s and auto-recovers after the TTL (a transient cloud outage self-heals without a process restart); the `local` provider **hard-stickies** (a corrupted HF cache / missing dep won't self-heal — needs a `mmrag` restart). A *programming* bug (`TypeError` / `ValueError` / …) propagates rather than being silently swallowed into a sticky-disable, so it surfaces in dev.
+
+> A plain-HTTP **non-loopback** `RERANKER_API_BASE` warns once per process: `Authorization: Bearer <key>` would cross the network in cleartext. Use HTTPS, or keep `http://` on loopback (`127.0.0.1` / `localhost` / `::1`) for a local rerank proxy — the same guard the LLM / VLM / embedding base URLs already use.
 
 ## Chinese BM25
 
