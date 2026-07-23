@@ -67,6 +67,8 @@ uv sync --extra dev
 
 ## Quick start
 
+> **第一次用?** 先看 [docs/quickstart.md](docs/quickstart.md) —— 从零搭环境(ollama + bge-m3 + Qdrant 本地)到第一次 `mmrag search` 出结果的 30 分钟路径,含新手常见坑。下面的 Quick start 假定环境已配好。
+
 ```bash
 # 1. Start the API + web UI
 mmrag-api
@@ -187,6 +189,7 @@ The FastAPI app, CLI, and Qdrant backend all read from the registries at runtime
 
 ## Documentation
 
+- [Quickstart(从零到第一次搜索)](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
 - [Configuration](docs/configuration.md)
 - [HTTP API](docs/api.md)
