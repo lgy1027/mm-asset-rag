@@ -439,7 +439,7 @@ def run_text_to_text_eval_v2(
         ("negative", V2_NEGATIVE_QUERIES),
     ):
         for case in cases:
-            hits = search(str(case["query"]), top_k)
+            hits = search(str(case["query"]), top_k=top_k)
             # Carry (asset_id, title) pairs for _match so it can hit on either.
             # The asset_id is a filename stem (e.g. clip_b14b418e) which never
             # matches a paper-title expected id; with AUTO_META on, hit.title is
