@@ -473,18 +473,30 @@ def health(
 
 
 def _qdrant_collection_alive(kind: str) -> bool:
-    """True iff the active Qdrant collection for ``kind`` ('text'/'image') exists.
+    """True iff any Qdrant collection for ``kind`` ('text'/'image') exists.
+
+    Resolves collections from the live server (via
+    ``_existing_collections_for``), not the module's active-cache. A cold-start
+    API process that never ingested would otherwise see ``text_collection()``
+    fall back to the bare base name ``multimodal_text`` (the real collection is
+    ``multimodal_text_<dim>d``) and ``collection_exists`` would wrongly return
+    False — reporting the index as missing on ``/health`` right after boot.
 
     Swallows every error: /health must stay 200 even when Qdrant local-mode
     is locked by another process, the server is unreachable, or no
     collection has been created yet.
     """
     try:
-        from .backends.qdrant_backend import get_qdrant_client, image_collection, text_collection
+        from .backends.qdrant_backend import (
+            IMAGE_COLLECTION_BASE,
+            TEXT_COLLECTION_BASE,
+            _existing_collections_for,
+            get_qdrant_client,
+        )
 
         client = get_qdrant_client()
-        name = text_collection() if kind == "text" else image_collection()
-        return bool(client.collection_exists(name))
+        base = TEXT_COLLECTION_BASE if kind == "text" else IMAGE_COLLECTION_BASE
+        return bool(_existing_collections_for(client, base))
     except Exception:
         return False
 

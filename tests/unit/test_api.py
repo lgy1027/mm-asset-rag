@@ -7,7 +7,7 @@ background ingest / embeddings / Qdrant are monkeypatched.
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -98,6 +98,48 @@ def test_health_deep_reports_false_when_unconfigured(client: TestClient, monkeyp
     body = response.json()
     assert body["llm_configured"] is False
     assert body["embedder_configured"] is False
+
+
+def test_qdrant_collection_alive_resolves_dim_suffix_without_active_cache(monkeypatch):
+    """Cold-start /health: the API process may not have ingested, so the
+    module's active-collection cache is empty. ``_qdrant_collection_alive``
+    must still see the real ``multimodal_text_1024d`` collection (resolved
+    from the live server) instead of falling back to the bare base name and
+    reporting the index as missing."""
+    from mm_asset_rag import api
+
+    class _Coll:
+        def __init__(self, n: str) -> None:
+            self.name = n
+
+    fake_client = MagicMock()
+    fake_client.get_collections.return_value = MagicMock(
+        collections=[_Coll("multimodal_text_1024d"), _Coll("multimodal_image_768d")]
+    )
+    monkeypatch.setattr(
+        "mm_asset_rag.backends.qdrant_backend.get_qdrant_client", lambda: fake_client
+    )
+
+    assert api._qdrant_collection_alive("text") is True
+    assert api._qdrant_collection_alive("image") is True
+
+
+def test_qdrant_collection_alive_false_when_no_collection(monkeypatch):
+    """No matching collection on the server → False (not an error)."""
+    from mm_asset_rag import api
+
+    class _Coll:
+        def __init__(self, n: str) -> None:
+            self.name = n
+
+    fake_client = MagicMock()
+    fake_client.get_collections.return_value = MagicMock(collections=[_Coll("unrelated")])
+    monkeypatch.setattr(
+        "mm_asset_rag.backends.qdrant_backend.get_qdrant_client", lambda: fake_client
+    )
+
+    assert api._qdrant_collection_alive("text") is False
+    fake_client.collection_exists.assert_not_called()  # never the bare-base path
 
 
 def test_root_serves_bundled_ui(client: TestClient) -> None:

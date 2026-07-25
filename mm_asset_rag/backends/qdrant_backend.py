@@ -1577,6 +1577,44 @@ def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> Sea
     )
 
 
+def _existing_collections_for(client: QdrantClient, base: str) -> list[str]:
+    """Return the Qdrant collections that exist for a base name.
+
+    Matches the bare base name (``multimodal_text``) and any dim-suffixed
+    variant (``multimodal_text_1024d``) produced by
+    :func:`text_collection`/`image_collection` when a vector size is set.
+    Different embedders over time leave several ``_<dim>d`` collections, so
+    this returns a list — callers (delete, count) want to touch *all* of them
+    rather than whichever the process happens to have cached as active.
+
+    Resolving from the live server (not the ``_ACTIVE_*`` module cache) is what
+    makes ``delete_points_by_asset_id`` correct when run in a process that never
+    ingested (e.g. ``mmrag delete``): without it, ``text_collection()`` falls
+    back to the bare base name and ``client.delete`` raises "Collection not
+    found", silently leaving the points behind.
+
+    Returns an empty list on any error (server down, unexpected response) so
+    the caller can decide how to record it rather than raising mid-cleanup.
+    """
+    if not base:
+        return []
+    try:
+        names = [c.name for c in client.get_collections().collections]
+    except Exception as exc:  # pragma: no cover — server-down / network
+        print(f"[qdrant] get_collections failed for base={base!r}: {exc}")
+        return []
+    pattern = re.compile(rf"{re.escape(base)}_(\d+)d")
+    matched = [n for n in names if n == base or pattern.fullmatch(n)]
+    # De-duplicate while preserving order.
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in matched:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
 def delete_points_by_asset_id(
     asset_id: str,
     *,
@@ -1586,13 +1624,21 @@ def delete_points_by_asset_id(
     """Delete every Qdrant point whose payload carries ``asset_id``.
 
     Returns a small ``{"text": N, "image": M}`` map with the number of
-    deletion calls attempted for each collection. Failures are logged
-    but do not raise so the caller's overall ``delete_asset`` cleanup
+    collections that were actually scanned and deleted from. Failures are
+    logged but do not raise so the caller's overall ``delete_asset`` cleanup
     can still complete.
 
-    Qdrant does not return a per-call deleted-count from
-    ``client.delete``; the counters here reflect collection calls,
-    not points removed. Use ``client.count`` for an exact count.
+    Collections are resolved from the live Qdrant server (via
+    :func:`_existing_collections_for`), **not** from the module's active-cache.
+    This is the fix for ``text_collections_scanned: 0`` — a ``mmrag delete``
+    run in a process that never ingested would otherwise target the bare base
+    collection name (``multimodal_text``) which does not exist (the real name
+    is ``multimodal_text_<dim>d``), and the resulting "Collection not found"
+    was silently swallowed, leaving the points behind to pollute retrieval.
+
+    When ``qdrant_active_text_collection`` / ``qdrant_active_image_collection``
+    is set (a user explicitly pinning a collection for migration), that single
+    name is used verbatim instead of listing — preserving the pin intent.
     """
     if not asset_id:
         return {"text": 0, "image": 0}
@@ -1603,16 +1649,23 @@ def delete_points_by_asset_id(
     )
     counts = {"text": 0, "image": 0}
     client = get_qdrant_client()
+    settings = get_settings()
     if text:
-        try:
-            client.delete(collection_name=text_collection(), points_selector=selector)
-            counts["text"] += 1
-        except Exception as exc:
-            print(f"[qdrant] failed to delete text points for {asset_id}: {exc}")
+        pinned = settings.qdrant_active_text_collection
+        cols = [pinned] if pinned else _existing_collections_for(client, TEXT_COLLECTION_BASE)
+        for col in cols:
+            try:
+                client.delete(collection_name=col, points_selector=selector)
+                counts["text"] += 1
+            except Exception as exc:
+                print(f"[qdrant] failed to delete text points for {asset_id} in {col}: {exc}")
     if image:
-        try:
-            client.delete(collection_name=image_collection(), points_selector=selector)
-            counts["image"] += 1
-        except Exception as exc:
-            print(f"[qdrant] failed to delete image points for {asset_id}: {exc}")
+        pinned = settings.qdrant_active_image_collection
+        cols = [pinned] if pinned else _existing_collections_for(client, IMAGE_COLLECTION_BASE)
+        for col in cols:
+            try:
+                client.delete(collection_name=col, points_selector=selector)
+                counts["image"] += 1
+            except Exception as exc:
+                print(f"[qdrant] failed to delete image points for {asset_id} in {col}: {exc}")
     return counts

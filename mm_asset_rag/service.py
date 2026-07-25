@@ -37,7 +37,13 @@ from . import asset_index
 from . import parsers as _parsers  # noqa: F401  # register built-in parsers
 from .asset_index import AssetIndexEntry
 from .assets import Asset, from_sniffed
-from .backends.qdrant_backend import delete_points_by_asset_id
+from .backends.qdrant_backend import (
+    IMAGE_COLLECTION_BASE,
+    TEXT_COLLECTION_BASE,
+    _existing_collections_for,
+    delete_points_by_asset_id,
+    get_qdrant_client,
+)
 from .config import load_env
 from .document_store import documents_jsonl_lock
 from .paths import (
@@ -831,7 +837,29 @@ class IngestService:
 
         # 5. Qdrant text + image collections
         if dry_run:
-            report.qdrant_note = "would scan text+image collections (point counts unavailable)"
+            # Preview which collections would be scanned. Resolved from the
+            # live server (not the active-cache) so the count is accurate even
+            # in a process that never ingested — previously dry_run always
+            # reported 0, hiding the points that would be left behind.
+            try:
+                client = get_qdrant_client()
+                tcols = (
+                    [self._settings.qdrant_active_text_collection]
+                    if (self._settings.qdrant_active_text_collection)
+                    else _existing_collections_for(client, TEXT_COLLECTION_BASE)
+                )
+                icols = (
+                    [self._settings.qdrant_active_image_collection]
+                    if (self._settings.qdrant_active_image_collection)
+                    else _existing_collections_for(client, IMAGE_COLLECTION_BASE)
+                )
+                report.text_collections_scanned = len(tcols)
+                report.image_collections_scanned = len(icols)
+                report.qdrant_note = (
+                    f"would scan {len(tcols)} text + {len(icols)} image collection(s)"
+                )
+            except Exception as exc:
+                report.qdrant_note = f"would scan text+image collections (listing failed: {exc})"
         else:
             try:
                 counts = delete_points_by_asset_id(asset_id)

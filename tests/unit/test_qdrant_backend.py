@@ -873,3 +873,118 @@ def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> N
 
     assert constructed == ["http://example:6333"]
     assert qdrant_backend._QDRANT_CLIENT is None
+
+
+# ─── delete_points_by_asset_id: dim-suffixed collection resolution ──────
+
+
+def _mock_client_with_collections(names: list[str]) -> MagicMock:
+    """A fake QdrantClient whose ``get_collections`` returns the given names.
+
+    Qdrant's ``get_collections`` returns ``CollectionDescription`` objects with
+    a ``.name: str`` field. ``MagicMock(name=n)`` sets the mock's *repr* name,
+    not a ``.name`` attribute returning the string — so build real lightweight
+    objects to match the real ``CollectionDescription`` shape.
+    """
+
+    class _CollectionDescription:
+        def __init__(self, n: str) -> None:
+            self.name = n
+
+    client = MagicMock()
+    client.get_collections.return_value = MagicMock(
+        collections=[_CollectionDescription(n) for n in names]
+    )
+    return client
+
+
+def test_delete_points_resolves_dim_suffixed_collections(monkeypatch, tmp_home):
+    """The bug fix: delete must target the real ``multimodal_text_1024d``
+    collection (resolved from the live server), not the bare base name
+    ``multimodal_text`` that ``text_collection()`` falls back to when the
+    process never ingested. A bare-base delete raises 'Collection not found'
+    and was silently swallowed, leaving points behind."""
+    import mm_asset_rag.backends.qdrant_backend as qb
+
+    client = _mock_client_with_collections(
+        ["multimodal_text_1024d", "multimodal_image_768d", "other_coll"]
+    )
+    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+
+    counts = qb.delete_points_by_asset_id("asset_x")
+
+    deleted_text = [
+        c.kwargs.get("collection_name") or c.args[0] for c in client.delete.call_args_list
+    ]
+    assert "multimodal_text_1024d" in deleted_text
+    assert "multimodal_image_768d" in deleted_text
+    assert "other_coll" not in deleted_text
+    assert "multimodal_text" not in deleted_text  # never the bare base name
+    assert counts == {"text": 1, "image": 1}
+
+
+def test_delete_points_handles_no_matching_collection(monkeypatch, tmp_home):
+    """No collection matching the base name → no delete calls, no raise,
+    counts 0. (Server has unrelated collections only.)"""
+    import mm_asset_rag.backends.qdrant_backend as qb
+
+    client = _mock_client_with_collections(["unrelated_one", "unrelated_two"])
+    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+
+    counts = qb.delete_points_by_asset_id("asset_x")
+
+    client.delete.assert_not_called()
+    assert counts == {"text": 0, "image": 0}
+
+
+def test_delete_points_respects_active_collection_override(monkeypatch, tmp_home):
+    """When ``qdrant_active_text_collection`` is pinned, use that name verbatim
+    (migration scenario) instead of listing — preserving the pin intent."""
+    import mm_asset_rag.backends.qdrant_backend as qb
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("QDRANT_ACTIVE_TEXT_COLLECTION", "my_pinned_text")
+    monkeypatch.setenv("QDRANT_ACTIVE_IMAGE_COLLECTION", "my_pinned_image")
+
+    client = _mock_client_with_collections(["multimodal_text_1024d"])  # real ones present
+    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+
+    qb.delete_points_by_asset_id("asset_x")
+
+    deleted = [c.kwargs.get("collection_name") or c.args[0] for c in client.delete.call_args_list]
+    assert "my_pinned_text" in deleted
+    assert "my_pinned_image" in deleted
+    # The live-listed collection is NOT touched when a pin is set.
+    assert "multimodal_text_1024d" not in deleted
+    get_settings.cache_clear()
+
+
+def test_delete_points_empty_asset_id_returns_zero(monkeypatch, tmp_home):
+    """Empty asset_id short-circuits without touching Qdrant."""
+    import mm_asset_rag.backends.qdrant_backend as qb
+
+    client = _mock_client_with_collections(["multimodal_text_1024d"])
+    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+
+    assert qb.delete_points_by_asset_id("") == {"text": 0, "image": 0}
+    client.get_collections.assert_not_called()
+
+
+def test_delete_points_continues_after_collection_failure(monkeypatch, tmp_home, capsys):
+    """A failing collection delete is logged but does not abort the other
+    collections — delete_asset's overall cleanup must still complete."""
+    import mm_asset_rag.backends.qdrant_backend as qb
+
+    client = _mock_client_with_collections(["multimodal_text_1024d", "multimodal_text_768d"])
+    # First delete call raises, second succeeds.
+    client.delete.side_effect = [RuntimeError("boom"), None]
+    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+
+    counts = qb.delete_points_by_asset_id("asset_x")
+
+    assert client.delete.call_count == 2
+    # One of the two succeeded → counts reflects the successful one.
+    assert counts["text"] == 1
+    captured = capsys.readouterr().out
+    assert "failed to delete text points" in captured

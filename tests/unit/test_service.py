@@ -7,7 +7,7 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -335,6 +335,43 @@ def test_delete_asset_dry_run_touches_nothing(tmp_home: Path) -> None:
     assert (tmp_home / "assets" / asset.relative_path).exists()
     assert parsed_dir.exists()
     assert (get_captions_dir() / f"{asset.asset_id}.json").exists()
+
+
+def test_delete_asset_dry_run_reports_existing_collections(tmp_home, monkeypatch):
+    """dry_run now resolves the *actual* dim-suffixed collections from the
+    server and reports the count, instead of always 0. Previously a dry_run
+    reported ``text_collections_scanned: 0`` even when collections existed,
+    hiding the cleanup it would do."""
+    from mm_asset_rag.asset_index import upsert_entry
+
+    asset = _make_asset(tmp_home, "dryrun2.png")
+    upsert_entry(
+        AssetIndexEntry(
+            asset_id=asset.asset_id,
+            sha256="hash",
+            source_type="image",
+            relative_path=asset.relative_path,
+        )
+    )
+    # A fake client that reports two text + one image collection present.
+    fake_client = MagicMock()
+    fake_client.get_collections.return_value = MagicMock(
+        collections=[
+            type("_C", (), {"name": n})()
+            for n in ("multimodal_text_1024d", "multimodal_text_768d", "multimodal_image_512d")
+        ]
+    )
+    # service.py imported get_qdrant_client by name, so patch it on the
+    # service module (not just on qdrant_backend) for the binding to take.
+    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: fake_client)
+
+    service = IngestService()
+    report = service.delete_asset(asset.asset_id, dry_run=True)
+
+    assert report.dry_run
+    assert report.text_collections_scanned == 2  # both dim-suffixed text collections
+    assert report.image_collections_scanned == 1
+    fake_client.delete.assert_not_called()  # dry_run touches nothing
 
 
 def test_force_retry_clears_parsed_cache(tmp_home: Path, monkeypatch) -> None:
