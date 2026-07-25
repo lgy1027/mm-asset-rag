@@ -127,15 +127,28 @@ def test_embed_text_sparse_returns_none_for_non_bge_m3(monkeypatch) -> None:
 
 
 def test_embed_text_sparse_returns_vectors_for_bge_m3(monkeypatch) -> None:
-    """A bge-m3 embedder returns a dict with indices/values from the model."""
+    """A bge-m3 embedder returns sparse indices/values and ColBERT token
+    vectors from the model.
+
+    sentence-transformers v5 changed the API: ``return_sparse=True`` is no
+    longer accepted by bge-m3 (the model raises ValueError), and ColBERT
+    token vectors come via ``output_value='token_embeddings'`` (returns a
+    per-input list of token tensors) instead of ``return_colbert_vecs=True``.
+    The stub simulates the v5 behaviour so the embedder's try/except version
+    dispatch lands on the right path.
+    """
 
     class _BgeM3Stub:
-        def encode(self, texts, **kwargs):
-            return_sparse = kwargs.get("return_sparse", False)
-            return_colbert = kwargs.get("return_colbert_vecs", False)
-            if return_sparse:
-                return {"sparse": [{"indices": [1, 2, 3], "values": [0.1, 0.2, 0.3]}]}
-            if return_colbert:
+        def encode(self, texts, **kwargs):  # type: ignore[no-untyped-def]
+            if kwargs.get("return_sparse"):
+                # v5 bge-m3 rejects this kwarg — simulate the real raise so
+                # embed_text_sparse falls back to None (BM25 covers recall).
+                raise ValueError("return_sparse not supported by this model")
+            if kwargs.get("output_value") == "token_embeddings":
+                # v5: per-input list of token tensors [n_tokens, dim].
+                return [[[0.1, 0.2], [0.3, 0.4]]]
+            if kwargs.get("return_colbert_vecs"):
+                # v3/4 fallback path.
                 return {"colbert_vecs": [[[0.1, 0.2], [0.3, 0.4]]]}
             # dense path
             return np.zeros((len(texts), 8), dtype=np.float32)
@@ -146,10 +159,8 @@ def test_embed_text_sparse_returns_vectors_for_bge_m3(monkeypatch) -> None:
     emb._model = _BgeM3Stub()
     emb._dim = 8
 
-    sparse = emb.embed_text_sparse("hello world")
-    assert sparse is not None
-    assert sparse["indices"] == [1, 2, 3]
-    assert sparse["values"] == [0.1, 0.2, 0.3]
+    # v5 dropped bge-m3 sparse — embedder returns None (BM25/BM25-zh cover it).
+    assert emb.embed_text_sparse("hello world") is None
 
     colbert = emb.embed_text_colbert("hello world")
     assert colbert is not None

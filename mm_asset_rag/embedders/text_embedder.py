@@ -243,12 +243,21 @@ class SentenceTransformerTextEmbedder:
             return None
         model = self._load()
         truncated = text if len(text) <= self.max_input_chars else text[: self.max_input_chars]
-        result = model.encode(
-            [truncated],
-            batch_size=1,
-            return_sparse=True,
-            show_progress_bar=False,
-        )
+        # sentence-transformers v5 dropped ``return_sparse=True`` for bge-m3
+        # (the model no longer accepts the kwarg). When that happens we return
+        # ``None`` so the caller skips the bge-m3 lexical sparse prefetch — the
+        # project's separate Qdrant BM25 (en) + bm25_zh (jieba) sparse channels
+        # still cover lexical recall, so this is a graceful degradation, not a
+        # recall loss.
+        try:
+            result = model.encode(
+                [truncated],
+                batch_size=1,
+                return_sparse=True,
+                show_progress_bar=False,
+            )
+        except (ValueError, TypeError):
+            return None
         # sentence-transformers returns a dict-like for sparse:
         # {"sparse": {"indices": [...], "values": [...]}} when
         # ``return_sparse=True``. The exact container varies by
@@ -279,23 +288,40 @@ class SentenceTransformerTextEmbedder:
             return None
         model = self._load()
         truncated = text if len(text) <= self.max_input_chars else text[: self.max_input_chars]
-        result = model.encode(
-            [truncated],
-            batch_size=1,
-            return_colbert_vecs=True,
-            show_progress_bar=False,
-        )
-        colbert = None
-        if isinstance(result, dict) or (hasattr(result, "get") and callable(result.get)):
-            colbert = result.get("colbert_vecs")  # type: ignore[union-attr]
-        if colbert is None:
+        # sentence-transformers v5 dropped the ``return_colbert_vecs=True``
+        # kwarg (bge-m3 no longer accepts it) — token-level vectors are now
+        # requested via ``output_value='token_embeddings'``. Try the v5 path
+        # first, fall back to the v3/4 ``return_colbert_vecs`` kwarg for
+        # older installs so this is version-agnostic.
+        colbert: list[list[float]] | None = None
+        try:
+            result = model.encode(
+                [truncated],
+                batch_size=1,
+                output_value="token_embeddings",
+                show_progress_bar=False,
+            )
+            # v5 returns a list (per input) whose entries are torch Tensors
+            # (or arrays) of shape [n_tokens, dim]. Normalise to list[list].
+            if isinstance(result, list) and result and result[0] is not None:
+                first = result[0]
+                rows = first.tolist() if hasattr(first, "tolist") else first
+                if isinstance(rows, list) and rows:
+                    colbert = [[float(v) for v in row] for row in rows]
+        except (ValueError, TypeError):
+            result = model.encode(
+                [truncated],
+                batch_size=1,
+                return_colbert_vecs=True,
+                show_progress_bar=False,
+            )
+            if isinstance(result, dict) or (hasattr(result, "get") and callable(result.get)):
+                cb = result.get("colbert_vecs")  # type: ignore[union-attr]
+                if isinstance(cb, list) and cb and cb[0] is not None:
+                    colbert = [[float(v) for v in row] for row in cb[0]]
+        if not colbert:
             return None
-        if isinstance(colbert, list) and colbert:
-            first = colbert[0]
-            if first is None:
-                return None
-            return [[float(v) for v in row] for row in first]
-        return None
+        return colbert
 
 
 def build_default_text_embedder() -> TextEmbedder | SentenceTransformerTextEmbedder:
