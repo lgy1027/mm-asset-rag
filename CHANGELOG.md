@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **中文 README** (`README.zh-CN.md`) — English / 中文 双向链接,沿用同一结构与代码示例。
+- **FAQ & 故障排查** (`docs/faq.md`) — 集中整理 macOS 系统代理 + HuggingFace Hub 卡死、Qdrant 单进程锁、embedding 维度变更触发 collection 重建、BM25-zh schema mismatch、`mmrag parse --no-auto-meta` 规避 eval 随机性、`IMAGE_PROVIDER=cn_clip` 768d 重建路径等高频踩坑点。
+- README 「Quick perf check」段落引用 `scripts/benchmark.py`,`scripts/benchmark.py` docstring 反向引用 `docs/quickstart.md`,双向交叉。
+- README `Documentation` 列表新增 `docs/faq.md`、`README.zh-CN.md` 入口。
 ### Changed
 ### Removed
 ### Fixed

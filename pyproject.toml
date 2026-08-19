@@ -46,6 +46,12 @@ dependencies = [
 
 [project.optional-dependencies]
 clip = ["sentence-transformers>=2.2,<6.0"]
+# Chinese-CLIP backend (``IMAGE_PROVIDER=cn_clip``). Pulls in
+# ``transformers`` so ``ChineseCLIPModel`` / ``ChineseCLIPProcessor`` resolve.
+# Note: ``transformers`` is also pulled transitively by [docling] /
+# [clip] extras; this extra is the canonical entry point for users on a
+# bare install who only need Chinese-CLIP.
+cn_clip = ["transformers>=4.30,<6.0"]
 docling = ["docling>=2.0,<3.0"]
 # Local image OCR: PP-OCRv6 small via rapidocr (pure ONNX, no paddlepaddle).
 # The [ocr] extra enables ENABLE_OCR=true with the default OCR_BACKEND=local —

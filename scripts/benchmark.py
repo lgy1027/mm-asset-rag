@@ -23,6 +23,9 @@ Usage::
 
     python scripts/benchmark.py
     python scripts/benchmark.py --top-k 5 --n-runs 50 --n-requests 20
+
+See also ``docs/quickstart.md`` for the rest of the end-to-end smoke path
+(start ollama, parse one PDF, search) before tuning anything.
 """
 
 from __future__ import annotations

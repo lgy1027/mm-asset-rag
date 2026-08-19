@@ -4,7 +4,53 @@
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-pytest-orange)](.github/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-723%20passed-orange)](.github/workflows/test.yml)
+[![Coverage](https://img.shields.io/badge/coverage-80%25-yellow)](tests/)
+
+[English](README.md) | [中文](README.zh-CN.md)
+
+## At a glance
+
+```
+                  ┌─────────────────────────────────────────────────┐
+                  │          $ mmrag-api  (FastAPI + Web UI)        │
+                  └───────────────┬─────────────────────────────────┘
+                                  drag / POST /upload/preview
+                                          ▼
+   ┌──────────────────────┐   POST /upload/confirm    ┌──────────────────┐
+   │  .preview-cache/<id> │ ─────────────────────────▶│  assets/pdfs     │
+   │   (sniff + VLM meta) │   background task        │  assets/images   │
+   └──────────────────────┘                          │  assets/documents │
+                                                      └─────────┬────────┘
+                                                                │ parse
+                                                                ▼
+                                                  ┌──────────────────────┐
+                                                  │   documents.jsonl    │
+                                                  └─────────┬────────────┘
+                                                                │ embed
+                                                                ▼
+                  ┌─────────────────────────────────────────────────┐
+                  │                  Qdrant (local/server)           │
+                  │  multimodal_text_<dim>d    multimodal_image_<dim>d│
+                  │   dense · bm25 · bm25_zh      CLIP / CN-CLIP     │
+                  └───────────────┬─────────────────────────────────┘
+                                  │ query (text / image / hybrid)
+                                  ▼
+                  ┌─────────────────────────────────────────────────┐
+                  │  RRF 融合 → optional rerank → /answer or /chat  │
+                  └─────────────────────────────────────────────────┘
+```
+
+Four retrieval routes, all driven by the same `mmrag search "..."` dispatcher:
+
+```
+  query ─┬─ text                 ──▶ qdrant_text_search          (dense + bm25 + bm25_zh)
+         ├─ text  + image_path   ──▶ + qdrant_text_to_image_search  (CLIP text → image)
+         ├─ image                ──▶ qdrant_image_to_image_search   (CLIP image → image)
+         └─ hybrid (default)     ──▶ weighted merge of above three, fused with RRF
+```
+
+> Looking for a hands-on walkthrough with screenshots of the web UI? See [docs/quickstart.md](docs/quickstart.md).
 
 ## What is this?
 
@@ -152,6 +198,18 @@ mmrag eval --v2 --cases examples/eval_cases_chapter11_v2.json   # internal basel
 
 When no LLM is configured, the eval still runs (it measures retrieval only); `/answer`-dependent cases degrade gracefully.
 
+### Quick perf check
+
+Once you have a corpus of any size, get a real p50 / p95 / QPS for your machine before tuning weights:
+
+```bash
+# stop mmrag-api first (Qdrant local is single-process)
+uv run python scripts/benchmark.py --top-k 5 --n-runs 50
+# → writes $MM_ASSET_RAG_HOME/benchmark_report.json + a stdout table
+```
+
+The benchmark hits the public `hybrid_search` path — no private helpers — so numbers track `Settings` changes (reranker on/off, `MAX_CHUNKS_PER_PDF`, etc.). Full step-by-step on getting from zero to first search: [`docs/quickstart.md`](docs/quickstart.md).
+
 ## Project layout
 
 ```
@@ -200,6 +258,7 @@ The FastAPI app, CLI, and Qdrant backend all read from the registries at runtime
 - [Configuration](docs/configuration.md)
 - [HTTP API](docs/api.md)
 - [Upload flow](docs/upload-flow.md)
+- [FAQ & 故障排查](docs/faq.md)
 
 ## Contributing
 

@@ -95,6 +95,16 @@ mmrag search "your query" --mode text        # 纯文本路
 mmrag search "your query" --mode hybrid --top-k 10
 ```
 
+### 跑一轮性能基准(可选)
+
+吸到大量语料后,想看 `hybrid_search` 在你的机器上的真实 p50 / p95:
+
+```bash
+uv run python scripts/benchmark.py --top-k 5 --n-runs 50
+```
+
+会写 `$MM_ASSET_RAG_HOME/benchmark_report.json` + stdout 一张表。Qdrant local 是单进程锁,跑基准前先停 `mmrag-api`。详细说明 + 字段含义见脚本头注释。
+
 ## 第 6 步:问个问题(可选)
 
 ```bash
