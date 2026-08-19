@@ -12,13 +12,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from mm_asset_rag.backends.qdrant_backend import (
-    _STOP_TOKENS,
     _bm25_okapi_scores,
     _filter_by_relevance,
-    _has_any_token_overlap,
     _select_top_chunks_per_pdf,
     _tokenize_for_bm25,
-    _tokenize_for_prefilter,
 )
 from mm_asset_rag.schema import ParsedDocument
 
@@ -285,76 +282,6 @@ def test_qdrant_text_search_no_filter_when_include_image_sources(monkeypatch) ->
     assert captured["filter"] is None
 
 
-# ─── Sparse pre-filter for image search ─────────────────────────────────
-# The pre-filter is a pure-Python token-overlap check on user-controlled
-# payload fields. These tests cover the helpers without touching Qdrant.
-
-
-def test_tokenize_for_prefilter_drops_short_and_stopwords() -> None:
-    """Tokens shorter than the min length and English stopwords are dropped."""
-    tokens = _tokenize_for_prefilter("The fish in the jpg image of Linux logo")
-    # "the", "in", "jpg", "image" are dropped; the semantic words remain.
-    assert "the" not in tokens
-    assert "in" not in tokens
-    assert "jpg" not in tokens
-    assert "image" not in tokens
-    assert "fish" in tokens
-    assert "linux" in tokens
-    assert "logo" in tokens
-
-
-def test_tokenize_for_prefilter_is_lowercase_and_alpha_only() -> None:
-    tokens = _tokenize_for_prefilter("Hello, World! 2024 Q1")
-    assert tokens == {"hello", "world", "2024"}
-
-
-def test_tokenize_for_prefilter_handles_empty_and_punctuation() -> None:
-    assert _tokenize_for_prefilter("") == set()
-    assert _tokenize_for_prefilter("!!! ... ---") == set()
-
-
-def test_stopwords_are_universal_no_project_terms() -> None:
-    """The stopword set is intentionally generic — no project-specific words."""
-    forbidden = {"caltech", "caltech101", "sample", "category", "license"}
-    assert not (_STOP_TOKENS & forbidden), (
-        f"stopword set leaked project terms: {(_STOP_TOKENS & forbidden)!r}"
-    )
-
-
-def test_has_any_token_overlap_no_overlap() -> None:
-    """A query with no shared tokens → no overlap."""
-    index = {"img1": {"fish", "logo"}, "img2": {"bird"}}
-    assert _has_any_token_overlap(_tokenize_for_prefilter("schrödinger equation"), index) is False
-
-
-def test_has_any_token_overlap_exact_match() -> None:
-    index = {"img1": {"fish", "logo"}, "img2": {"bird"}}
-    assert _has_any_token_overlap(_tokenize_for_prefilter("logo design"), index) is True
-
-
-def test_has_any_token_overlap_handles_plurals_via_substring() -> None:
-    """``"airplane"`` matches ``"airplanes"`` via substring containment."""
-    index = {"img1": {"airplanes"}}
-    assert _has_any_token_overlap(_tokenize_for_prefilter("airplane"), index) is True
-
-
-def test_has_any_token_overlap_short_token_substring_does_not_match() -> None:
-    """Short tokens like ``"in"`` never make it into the index because the
-    index builder runs every value through ``_tokenize_for_prefilter``,
-    which drops tokens below the min length. Verify that a tokenised
-    index does not retain ``"in"`` and therefore cannot match.
-    """
-    index = {"img1": _tokenize_for_prefilter("box in scene png")}
-    assert "in" not in index["img1"]
-    assert _has_any_token_overlap(_tokenize_for_prefilter("vintage"), index) is False
-
-
-def test_has_any_token_overlap_empty_inputs() -> None:
-    index = {"img1": {"fish"}}
-    assert _has_any_token_overlap(set(), index) is False
-    assert _has_any_token_overlap(_tokenize_for_prefilter("fish"), {}) is False
-
-
 # ─── get_qdrant_client singleton ─────────────────────────────────────────
 
 
@@ -505,62 +432,6 @@ def test_embedder_sparse_capability_force_true_on_unsupported_is_false(monkeypat
     assert _embedder_sparse_capability(_NoSparseEmbedder()) is False
 
 
-# ─── text_to_image prefilter no longer hard-cuts ───────────────────────────
-# The pre-filter index is still built, but a zero-overlap query no longer
-# returns an empty list — CLIP recall is allowed to proceed. Verify the
-# helper is still available (for a future boosting step) but the
-# ``qdrant_text_to_image_search`` path does not short-circuit on it.
-
-
-def test_has_any_token_overlap_still_available() -> None:
-    """``_has_any_token_overlap`` remains for a future boosting step."""
-    index = {"img1": {"fish", "logo"}}
-    assert _has_any_token_overlap(_tokenize_for_prefilter("logo"), index) is True
-    assert _has_any_token_overlap(_tokenize_for_prefilter("schrödinger"), index) is False
-
-
-def test_text_to_image_does_not_short_circuit_on_zero_overlap(
-    monkeypatch, fake_qdrant_client
-) -> None:
-    """A query with zero token overlap must still call Qdrant (CLIP recall).
-
-    The previous behaviour returned [] immediately; now CLIP recall is
-    allowed to proceed and the relevance-threshold floor is the sole
-    precision control.
-    """
-    from mm_asset_rag.backends import qdrant_backend
-
-    # Build a tag index that has no overlap with the query.
-    monkeypatch.setattr(
-        qdrant_backend,
-        "_load_image_tag_index",
-        lambda: {"img1": {"mountain"}},
-    )
-    monkeypatch.setattr(
-        qdrant_backend,
-        "_tokenize_for_prefilter",
-        lambda text: {"schrödinger"},
-    )
-
-    # The fake qdrant client returns empty points by default; we just
-    # verify ``query_points`` was called (not short-circuited).
-    fake_qdrant_client.query_points.return_value = MagicMock(points=[])
-
-    monkeypatch.setattr(qdrant_backend, "get_qdrant_client", lambda: fake_qdrant_client)
-    monkeypatch.setattr(qdrant_backend, "image_collection", lambda dim: "multimodal_image_512d")
-
-    class _Provider:
-        def embed_text(self, text):
-            return [0.1, 0.2, 0.3]
-
-    monkeypatch.setattr(qdrant_backend, "get_default_image_embedder", lambda: _Provider())
-
-    out = qdrant_backend.qdrant_text_to_image_search("schrödinger equation", top_k=5)
-    # Did not short-circuit: query_points was called.
-    assert fake_qdrant_client.query_points.called
-    assert out == []
-
-
 # ─── collection-missing degradation ──────────────────────────────────────
 # A fresh install (or one that has only ingested one modality) has no
 # matching collection yet. Each search route must degrade to an empty
@@ -660,6 +531,27 @@ def test_qdrant_image_to_image_search_degrades_when_collection_missing(
     monkeypatch.setattr(qdrant_backend, "get_default_image_embedder", lambda: _Provider())
 
     assert qdrant_backend.qdrant_image_to_image_search(Path("any.png"), top_k=5) == []
+
+
+def test_qdrant_image_to_image_search_returns_empty_when_query_image_unencodable(
+    monkeypatch, fake_qdrant_client
+) -> None:
+    """image→image 查询图无法编码时直接返回 [],不打 qdrant。"""
+    from mm_asset_rag.backends import qdrant_backend
+
+    monkeypatch.setattr(qdrant_backend, "get_qdrant_client", lambda: fake_qdrant_client)
+
+    class _UnencodableProvider:
+        def embed_image(self, path):
+            return None  # ImageEmbedderProtocol 契约:无法编码 → None
+
+    monkeypatch.setattr(
+        qdrant_backend, "get_default_image_embedder", lambda: _UnencodableProvider()
+    )
+
+    assert qdrant_backend.qdrant_image_to_image_search(Path("bad.png"), top_k=5) == []
+    # 没去 qdrant 查
+    assert fake_qdrant_client.query_points.call_count == 0
 
 
 def test_is_collection_missing_predicate() -> None:

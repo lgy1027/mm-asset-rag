@@ -1,0 +1,479 @@
+{
+  "version": "v1",
+  "groups": {
+    "en": [
+      {
+        "query": "ImageNet classification with deep convolutional neural networks",
+        "expected_asset_ids": [
+          "Alexnet"
+        ]
+      },
+      {
+        "query": "attention is all you need transformer architecture",
+        "expected_asset_ids": [
+          "Attention Is All You Need"
+        ]
+      },
+      {
+        "query": "BERT pre-training bidirectional transformer language model",
+        "expected_asset_ids": [
+          "Bert"
+        ]
+      },
+      {
+        "query": "learning transferable visual models natural language supervision contrastive",
+        "expected_asset_ids": [
+          "Learning Transferable Visual Models From Natural Language Supervision"
+        ]
+      },
+      {
+        "query": "denoising diffusion probabilistic models",
+        "expected_asset_ids": [
+          "Ddpm"
+        ]
+      },
+      {
+        "query": "densely connected convolutional networks",
+        "expected_asset_ids": [
+          "Densenet"
+        ]
+      },
+      {
+        "query": "end-to-end object detection with transformers set prediction",
+        "expected_asset_ids": [
+          "Detr"
+        ]
+      },
+      {
+        "query": "compound scaling of convolutional neural networks efficientnet",
+        "expected_asset_ids": [
+          "EfficientNet"
+        ]
+      },
+      {
+        "query": "flamingo visual language model few-shot learning",
+        "expected_asset_ids": [
+          "Flamingo"
+        ]
+      },
+      {
+        "query": "generative adversarial networks",
+        "expected_asset_ids": [
+          "Gan"
+        ]
+      },
+      {
+        "query": "GloVe global vectors for word representation",
+        "expected_asset_ids": [
+          "Glove"
+        ]
+      },
+      {
+        "query": "language models are few-shot learners GPT-3",
+        "expected_asset_ids": [
+          "Gpt3"
+        ]
+      },
+      {
+        "query": "LayoutLM pre-training text and layout document image understanding",
+        "expected_asset_ids": [
+          "LayoutLM"
+        ]
+      },
+      {
+        "query": "LLaMA open and efficient foundation language models",
+        "expected_asset_ids": [
+          "Llama"
+        ]
+      },
+      {
+        "query": "LoRA low-rank adaptation of large language models",
+        "expected_asset_ids": [
+          "Lora"
+        ]
+      },
+      {
+        "query": "MobileNets efficient convolutional networks for mobile vision",
+        "expected_asset_ids": [
+          "Mobilenet"
+        ]
+      },
+      {
+        "query": "MobileNetV2 inverted residuals linear bottlenecks",
+        "expected_asset_ids": [
+          "Mobilenetv2"
+        ]
+      },
+      {
+        "query": "Pix2Pix image-to-image translation conditional adversarial",
+        "expected_asset_ids": [
+          "Pix2Pix"
+        ]
+      },
+      {
+        "query": "rich feature hierarchies object detection semantic segmentation R-CNN",
+        "expected_asset_ids": [
+          "Rich feature hierarchies"
+        ]
+      },
+      {
+        "query": "deep residual learning image recognition ResNet",
+        "expected_asset_ids": [
+          "Resnet"
+        ]
+      },
+      {
+        "query": "aggregated residual transformations ResNeXt",
+        "expected_asset_ids": [
+          "Aggregated Residual Transformations"
+        ]
+      },
+      {
+        "query": "retrieval augmented generation RAG",
+        "expected_asset_ids": [
+          "Retrieval Augmented Generation"
+        ]
+      },
+      {
+        "query": "segment anything foundation model",
+        "expected_asset_ids": [
+          "Segment Anything"
+        ]
+      },
+      {
+        "query": "SSD single shot multibox detector",
+        "expected_asset_ids": [
+          "Ssd"
+        ]
+      },
+      {
+        "query": "high-resolution image synthesis latent diffusion stable diffusion",
+        "expected_asset_ids": [
+          "Stable Diffusion"
+        ]
+      },
+      {
+        "query": "U-Net convolutional networks biomedical image segmentation",
+        "expected_asset_ids": [
+          "U-Net Convolutional Networks for Biomedical Image Segmentation"
+        ]
+      },
+      {
+        "query": "auto-encoding variational Bayes",
+        "expected_asset_ids": [
+          "Vae"
+        ]
+      },
+      {
+        "query": "vision transformer image recognition ViT",
+        "expected_asset_ids": [
+          "Vit"
+        ]
+      },
+      {
+        "query": "word2vec efficient estimation of word representations",
+        "expected_asset_ids": [
+          "Word2Vec"
+        ]
+      },
+      {
+        "query": "YOLO you only look once unified real-time object detection",
+        "expected_asset_ids": [
+          "You Only Look Once"
+        ]
+      },
+      {
+        "query": "Obsidian 的 10 大 AI Skill 工具介绍",
+        "expected_asset_ids": [
+          "Obsidian 的 10 大 AI Skill"
+        ]
+      }
+    ],
+    "zh": [
+      {
+        "query": "哪份资料讲了 retrieval augmented generation？",
+        "expected_asset_ids": [
+          "Retrieval Augmented Generation"
+        ]
+      },
+      {
+        "query": "找和 CLIP 图文对齐有关的资料",
+        "expected_asset_ids": [
+          "Learning Transferable Visual Models From Natural Language Supervision"
+        ]
+      },
+      {
+        "query": "有没有包含文档版面理解或 OCR 的资料？",
+        "expected_asset_ids": [
+          "LayoutLM"
+        ]
+      },
+      {
+        "query": "讲生成对抗网络 GAN 的论文",
+        "expected_asset_ids": [
+          "Gan"
+        ]
+      },
+      {
+        "query": "关于自注意力 Transformer 的原始论文",
+        "expected_asset_ids": [
+          "Attention Is All You Need"
+        ]
+      },
+      {
+        "query": "图像分类 深度卷积神经网络 AlexNet",
+        "expected_asset_ids": [
+          "Alexnet"
+        ]
+      },
+      {
+        "query": "去噪扩散概率模型",
+        "expected_asset_ids": [
+          "Ddpm"
+        ]
+      },
+      {
+        "query": "残差网络 怎么解决梯度消失",
+        "expected_asset_ids": [
+          "Resnet"
+        ]
+      },
+      {
+        "query": "目标检测 端到端 Transformer 候选框",
+        "expected_asset_ids": [
+          "Detr"
+        ]
+      },
+      {
+        "query": "高效移动端卷积网络 反向残差线性瓶颈",
+        "expected_asset_ids": [
+          "Mobilenetv2"
+        ]
+      },
+      {
+        "query": "词向量 Word2Vec 连续词袋模型",
+        "expected_asset_ids": [
+          "Word2Vec"
+        ]
+      },
+      {
+        "query": "变分自编码器 VAE",
+        "expected_asset_ids": [
+          "Vae"
+        ]
+      },
+      {
+        "query": "分割一切 SAM 图像分割基础模型",
+        "expected_asset_ids": [
+          "Segment Anything"
+        ]
+      },
+      {
+        "query": "低秩适配 LoRA 大模型微调",
+        "expected_asset_ids": [
+          "Lora"
+        ]
+      }
+    ],
+    "zh_doc": [
+      {
+        "query": "联宝科技可发电键盘专利 压电薄膜",
+        "expected_asset_ids": [
+          "创新联宝 会发电的键盘"
+        ]
+      },
+      {
+        "query": "联宝中试基地 省级备案 科技成果转化",
+        "expected_asset_ids": [
+          "联宝科技中试基地获省级备案"
+        ]
+      },
+      {
+        "query": "CES 2026 联想可拉伸屏幕 未来PC",
+        "expected_asset_ids": [
+          "CES 2026再绽光芒"
+        ]
+      },
+      {
+        "query": "联宝科技 合肥新春第一会 新质生产力",
+        "expected_asset_ids": [
+          "受邀参加合肥"
+        ]
+      },
+      {
+        "query": "一台笔记本到一群机器人 联宝转型",
+        "expected_asset_ids": [
+          "媒眼看联宝"
+        ]
+      },
+      {
+        "query": "安徽外贸破万亿 联宝贡献",
+        "expected_asset_ids": [
+          "安徽外贸再创新高"
+        ]
+      },
+      {
+        "query": "联宝科技 2026 财年启幕 ESG",
+        "expected_asset_ids": [
+          "敢AI敢为"
+        ]
+      },
+      {
+        "query": "联宝 ESG 年度答卷 绿色转型",
+        "expected_asset_ids": [
+          "ESG年度答卷"
+        ]
+      },
+      {
+        "query": "Obsidian AI Skill 本地知识库",
+        "expected_asset_ids": [
+          "Obsidian 的 10 大 AI Skill"
+        ]
+      },
+      {
+        "query": "Codex 全景指南 OpenAI 编程模型",
+        "expected_asset_ids": [
+          "Codex 全景指南"
+        ]
+      }
+    ],
+    "legacy": [
+      {
+        "query": "哪份资料讲了 retrieval augmented generation？",
+        "expected_asset_ids": [
+          "Retrieval Augmented Generation"
+        ]
+      },
+      {
+        "query": "找和 CLIP 图文对齐有关的资料",
+        "expected_asset_ids": [
+          "Learning Transferable Visual Models From Natural Language Supervision"
+        ]
+      },
+      {
+        "query": "有没有包含文档版面理解或 OCR 的资料？",
+        "expected_asset_ids": [
+          "LayoutLM"
+        ]
+      }
+    ],
+    "text_to_image": [
+      {
+        "query": "airplane",
+        "expected_asset_ids": [
+          "Caltech Airplanes"
+        ]
+      },
+      {
+        "query": "motorbike",
+        "expected_asset_ids": [
+          "Caltech Motorbikes"
+        ]
+      },
+      {
+        "query": "pizza",
+        "expected_asset_ids": [
+          "Caltech Pizza"
+        ]
+      },
+      {
+        "query": "panda",
+        "expected_asset_ids": [
+          "Caltech Panda"
+        ]
+      },
+      {
+        "query": "dolphin",
+        "expected_asset_ids": [
+          "Caltech Dolphin"
+        ]
+      },
+      {
+        "query": "sunflower",
+        "expected_asset_ids": [
+          "Caltech Sunflower"
+        ]
+      },
+      {
+        "query": "helicopter",
+        "expected_asset_ids": [
+          "Caltech Helicopter"
+        ]
+      },
+      {
+        "query": "laptop computer",
+        "expected_asset_ids": [
+          "Caltech Laptop"
+        ]
+      },
+      {
+        "query": "wristwatch",
+        "expected_asset_ids": [
+          "Caltech Watch"
+        ]
+      },
+      {
+        "query": "saxophone",
+        "expected_asset_ids": [
+          "Caltech Saxophone"
+        ]
+      },
+      {
+        "query": "飞机",
+        "expected_asset_ids": [
+          "Caltech Airplanes"
+        ]
+      },
+      {
+        "query": "熊猫",
+        "expected_asset_ids": [
+          "Caltech Panda"
+        ]
+      },
+      {
+        "query": "披萨",
+        "expected_asset_ids": [
+          "Caltech Pizza"
+        ]
+      }
+    ],
+    "image_to_image": [
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Airplanes 01_9fe67b3f.jpg",
+        "expected_asset_ids": [
+          "Caltech Airplanes"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Motorbikes 01_00a780a9.jpg",
+        "expected_asset_ids": [
+          "Caltech Motorbikes"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Pizza 01_ffa99a8f.jpg",
+        "expected_asset_ids": [
+          "Caltech Pizza"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Panda 01_3443a5d5.jpg",
+        "expected_asset_ids": [
+          "Caltech Panda"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Dolphin 01_bbd397c6.jpg",
+        "expected_asset_ids": [
+          "Caltech Dolphin"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Laptop 01_1b73ff27.jpg",
+        "expected_asset_ids": [
+          "Caltech Laptop"
+        ]
+      }
+    ]
+  }
+}

@@ -6,6 +6,6 @@ routes (text→text, text→image, image→image, hybrid), and an optional
 grounded LLM answer layer.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = ["__version__"]

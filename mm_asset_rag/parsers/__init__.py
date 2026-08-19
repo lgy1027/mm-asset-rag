@@ -15,7 +15,6 @@ from ..registry import register_parser
 from .image_parser import parse_image
 from .pdf_parser import (
     parse_pdf,
-    parse_pdf_with_pymupdf,
     parse_with_docling,
     parse_with_markitdown,
     parse_with_paddleocr_vl,
@@ -24,7 +23,6 @@ from .pdf_parser import (
 __all__ = [
     "parse_image",
     "parse_pdf",
-    "parse_pdf_with_pymupdf",
     "parse_with_docling",
     "parse_with_markitdown",
     "parse_with_paddleocr_vl",
@@ -53,6 +51,23 @@ class _PaddleOcrVlParser:
     def parse(self, asset, **options):
         _ = options
         return parse_pdf(asset, parser="paddleocr_vl")
+
+
+class _PpocrPdfParser:
+    """Local PP-OCRv6 page-by-page OCR for PDFs (``--pdf-parser ppocr``).
+
+    Force-routes every page through PyMuPDF render → in-process PP-OCRv6,
+    skipping the online PaddleOCR-VL path entirely. Useful for scanned
+    corpora that must stay off-network, or as an explicit local override
+    of the ``auto`` token-routing default.
+    """
+
+    name = "ppocr"
+    source_type = "pdf"
+
+    def parse(self, asset, **options):
+        _ = options
+        return parse_pdf(asset, parser="ppocr")
 
 
 class _AutoPdfParser:
@@ -140,6 +155,7 @@ class _MarkItDownDocumentParser:
 # registry contract as PDFs, so future modalities don't need special cases.
 register_parser(_PyMuPdfParser())
 register_parser(_PaddleOcrVlParser())
+register_parser(_PpocrPdfParser())
 register_parser(_AutoPdfParser())
 register_parser(_DoclingPdfParser())
 register_parser(_DoclingDocumentParser())

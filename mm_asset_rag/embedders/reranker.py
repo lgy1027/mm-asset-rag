@@ -1,44 +1,25 @@
 """Two-stage reranker for hybrid retrieval.
 
-bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a
-candidate pool with dense + BM25, then score each candidate against the
-query with a cross-encoder and return the top-k. Cross-encoders see the
-query and document jointly (not as independent embeddings), so they catch
-"high-score false positives" that threshold filtering cannot — e.g. a
-query about "强化学习 PPO" matching an SSD paper that happens to share
-tokens.
+Implements the bge-m3 "hybrid retrieval + re-ranking" recipe: pull a
+candidate pool with dense + BM25, then cross-encoder-score each
+``(query, doc)`` pair and re-sort. Cross-encoders see query + doc jointly,
+so they catch high-score false positives that a global score threshold
+cannot (e.g. a query about "强化学习 PPO" matching an SSD paper that
+shares tokens).
 
-Two provider backends, selected by ``Settings.reranker_provider``:
+Two providers via ``Settings.reranker_provider``:
 
-- ``local`` (default) — runs ``sentence_transformers.CrossEncoder``
-  in-process. Same dep family as the bge-m3 embedder; no network. Needs the
-  model downloaded (~2GB first run).
-- ``siliconflow`` / ``dashscope`` — call a hosted rerank API. The two providers
-  speak *different* wire shapes: ``siliconflow`` uses the flat Cohere form
-  (``{model, query, documents, top_n}`` → ``results[].{index,
-  relevance_score}``); ``dashscope`` (百炼) uses the DashScope-native *nested*
-  form (``{model, input:{query, documents}, parameters:{top_n}}`` →
-  ``output.results[].{index, relevance_score}``). Same row shape, different
-  wrapper — dispatched per provider in ``HttpRerankApiReranker``. No local model;
-  latency is a single round-trip, predictable for interactive search.
+- ``local`` (default) — ``sentence_transformers.CrossEncoder`` in-process.
+  Hard-sticky: a missing dep / corrupt HF cache disables reranking for the
+  process (won't self-heal without a restart).
+- ``siliconflow`` / ``dashscope`` — hosted rerank API. Soft-sticky: a
+  transient outage auto-recovers after ``RERANKER_DISABLE_TTL`` seconds.
 
-Both providers feed raw scores into the same normalise / blend / sort
-pipeline in :meth:`Reranker.rerank` — the only per-provider method is
-:meth:`_score_text_pairs`, which returns ``len(documents)`` floats aligned
-to the input order. Image hits are never re-scored (CLIP is already a
-relevance signal).
-
-Degradation: when the provider is unavailable (``local`` dep missing, or an
-HTTP provider's API call fails), :func:`get_default_reranker` returns
-``None`` / :meth:`rerank` degrades to returning the pre-rerank merged
-hits — identical to single-stage behaviour. The stickiness policy is
-provider-declared via :attr:`Reranker._sticky_ttl`: ``None`` = hard sticky
-(local — a corrupted HF cache / missing dep won't self-heal, needs a restart);
-a number of seconds = soft sticky (HTTP — auto-recovers after the TTL so a
-transient cloud outage doesn't disable reranking for the whole process life).
-A programming bug (``TypeError`` / ``ValueError`` / …) is *not* a provider
-failure — it propagates out of :meth:`rerank` rather than being silently
-swallowed into a sticky-disable (see :class:`RerankerError`).
+Both feed raw scores into the same normalise / blend / sort pipeline in
+:meth:`Reranker.rerank`. Image hits are never re-scored (CLIP is already a
+relevance signal). When the provider is unavailable, ``rerank`` degrades to
+returning the pre-rerank merged hits. A programming bug (``TypeError`` /
+``ValueError``) propagates rather than being swallowed into a disable.
 """
 
 from __future__ import annotations
@@ -290,27 +271,14 @@ class Reranker:
 # ─── HTTP rerank API provider ──────────────────────────────────────────
 
 
-# Per-provider defaults. Each entry: (api_base, model, form) where ``form`` is
-# the request/response shape the provider speaks — "flat" (Cohere-form) or
-# "nested" (DashScope-native). Resolved when the matching settings field is
-# None so users only set ``RERANKER_PROVIDER`` + the key.
-#
-# SiliconFlow: flat Cohere form — one public endpoint.
-#
-# 百炼 (dashscope): the *flat* OpenAI-compatible endpoint
-# (``/compatible-api/v1/reranks``) lives behind a per-user workspaceId maas
-# subdomain and is awkward. The **DashScope-native** endpoint at the
-# universal ``dashscope.aliyuncs.com`` host works out-of-the-box with just an
-# API key (verified: ``qwen3-rerank`` 200, no workspace setup). It speaks a
-# field-nested request (``input.query`` / ``input.documents`` /
-# ``parameters.top_n``) and wraps results under ``output.results`` — same
-# ``{index, relevance_score}`` row shape as the flat form, just nested. So we
-# default 百炼 to the native endpoint + nested form rather than the
-# compatible flat one.
-#
-# Adding a new flat/nested HTTP provider = one entry here + one value on the
-# ``reranker_provider`` Literal in settings.py. A truly novel wire shape is
-# the subclass extension point (override ``_score_text_pairs``).
+# Per-provider defaults: (api_base, model, form) where ``form`` is the
+# request/response shape — "flat" (Cohere form) or "nested" (DashScope-native).
+# Resolved when the matching settings field is None so users only set
+# ``RERANKER_PROVIDER`` + the key. Add a new flat/nested provider = one entry
+# here + one Literal value in settings.py; a novel wire shape = subclass and
+# override ``_score_text_pairs``.
+# 百炼 defaults to the DashScope-native nested endpoint (universal host, works
+# with just an API key) rather than the per-workspace flat compatible one.
 _HTTP_PROVIDER_DEFAULTS: dict[str, tuple[str, str, str]] = {
     "siliconflow": ("https://api.siliconflow.cn/v1/rerank", "BAAI/bge-reranker-v2-m3", "flat"),
     "dashscope": (

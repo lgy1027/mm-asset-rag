@@ -1,30 +1,15 @@
 """Markdown / text heading splitter for PDF chunks.
 
-The v3 PDF parser produced one chunk per page. Long Chinese PDFs
-(联宝 媒眼 / 联宝 ESG / Codex 全景指南) pack several distinct
-sections into one page, so a single chunk dilutes the BM25 signal
-when the user queries a specific sub-topic. ``split_by_heading``
-walks the chunk text and emits a new ``ParsedDocument`` per
-detected section, with the heading as ``metadata.section``.
+``split_by_heading`` walks a page's text and emits a new section per
+detected heading, with the heading as ``metadata.section`` — so a long
+Chinese page packing several sections splits into focused chunks instead
+of diluting BM25.
 
-Detection rules (intentionally conservative — false positives are
-worse than misses here):
-
-1. Markdown-style ATX headings: lines starting with 1-3 ``#`` chars
-   (no leading whitespace). Most PaddleOCR-VL outputs preserve this
-   convention; PyMuPDF text output often doesn't.
-2. A font-size heuristic on PyMuPDF's ``page.get_text("dict")``
-   output: spans whose ``size`` is at least 1.4x the page median
-   are treated as headings. (Size threshold configurable via
-   ``HEADING_SIZE_RATIO``; default 1.4x).
-3. Standalone Chinese / English lines (< 80 chars) followed by a
-   blank line are also candidates — the fallback when the markdown
-   markers are absent. Conservative length cap keeps body sentences
-   out of the section bucket.
-
-The function is pure: it accepts text + optional font-size metadata
-and returns a list of ``(section_name, body_text)`` tuples. The
-caller wraps each into a ``ParsedDocument``.
+Detection (conservative — false positives cost more than misses): ATX
+headings (1-3 ``#``), a PyMuPDF font-size heuristic (spans ≥ 1.4x the page
+median; configurable via ``HEADING_SIZE_RATIO``), and standalone short
+(< 80 char) lines followed by a blank line. Pure: takes text + optional
+font metadata, returns ``[(section_name, body_text), ...]``.
 """
 
 from __future__ import annotations

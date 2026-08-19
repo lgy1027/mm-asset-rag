@@ -1434,3 +1434,108 @@ def test_index_success_patch_does_not_overwrite_cancel(tmp_home: Path) -> None:
 
     # The success patch must not have overwritten CANCELLED with done.
     assert rec.status == "cancelled", f"expected cancelled, got {rec.status!r}"
+
+
+def test_index_cancel_patch_handles_terminal_status_race(tmp_home: Path) -> None:
+    """``_run_ingest_task``'s ``except _TaskCancelled`` must patch status=CANCELLED
+    itself even when ``cancel_task`` saw a terminal status and skipped its own
+    patch.
+
+    The race: ``_run_parse_task`` leaves status=DONE at the parse→index seam;
+    ``cancel_task`` arriving then sees a terminal status and only sets the flag
+    (its ``_patch(status=CANCELLED)`` is gated on ``status not in terminal()``).
+    ``_run_ingest_task`` then flips status back to ``running`` and drives the
+    index loop, whose ``_progress`` tick sees the flag and raises
+    ``_TaskCancelled``. Without an explicit patch in the except branch, the
+    task stays ``running`` until ``load_history`` rewrites it to
+    ``interrupted`` on next boot — losing the cancel intent."""
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.service import _run_ingest_task
+
+    service = IngestService()
+    # status=DONE as _run_parse_task leaves it at the parse→index seam.
+    rec = TaskRecord(
+        task_id="idxcancel03",
+        kind="ingest",
+        status="done",
+        total=1,
+        finished_at=None,
+    )
+    service._tasks[rec.task_id] = rec
+    service._cancel_flags[rec.task_id] = __import__("threading").Event()
+    parse_options = ParseOptions(assets=[])
+
+    def fake_parse(_svc, _rec, _opts):
+        # Leaves rec.status == "done" (terminal) — mirrors _run_parse_task.
+        _svc._patch(_rec, status="done", current="parse done")
+
+    class FakeBackend:
+        def upsert_text(self, *, progress_cb=None, force_recreate=False):
+            # cancel_task arrives while status is briefly "done" (terminal) →
+            # it sets the flag but, per its terminal guard, does NOT patch
+            # status. The next _progress tick raises _TaskCancelled.
+            service._cancel_flags[rec.task_id].set()
+            if progress_cb:
+                progress_cb(1, 10, "indexing")  # raises _TaskCancelled
+            return 1, "text_coll"
+
+        def upsert_image(self, *, progress_cb=None, force_recreate=False):
+            return 1, "img_coll"
+
+    with (
+        patch.object(svc_mod, "_run_parse_task", fake_parse),
+        patch.object(svc_mod, "get_backend", lambda name: FakeBackend()),
+    ):
+        _run_ingest_task(service, rec, parse_options)
+
+    # The except _TaskCancelled branch must have patched CANCELLED itself.
+    assert rec.status == "cancelled", f"expected cancelled, got {rec.status!r}"
+    assert rec.finished_at is not None
+
+
+def test_ingest_cancel_at_parse_index_seam_patches_cancelled(tmp_home: Path) -> None:
+    """Cancel arriving in the parse→index seam window (status briefly DONE,
+    cancel_task sees a terminal status and only sets the flag) must be caught
+    by the seam guard — the task is patched CANCELLED and the index loop is
+    *not* entered. Regression for the parse→index seam race.
+
+    Before the fix the seam guard only checked ``rec.status == CANCELLED``;
+    a cancel that arrived while status was briefly DONE slipped past it,
+    flipped the task back to ``running``, and the index loop ran (or the CLI
+    polled the DONE window and exited before index ran at all)."""
+    import mm_asset_rag.service as svc_mod
+    from mm_asset_rag.service import ParseOptions, TaskRecord, _run_ingest_task
+
+    service = IngestService()
+    rec = TaskRecord(task_id="seamcancel01", kind="ingest", total=1)
+    service._tasks[rec.task_id] = rec
+    # status=done as _run_parse_task leaves it; cancel_task sees terminal.
+    service._patch(rec, status="done", finished_at=time.time())
+    service._cancel_flags[rec.task_id] = __import__("threading").Event()
+    service._cancel_flags[rec.task_id].set()
+    parse_options = ParseOptions(assets=[])
+
+    upsert_called = {"text": 0, "image": 0}
+
+    def fake_parse(_svc, _rec, _opts):
+        _svc._patch(_rec, status="done", current="parse done")
+
+    class FakeBackend:
+        def upsert_text(self, *, progress_cb=None, force_recreate=False):
+            upsert_called["text"] += 1
+            return 0, "text_coll"
+
+        def upsert_image(self, *, progress_cb=None, force_recreate=False):
+            upsert_called["image"] += 1
+            return 0, "img_coll"
+
+    with (
+        patch.object(svc_mod, "_run_parse_task", fake_parse),
+        patch.object(svc_mod, "get_backend", lambda name: FakeBackend()),
+    ):
+        _run_ingest_task(service, rec, parse_options)
+
+    assert rec.status == "cancelled", f"expected cancelled, got {rec.status!r}"
+    assert rec.finished_at is not None
+    # The index loop must not have run — cancel was caught at the seam.
+    assert upsert_called == {"text": 0, "image": 0}

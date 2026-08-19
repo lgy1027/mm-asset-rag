@@ -49,6 +49,14 @@ class ImageEmbedder:
             )
 
     def dim(self) -> int:
+        # ``Settings.image_embedding_dim`` overrides the probe — useful
+        # when the model dim is known (avoids one model encode on cold
+        # start, esp. for [clip] where the default 512 is well-known).
+        from ..settings import get_settings
+
+        configured = get_settings().image_embedding_dim
+        if configured is not None:
+            return configured
         if getattr(self, "_dim", None) is not None:
             return self._dim
         self._dim = len(self.embed_text("probe"))
@@ -63,12 +71,27 @@ class ImageEmbedder:
         model = self._load_model()
         return [float(v) for v in model.encode(text, normalize_embeddings=True).tolist()]
 
-    def embed_image(self, image_path: Path) -> list[float]:
-        from PIL import Image
+    def embed_image(self, image_path: Path) -> list[float] | None:
+        """Encode one image. ``None`` if the file cannot be opened / encoded.
 
-        model = self._load_model()
-        image = Image.open(image_path).convert("RGB")
-        return [float(v) for v in model.encode(image, normalize_embeddings=True).tolist()]
+        Honors :class:`ImageEmbedderProtocol` graceful-degrade contract —
+        non-image files (or corrupt images) return ``None`` so callers can
+        skip them without raising.
+        """
+        from PIL import Image, UnidentifiedImageError
+
+        try:
+            image = Image.open(image_path).convert("RGB")
+        except (UnidentifiedImageError, OSError):
+            return None
+        try:
+            model = self._load_model()
+        except ImageEmbeddingUnavailable:
+            return None
+        try:
+            return [float(v) for v in model.encode(image, normalize_embeddings=True).tolist()]
+        except Exception:
+            return None
 
     def embed_text_batch(self, texts: list[str]) -> list[list[float]]:
         """Encode multiple text strings in one model call.
@@ -83,23 +106,36 @@ class ImageEmbedder:
         vectors = model.encode(list(texts), normalize_embeddings=True, batch_size=32)
         return [[float(v) for v in row.tolist()] for row in vectors]
 
-    def embed_image_batch(self, image_paths: list[Path]) -> list[list[float]]:
+    def embed_image_batch(self, image_paths: list[Path]) -> list[list[float] | None]:
         """Encode multiple images in one model call.
 
-        Like :meth:`embed_text_batch` but for image inputs. Images are
-        loaded eagerly and PIL-converted to RGB before the batched
-        ``model.encode`` call. The single model invocation amortises
-        the per-image CPU/GPU setup that the per-image ``embed_image``
-        loop repeats.
+        Skips files PIL cannot open / ``model.encode`` cannot process;
+        returns ``None`` in their slot so the caller can filter. The
+        contract ``len(out) == len(image_paths)`` is preserved.
         """
         if not image_paths:
             return []
-        from PIL import Image
+        from PIL import Image, UnidentifiedImageError
 
-        model = self._load_model()
-        images = [Image.open(p).convert("RGB") for p in image_paths]
-        vectors = model.encode(images, normalize_embeddings=True, batch_size=32)
-        return [[float(v) for v in row.tolist()] for row in vectors]
+        out: list[list[float] | None] = [None] * len(image_paths)
+        valid_images: list = []
+        valid_indices: list[int] = []
+        for i, p in enumerate(image_paths):
+            try:
+                valid_images.append(Image.open(p).convert("RGB"))
+                valid_indices.append(i)
+            except (UnidentifiedImageError, OSError):
+                continue
+        if not valid_images:
+            return out
+        try:
+            model = self._load_model()
+            vectors = model.encode(valid_images, normalize_embeddings=True, batch_size=32)
+        except Exception:
+            return out
+        for idx, row in zip(valid_indices, vectors):
+            out[idx] = [float(v) for v in row.tolist()]
+        return out
 
     def embed_batch(self, contents: list[Any]) -> list[list[float]]:
         """Mixed batch — text and Path items in one call.
@@ -143,7 +179,3 @@ class ImageEmbedder:
 
             self._model = SentenceTransformer(self.model_name)
         return self._model
-
-
-# Backward-compat alias. New code should use ``ImageEmbedder``.
-ImageEmbeddingProvider = ImageEmbedder

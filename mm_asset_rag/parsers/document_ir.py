@@ -1,24 +1,10 @@
-"""Document IR — structured intermediate representation between a format
-adapter and the flat ``ParsedDocument`` chunk list.
+"""Document IR — structured intermediate between a format adapter and the
+flat ``ParsedDocument`` chunk list.
 
-Why this exists
----------------
-``ParsedDocument`` is just ``(text, metadata: dict)`` — a *chunk*, not a
-*document*. Every format adapter therefore re-implements "extract text +
-images + image↔chunk association + heading detection + assembly" from
-scratch. The IR captures the document structure once, in typed fields, so:
-
-* format adapters only produce a ``DocumentIR`` (the "format → IR" step);
-* the shared processing layer turns one ``DocumentIR`` into the chunk list
-  (the "IR → ParsedDocument" step), reusing the existing splitter / image
-  association / keyword enrichment unchanged.
-
-``ParsedDocument`` and ``documents.jsonl`` are untouched — the IR is a pure
-intermediate layer, and the chunk output is byte-equivalent to the
-pre-IR two PDF paths (verified by the regression diff in the plan).
-
-The ``Block`` fields mirror ``chunk_splitter.Section`` (heading + body +
-bbox) so the splitter can be reused without translation.
+Format adapters produce a ``DocumentIR`` (blocks + images); the shared
+``ir_to_documents`` layer turns one into the chunk list, reusing the
+splitter / image association / enrichment. ``ParsedDocument`` and
+``documents.jsonl`` are untouched — the IR is a pure intermediate.
 """
 
 from __future__ import annotations

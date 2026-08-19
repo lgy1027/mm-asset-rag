@@ -1,19 +1,11 @@
 """Centralized settings for ``mm-asset-rag``.
 
-Every environment variable the codebase reads is declared here as a typed
-``Settings`` field. The module-level :func:`get_settings` returns a
-cached singleton so any module can ``from .settings import get_settings; s
-= get_settings()`` and get a single source of truth.
-
-Why this exists: previously 30+ ``os.environ.get(...)`` calls were
-scattered across ``providers.py``, ``image_parser.py``, ``pdf_parser.py``,
-``answer.py``, ``api.py``, ``qdrant_store.py``, ``config.py``, and
-``paths.py``. That made it easy to add a new variable in one place and
-miss another, hard to validate types, and painful to mock in tests.
-
-This module is the single read site for environment variables. Existing
-modules can keep their lazy ``os.environ.get`` calls during a transition
-period — but new code should call ``get_settings().foo``.
+Every environment variable the codebase reads is a typed ``Settings`` field
+here. :func:`get_settings` returns a cached singleton — the single read site
+for env vars, so adding one in a module and missing it elsewhere can't
+happen. New code should call ``get_settings().foo`` rather than
+``os.environ.get(...)`` (``paths.py`` reads ``MM_ASSET_RAG_HOME`` directly
+because ``Settings`` depends on it, so it cannot depend on ``Settings``).
 """
 
 from __future__ import annotations
@@ -76,6 +68,13 @@ class Settings(BaseSettings):
     embedding_retry_count: int = 5
     embedding_timeout: float = 120.0
     embedding_max_input_chars: int = 8192
+    # Override the probed text embedding dim. Default ``None`` lets
+    # ``TextEmbedder.dim()`` lazily probe via a tiny ``embed("probe")``
+    # call (cost: one remote request / one ST encode); set this when
+    # you want to skip that call and fix the dim up front. The Qdrant
+    # collection name is auto-suffixed with this value, so a wrong
+    # setting will surface as a schema mismatch at upsert time.
+    embedding_dim: int | None = None
     # Sparse / ColBERT capability switches. ``auto`` (default) probes the
     # active text embedder at runtime: ``SentenceTransformerTextEmbedder``
     # exposes ``embed_text_sparse`` / ``embed_text_colbert`` only when the
@@ -99,6 +98,14 @@ class Settings(BaseSettings):
     # download. Reindex after changing this — the active collection
     # name is dim-suffixed.
     clip_model: str = "clip-ViT-B-32"
+    # Override the probed image embedding dim. Default ``None`` lets
+    # ``ImageEmbedder.dim()`` / ``CnClipImageEmbedder.dim()`` lazily probe
+    # via ``embed_text("probe")`` (cost: one model encode); set this to
+    # skip the probe. The Qdrant image collection name is auto-suffixed
+    # with this value. Make sure the value matches your model's actual
+    # output (clip-ViT-B-32 → 512, OFA-Sys/chinese-clip-vit-base-patch16
+    # → 768, cn-clip-vit-huge-patch14 → 1024).
+    image_embedding_dim: int | None = None
 
     # ─── Qdrant ──────────────────────────────────────────────────────────
     qdrant_url: str | None = None
@@ -153,19 +160,6 @@ class Settings(BaseSettings):
     # threshold cannot tell apart "true negative" from "relevant but
     # unlabeled"; a sparse / keyword pre-filter is the next upgrade.
     image_relevance_threshold: float = 0.24
-    # Sparse pre-filter for image search: a token-overlap check on
-    # payload fields that you control. When the user query shares
-    # *zero* tokens with any image's indexed payload fields, the
-    # image route returns empty without even calling Qdrant. This
-    # catches the cases where dense-only top-k always returns
-    # random Picsum-style noise for off-topic queries.
-    #
-    # Defaults: ``["tags", "asset_id", "asset_title"]`` match the
-    # payload fields produced by the upload pipeline; the image payload
-    # stores these verbatim. Override if your pipeline uses different field names.
-    # Set to ``[]`` to disable the pre-filter entirely.
-    image_prefilter_fields: list[str] = ["tags", "asset_id", "asset_title"]
-    image_prefilter_min_token_len: int = 3
     # Soft floor for the merged hybrid result. As of the RRF refactor
     # ``merge_hits`` fuses routes by rank (``1/(RRF_K + rank)``) rather
     # than by normalised score, so a hard score cut-off would mis-cut
@@ -236,15 +230,6 @@ class Settings(BaseSettings):
     # single batched request of ~30 candidates.
     reranker_api_timeout: float = 30.0
 
-    # ─── Semantic dedup ───────────────────────────────────────────────────
-    # Cosine threshold for LlamaIndex-style asset dedup in ``asset_index``:
-    # a new asset whose title / first-chunk embedding is cosine-close to an
-    # existing active asset (with a different sha256) reuses the existing
-    # ``asset_id`` so near-duplicates aren't re-indexed. Default ``0.92``
-    # matches LlamaIndex's DeduplicationModule. ``asset_index`` clamps the
-    # value to [-1, 1] and falls back to the default on invalid env input.
-    dedup_semantic_threshold: float = 0.92
-
     # ─── Chinese BM25 ─────────────────────────────────────────────────────
     # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``
     # (jieba tokenisation + Okapi BM25). Stored alongside the existing
@@ -314,13 +299,20 @@ class Settings(BaseSettings):
     # near-zero text). ``pdf_scan_text_threshold`` is the avg non-empty
     # chars/page below which a document is treated as scanned — corpus-
     # agnostic (pure char density, no domain words). ``pdf_scan_fallback_parser``
-    # picks the OCR backend: ``paddleocr_vl`` (default, online API, needs
-    # PADDLEOCR_VL_API_TOKEN) or ``docling`` (local, needs the [docling]
-    # extra). Disable with ``pdf_scan_fallback_enabled=false`` to always
-    # stay on PyMuPDF (the pre-IR ``auto`` behaviour).
+    # picks the OCR backend:
+    #   * ``auto`` (default) — route by token: ``paddleocr_vl`` (online API)
+    #     when ``PADDLEOCR_VL_API_TOKEN`` is set, else ``ppocr`` (local,
+    #     zero-network). This is the zero-config default — a bare install
+    #     with the [ocr] extra parses scans offline; a deployment that set
+    #     the online token keeps using it.
+    #   * ``paddleocr_vl`` — force the online API (needs the token).
+    #   * ``docling`` — force the local layout-aware parser ([docling] extra).
+    #   * ``ppocr`` — force the local PP-OCRv6 page-by-page OCR ([ocr] extra).
+    # Disable with ``pdf_scan_fallback_enabled=false`` to always stay on
+    # PyMuPDF (the pre-IR ``auto`` behaviour).
     pdf_scan_fallback_enabled: bool = True
     pdf_scan_text_threshold: int = 10
-    pdf_scan_fallback_parser: str = "paddleocr_vl"
+    pdf_scan_fallback_parser: Literal["auto", "paddleocr_vl", "docling", "ppocr"] = "auto"
 
     # ─── Tier-3 multimodal answer (opt-in) ───────────────────────────────
     # When on, ``answer.llm_answer`` / ``stream_answer_chunks`` inject the
@@ -376,22 +368,30 @@ class Settings(BaseSettings):
     paddleocr_vl_image_hosts: str = ""
 
     # ─── Parser defaults (drives /upload; UI can override per request) ───
-    # NOTE: pdf_parser / enable_ocr / enable_vlm / image_provider / auto_index
-    # are kept as legacy fields for backward compat with old deployments, but
-    # the modern upload pipeline auto-decides everything from sniff + VLM.
-    pdf_parser: Literal["auto", "pymupdf", "paddleocr_vl", "docling"] = "auto"
+    # NOTE: pdf_parser / enable_ocr / enable_vlm / auto_index are persisted
+    # per-task via _serialise_options / _deserialise_options so a retry of
+    # an upload keeps the per-request override; the modern upload pipeline
+    # auto-decides a default at preview time but lets the user pin a value
+    # via the UI / API. ``image_provider`` is *not* per-task — the embedder
+    # dispatch in ``embedders/__init__.py`` only reads ``Settings.image_provider``
+    # (see ``ParseOptions.image_provider`` docstring).
+    pdf_parser: Literal["auto", "pymupdf", "paddleocr_vl", "docling", "ppocr"] = "auto"
     # document backend: markitdown (default, core dep, no ML stack) or
     # docling (optional [docling] extra, heavy torch/transformers stack).
     document_parser: Literal["markitdown", "docling"] = "markitdown"
     enable_ocr: bool = False
     enable_vlm: bool = False
-    # 图片嵌入 provider 选择。``lite`` 当前是占位字符串:并没有独立实现的轻量
-    # 图片 embedder,实际图片索引依赖 [clip] extra 提供的 sentence-transformers
-    # CLIP(``get_default_image_embedder`` 只实例化 CLIP)。因此未安装 [clip] 时
-    # ``lite`` 的效果是"图片跳过索引"而非"用轻量 embedder 索引";``sentence_transformers``
-    # 显式要求 CLIP。保留 ``lite`` 选项仅为向后兼容旧 .env,行为上等价于"未配置
-    # 图片 embedder"。要启用图片索引请安装 [clip] extra,此字段无需改动。
-    image_provider: Literal["lite", "sentence_transformers"] = "lite"
+    # 图片嵌入 provider 选择。``lite`` 与 ``sentence_transformers`` 是别名,
+    # 都走 sentence-transformers CLIP(``get_default_image_embedder`` 默认实例化
+    # ``ImageEmbedder``),需要 [clip] extra,缺则图片索引跳过;
+    # ``sentence_transformers`` 与 ``lite`` 等价,保留 ``lite`` 仅为了兼容旧 .env。
+    # ``cn_clip`` 走 Chinese-CLIP(``transformers`` 包的 ``ChineseCLIPModel`` +
+    # ``ChineseCLIPProcessor``,``OFA-Sys/chinese-clip-vit-base-patch16``,
+    # 768d, ~1 GB,中文 zero-shot Flickr30K-CN R@1 ~71%);切换 cn_clip 需
+    # `pip install transformers` ([docling] 或 [clip] extra 已传递依赖带入)。
+    # 切换 provider / 模型名都触发 image collection dim 后缀变化,
+    # 必须 ``mmrag reindex`` 重建。
+    image_provider: Literal["lite", "sentence_transformers", "cn_clip"] = "lite"
     auto_index: bool = True
 
     # ─── Upload preview safety limits ─────────────────────────────────────
@@ -406,6 +406,12 @@ class Settings(BaseSettings):
     preview_cache_ttl_seconds: int = 24 * 60 * 60
 
     # ─── OCR / VLM HTTP backends (optional) ──────────────────────────────
+    # Image OCR backend. ``local`` (default) runs PP-OCRv6 in-process via the
+    # ``rapidocr`` package bundled in the [ocr] extra (pure ONNX, no HTTP
+    # server, models ship with the wheel). ``http`` keeps the legacy
+    # external-OCR-server contract — set ``OCR_HTTP_URL`` to your /ocr endpoint.
+    # Flip to ``http`` only when OCR runs as a separate service.
+    ocr_backend: Literal["local", "http"] = "local"
     ocr_http_url: str | None = None
     ocr_http_timeout: float = 60.0
 
@@ -466,6 +472,17 @@ class Settings(BaseSettings):
     # unconfigured the step degrades to a no-op — safe to leave on.
     image_caption_enabled: bool = False
     image_caption_concurrency: int = 4
+
+    # ─── Evaluation cases ─────────────────────────────────────────────────
+    # ``mmrag eval`` scores a set of ``query → expected_asset_ids`` cases
+    # against the live index. Cases live in JSON files (``{"version",
+    # "groups": {group: [{query, expected_asset_ids}]}}``). The default
+    # (None) loads the small generic sample shipped with the package at
+    # ``mm_asset_rag/eval_data/<version>_cases.json`` — a text→text-only
+    # template over well-known arxiv papers. Point this at your own file
+    # (e.g. ``examples/eval_cases_chapter11_v1.json``) to score a custom
+    # corpus; the CLI ``--cases`` flag overrides this for one run.
+    eval_cases_path: str | None = None
 
     # ─── Derived properties ───────────────────────────────────────────────
 

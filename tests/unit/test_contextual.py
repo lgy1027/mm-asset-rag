@@ -205,6 +205,75 @@ def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, 
         assert p.payload["context"] == "这是关于DDPM去噪扩散的前缀"
 
 
+def test_build_qdrant_text_index_probe_not_reused_when_doc0_has_context(
+    tmp_home, fake_qdrant_client, fixed_vector
+):
+    """When ``documents[0]`` carries a context preamble, the probe embedding
+    (computed on the bare text) must NOT be reused into ``dense_vectors[0]``.
+
+    Regression: the probe reuses ``first_vector = embed(documents[0].text)``
+    as ``dense_vectors[0]`` when offset==0 and doc 0 is in ``to_do``. With
+    context, the dense input should be ``"{ctx}\\n\\n{text}"`` but the probe
+    embedded the bare ``{text}`` — reusing it gives the first chunk a
+    context-less dense vector whose sparse sibling carries the context.
+    The fix adds a ``not batch[0].metadata.get("context")`` guard so the
+    first chunk goes through ``embed_batch`` with its context prefix."""
+    from mm_asset_rag.backends.qdrant_backend import build_qdrant_text_index
+    from mm_asset_rag.document_store import write_documents
+    from mm_asset_rag.registry import embedders, register_embedder
+
+    # Single doc with a context preamble so offset==0, 0 in to_do, and
+    # the reuse path is the one the guard must block.
+    docs = [
+        ParsedDocument(
+            text="正文内容",
+            metadata={
+                "asset_id": "a1",
+                "chunk_index": 0,
+                "source_type": "pdf",
+                "context": "CTX-前缀",
+            },
+        ),
+    ]
+    write_documents(docs)
+
+    seen_texts: list[str] = []
+
+    class _RecordingStub:
+        modality = "text"
+
+        @property
+        def name(self) -> str:
+            return "default"
+
+        def dim(self) -> int:
+            return 4
+
+        def embed(self, content) -> list[float]:
+            seen_texts.append(str(content))
+            return [0.1, 0.2, 0.3, 0.4]
+
+        def embed_batch(self, texts) -> list[list[float]]:
+            seen_texts.extend(str(t) for t in texts)
+            return [[0.1, 0.2, 0.3, 0.4] for _ in texts]
+
+    register_embedder(_RecordingStub(), replace=True)
+    try:
+        build_qdrant_text_index(force_recreate=True)
+    finally:
+        embedders._items.pop(("text", "default"), None)
+
+    # Every batch embedding input must carry the context prefix. The probe
+    # (embed(documents[0].text)) is bare-text by design and is excluded: when
+    # doc 0 has context it is NOT reused into dense_vectors[0], so the
+    # context-prefixed input only reaches the batch call.
+    assert seen_texts, "no embedding calls captured"
+    batch_inputs = seen_texts[1:]  # skip the bare probe
+    assert batch_inputs, "no batch embedding call captured"
+    for t in batch_inputs:
+        assert "CTX-前缀" in t, f"context prefix missing from input: {t!r}"
+
+
 def test_contextual_enabled_defaults_true(tmp_home) -> None:
     """``Settings.contextual_enabled`` defaults to True so contextual runs
     without explicit opt-in (the latency/precision trade-off favors precision).

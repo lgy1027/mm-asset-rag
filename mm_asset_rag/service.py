@@ -1,22 +1,11 @@
 """Background-task service for ingest / reindex / task history.
 
-This module centralizes everything the FastAPI app and the ``mmrag`` CLI
-both need:
-
-* Spawning background ``threading.Thread`` workers that run parse + index
-* Persisting task state to ``$MM_ASSET_RAG_HOME/tasks.db`` (SQLite; the
-  legacy ``tasks.jsonl`` is migrated on first startup) so it survives
-  process restarts
-* Surfacing :class:`TaskRecord` snapshots to ``GET /tasks`` and
-  ``GET /tasks/{id}``
-* Dispatching the explicit ``reindex`` command
-
-Before this module existed, ``api.py`` and ``cli.py`` each implemented
-their own version of the same loop (``_run_parse_task`` vs
-``command_parse``). That duplication made it impossible to change the
-parse pipeline without editing two files — exactly the kind of coupling
-that the parser/embedder/backend registries already eliminated for the
-hot path.
+Owns the daemon ``threading.Thread`` workers that run parse + index,
+persists task state to ``$MM_ASSET_RAG_HOME/tasks.db`` (SQLite; legacy
+``tasks.jsonl`` is migrated on first startup) so it survives restarts,
+and surfaces :class:`TaskRecord` snapshots to ``GET /tasks`` /
+``GET /tasks/{id}``. Both ``api.py`` and ``cli.py`` delegate here so the
+parse pipeline has one implementation.
 """
 
 from __future__ import annotations
@@ -221,7 +210,17 @@ class TaskRecord:
 
 @dataclass
 class ParseOptions:
-    """Per-task parse configuration for uploaded/auto-sniffed assets."""
+    """Per-task parse configuration for uploaded/auto-sniffed assets.
+
+    Note on ``image_provider``: the embedder dispatch in
+    ``mm_asset_rag.embedders.build_default_image_embedder`` only reads
+    ``Settings.image_provider`` — the per-task override here is currently
+    round-tripped through ``_serialise_options`` / ``_deserialise_options``
+    (so old task records keep their value) but is *not* consulted at
+    dispatch time. To change the image backend, set ``IMAGE_PROVIDER`` in
+    the environment / ``.env`` before launching ``mmrag-api``; mid-run
+    switches require ``register_embedder(..., replace=True)``.
+    """
 
     assets: list[Asset] = field(default_factory=list)
     pdf_parser: str = "auto"
@@ -1088,17 +1087,8 @@ class IngestService:
             db_path.parent.mkdir(parents=True, exist_ok=True)
             payload = json.dumps(asdict(rec), ensure_ascii=False)
             with self._PERSIST_LOCK, sqlite3.connect(str(db_path)) as conn:
-                # ``isolation_level=None`` + explicit ``commit``
-                # gives us synchronous fsync-on-commit semantics
-                # with no implicit transaction wrapping, which is
-                # important for ``INSERT OR REPLACE`` to behave as
-                # an atomic single-step write.
+                # autocommit mode → INSERT OR REPLACE is an atomic single-step write.
                 conn.isolation_level = None
-                # ``CREATE TABLE IF NOT EXISTS`` keeps the first
-                # write cheap and idempotent — the table is owned
-                # by this file only, so it is safe to ensure on
-                # every connect rather than in a separate
-                # migration step.
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS tasks ("
                     "task_id TEXT PRIMARY KEY, "
@@ -1106,10 +1096,8 @@ class IngestService:
                     "updated_at REAL NOT NULL"
                     ")"
                 )
-                # WAL gives concurrent readers + one writer without
-                # the legacy rollback-journal serialisation, and the
-                # descending index makes ``list_tasks`` use the
-                # index instead of a tablescan even at >100k rows.
+                # WAL: concurrent readers + one writer; descending index keeps
+                # list_tasks on the index past 100k rows.
                 conn.execute("PRAGMA journal_mode = WAL")
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS tasks_updated_at_idx ON tasks (updated_at DESC)"
@@ -1201,6 +1189,7 @@ class IngestService:
             if isinstance(image_provider, str) and image_provider in {
                 "lite",
                 "sentence_transformers",
+                "cn_clip",
             }:
                 options.image_provider = image_provider
             if isinstance(raw.get("contextual"), bool):
@@ -1556,10 +1545,27 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
     #
     # Cooperative cancel: if cancel_task was called during the parse
     # stage, rec.status is already CANCELLED (terminal) — don't flip it
-    # back to running here; _run_ingest_task's CANCELLED branch returns
-    # below. (Covers the narrow race where cancel arrives between the
-    # last parse checkpoint and this re-flag.)
-    if rec.status == TaskStatus.CANCELLED:
+    # back to running here. (Covers the narrow race where cancel arrives
+    # between the last parse checkpoint and this re-flag.)
+    #
+    # Seam guard: cancel_task arriving *after* parse set status=DONE
+    # (terminal) sees a terminal status and only sets the flag — its
+    # CANCELLED patch is gated on ``status not in terminal()``. So
+    # rec.status is still DONE here and the ``rec.status == CANCELLED``
+    # check above misses it. Check the flag explicitly so we patch
+    # CANCELLED and stop *before* flipping the task back to ``running``
+    # and driving the index loop. Otherwise the cancel intent only
+    # resurfaces at the first ``_progress`` tick (or, if the CLI polls
+    # the brief DONE window, the daemon is killed before index runs at
+    # all and the task stays DONE). Idempotent if cancel_task already
+    # patched CANCELLED.
+    if service._is_cancelled(rec.task_id) or rec.status == TaskStatus.CANCELLED:
+        service._patch(
+            rec,
+            status=TaskStatus.CANCELLED,
+            finished_at=time.time(),
+            current="cancelled before index",
+        )
         return
     service._patch(
         rec,
@@ -1629,10 +1635,20 @@ def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOpti
             asset_statuses=new_statuses,
         )
     except _TaskCancelled:
-        # Cancelled mid-index: cancel_task already set status=CANCELLED +
-        # finished_at. The partial index points remain in Qdrant (a retry
-        # rebuilds from documents.jsonl); assets parsed but not indexed
-        # keep their parse status. Nothing more to patch here — just stop.
+        # Cancelled mid-index. cancel_task may have seen status=DONE
+        # (terminal, set by _run_parse_task at the parse→index seam) and
+        # skipped patching CANCELLED, only setting the flag; _progress then
+        # raised here. Patch CANCELLED explicitly so the task can't stay
+        # "running" — load_history would rewrite "running"→"interrupted"
+        # on next boot, losing the cancel intent. Idempotent if cancel_task
+        # already patched. Partial index points remain in Qdrant; a retry
+        # rebuilds from documents.jsonl.
+        service._patch(
+            rec,
+            status=TaskStatus.CANCELLED,
+            finished_at=time.time(),
+            current="cancelled during index",
+        )
         print(f"[task {rec.task_id}] index cancelled by request")
         return
     except BaseException as exc:

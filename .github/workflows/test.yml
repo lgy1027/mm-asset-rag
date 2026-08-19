@@ -50,10 +50,10 @@ jobs:
         # importable and respond to --help. This catches syntax errors and
         # missing dependencies without needing ollama / Qdrant / a real
         # corpus. Keep this list in sync with the .py files in scripts/
-        # (shell scripts don't speak --help). eval_rag / benchmark both
-        # keep their runtime imports lazy so --help works offline.
+        # (shell scripts don't speak --help). benchmark keeps its runtime
+        # imports lazy so --help works offline.
         run: |
-          for s in scripts/eval_rag.py scripts/benchmark.py; do
+          for s in scripts/benchmark.py; do
             echo "::group::$s --help"
             uv run python "$s" --help
             echo "::endgroup::"

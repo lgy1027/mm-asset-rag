@@ -142,6 +142,31 @@ The `current` field reflects the worker's last position: `parsing N/M`, `text in
 
 Lists every task known to the service (in-memory + history loaded from `$MM_ASSET_RAG_HOME/tasks.db`).
 
+## `GET /tasks/{task_id}/stream`
+
+NDJSON stream of live task snapshots. Each line is a JSON object:
+
+| Event | Fields | Fires |
+| --- | --- | --- |
+| `snapshot` | task record | on every patch (parse / embed / upsert) |
+| `heartbeat` | — | every ~15 s of silence |
+| `done` | — | when the task reaches a terminal status |
+| `error` | `message: "..."` | when `task_id` is unknown |
+
+Companion to `/tasks/{task_id}` polling — the web UI uses this to drive the live progress bar without re-fetching the whole record every second.
+
+## `POST /tasks/{task_id}/cancel`
+
+Cooperative cancellation: sets a per-task stop flag the worker checks between assets; the task ends as `status="cancelled"` (terminal). A task already at a terminal state is returned unchanged. Cancellation is cooperative — a task mid-asset finishes that asset first.
+
+```json
+// response
+{ "task_id": "6bfcc3e53100", "status": "cancelled", "finished_at": 1782049050.1 }
+```
+
+- `200` — cancellation requested (or task already terminal).
+- `404` — `task_id` is unknown.
+
 ## `POST /tasks/{task_id}/retry`
 
 Re-run a previously failed, partial, or interrupted task. The original task's `kind` and `parse_options` are preserved; the new task is recorded with `source="retry"` and `origin_task_id` pointing back to the original.
@@ -212,6 +237,33 @@ Status codes:
 
 - `200` — report returned (even when nothing remained to delete).
 - `404` — `asset_id` is unknown to the asset index.
+
+## `GET /assets/{asset_id}`
+
+Read-only detail for one asset: the asset-index row plus on-disk existence flags for the source file, the `parsed/<id>/` directory, and the captions file.
+
+```json
+{
+  "asset_id": "Beach_d7e16fe3",
+  "relative_path": "images/Beach_d7e16fe3.png",
+  "source_type": "image",
+  "asset_title": "Beach",
+  "ingested_at": 1782048987.4,
+  "file_exists": true,
+  "parsed_exists": false,
+  "captions_exists": true
+}
+```
+
+- `200` — detail returned.
+- `404` — `asset_id` is unknown or its `relative_path` fails the safety check.
+
+## `GET /parsed-image/{asset_id}/{filename}`
+
+Serves one image extracted from `parsed/<asset_id>/images/` (figures pulled out of PDFs by `pdf_images.extract_page_images` when `PDF_EXTRACT_IMAGES=true`). The web UI's `<img src>` tags and the tier-3 answer image loader both go through this endpoint so path traversal guards stay consistent.
+
+- `200` — image bytes (`image/<ext>`).
+- `404` — `asset_id` / `filename` does not resolve, or the resolved path fails the safety check.
 
 ## `POST /search`
 
@@ -298,8 +350,16 @@ Reasoning-model note: `<think>...</think>` blocks emitted by reasoning models ar
 
 ## `POST /eval`
 
-Runs the built-in regression set. Each case reports whether any of the top-`top_k` hits matched an expected `asset_id`.
+Runs the retrieval regression set. Each case reports whether any of the top-`top_k` hits matched an expected `asset_id`.
+
+| Field | Default | Notes |
+| --- | --- | --- |
+| `top_k` | `5` | 1–200 |
+| `v2` | `false` | Run the v2 (multi-dimensional, Chinese-primary) set instead of v1 |
+| `cases_path` | `null` | Optional path to a case JSON overriding the default (`EVAL_CASES_PATH` → the bundled `mm_asset_rag/eval_data/<version>_cases.json`). Same schema as `mmrag eval --cases`. |
 
 ```json
 { "results": [{ "query": "...", "expected_asset_ids": [...], "actual_asset_ids": [...], "hit": true }] }
 ```
+
+Cases live in JSON files (`{"version","groups":{group:[{query,expected_asset_ids}]}}`); the bundled default is a small text→text generic sample. Ship your own (or use `examples/eval_cases_chapter11_v{1,2}.json`) and point `cases_path` / `EVAL_CASES_PATH` at it. Without matching assets ingested, every case returns `hit: false`.

@@ -1,11 +1,9 @@
 """OpenAI-compatible text embedder.
 
-Replaces the prior ``EmbeddingProvider`` in ``mm_asset_rag.providers`` after
-the embedders/ subpackage split. Implements the :class:`Embedder`
-Protocol so it can be registered via :func:`register_embedder`.
-
-Configuration is read from the centralized ``Settings`` instance, falling
-back to ``OPENAI_*`` env vars for ``api_key`` / ``base_url`` / ``model``.
+Implements the :class:`Embedder` Protocol so it can be registered via
+:func:`register_embedder`. Configuration is read from the centralized
+``Settings`` instance, falling back to ``OPENAI_*`` env vars for
+``api_key`` / ``base_url`` / ``model``.
 """
 
 from __future__ import annotations
@@ -80,6 +78,14 @@ class TextEmbedder:
 
     def dim(self) -> int:
         # Lazily probe dimension by embedding a tiny probe string.
+        # ``Settings.embedding_dim`` overrides the probe — useful when
+        # the model dim is known (avoids one remote round-trip / ST
+        # encode on every cold start).
+        from ..settings import get_settings
+
+        configured = get_settings().embedding_dim
+        if configured is not None:
+            return configured
         if getattr(self, "_dim", None) is not None:
             return self._dim
         self._dim = len(self.embed("probe"))
@@ -130,10 +136,6 @@ class TextEmbedder:
         raise RuntimeError(
             f"Embedding request failed after {self.retry_count} retries (likely rate-limited)"
         )
-
-
-# Backward-compat alias. New code should use ``TextEmbedder``.
-EmbeddingProvider = TextEmbedder
 
 
 class SentenceTransformerTextEmbedder:
@@ -188,6 +190,12 @@ class SentenceTransformerTextEmbedder:
         return self.model
 
     def dim(self) -> int:
+        # Override via ``Settings.embedding_dim`` to skip the probe.
+        from ..settings import get_settings
+
+        configured = get_settings().embedding_dim
+        if configured is not None:
+            return configured
         if self._dim is None:
             self._dim = len(self.embed("probe"))
         return self._dim

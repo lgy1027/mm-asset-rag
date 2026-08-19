@@ -21,7 +21,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import httpx
+import requests
 
 BASE = "http://127.0.0.1:8011"
 
@@ -29,7 +29,6 @@ BASE = "http://127.0.0.1:8011"
 def show(label: str, payload: dict) -> None:
     print(f"\n=== {label} ===")
     if isinstance(payload, dict) and "hits" in payload and len(payload["hits"]) > 0:
-        # Truncate long hit evidence
         for hit in payload["hits"][:3]:
             ev = hit.get("evidence", "")
             if len(ev) > 120:
@@ -37,12 +36,11 @@ def show(label: str, payload: dict) -> None:
     print(payload)
 
 
-def upload_and_confirm(client: httpx.Client, files: list[str]) -> None:
+def upload_and_confirm(session: requests.Session, files: list[str]) -> None:
     """Two-phase upload: /upload/preview then /upload/confirm.
 
-    Replaces the removed ``/ingest`` endpoint. If no files are passed the
-    step is skipped (the rest of the demo still runs against whatever is
-    already indexed).
+    If no files are passed the step is skipped (the rest of the demo still
+    runs against whatever is already indexed).
     """
     if not files:
         print("\n=== upload (skipped: no files passed) ===")
@@ -51,7 +49,7 @@ def upload_and_confirm(client: httpx.Client, files: list[str]) -> None:
     for f in files:
         p = Path(f)
         multipart.append(("files", (p.name, p.read_bytes())))
-    preview = client.post("/upload/preview", files=multipart).json()
+    preview = session.post("/upload/preview", files=multipart).json()
     show("upload/preview", preview)
     edits = [
         {
@@ -63,7 +61,7 @@ def upload_and_confirm(client: httpx.Client, files: list[str]) -> None:
         if not pv.get("rejected_reason")
     ]
     if edits:
-        confirm = client.post(
+        confirm = session.post(
             "/upload/confirm",
             json={"cache_id": preview["cache_id"], "edits": edits},
         ).json()
@@ -72,38 +70,38 @@ def upload_and_confirm(client: httpx.Client, files: list[str]) -> None:
 
 def main() -> None:
     files = sys.argv[1:]
-    with httpx.Client(base_url=BASE, timeout=120) as client:
-        show("health", client.get("/health").json())
+    with requests.Session() as session:
+        show("health", session.get(f"{BASE}/health").json())
 
-        upload_and_confirm(client, files)
+        upload_and_confirm(session, files)
 
         show(
             "search (text)",
-            client.post(
-                "/search",
+            session.post(
+                f"{BASE}/search",
                 json={"query": "retrieval augmented generation", "mode": "text", "top_k": 3},
             ).json(),
         )
 
         show(
             "search (text-to-image)",
-            client.post(
-                "/search",
+            session.post(
+                f"{BASE}/search",
                 json={"query": "diagram", "mode": "text-to-image", "top_k": 3},
             ).json(),
         )
 
         # image-to-image needs a real image path; only call if you have one.
-        # show("search (image-to-image)", client.post(
-        #     "/search",
+        # show("search (image-to-image)", session.post(
+        #     f"{BASE}/search",
         #     json={"query": "x", "mode": "image-to-image",
         #           "image_path": "/abs/path/to/query.png", "top_k": 3},
         # ).json())
 
         show(
             "answer",
-            client.post(
-                "/answer",
+            session.post(
+                f"{BASE}/answer",
                 json={
                     "question": "which document covers retrieval-augmented generation?",
                     "top_k": 3,
@@ -111,7 +109,7 @@ def main() -> None:
             ).json(),
         )
 
-        show("eval", client.post("/eval", json={}).json())
+        show("eval", session.post(f"{BASE}/eval", json={}).json())
 
 
 if __name__ == "__main__":

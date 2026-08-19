@@ -74,6 +74,22 @@ def test_wheel_includes_web_ui(built_dist: Path) -> None:
     assert any(n.endswith("web/index.html") for n in names), "wheel missing web/index.html"
 
 
+def test_wheel_includes_eval_data(built_dist: Path) -> None:
+    """The bundled eval case JSONs (``eval_data/{v1,v2}_cases.json``) must be
+    in the wheel — ``mmrag eval`` reads them via ``importlib.resources`` as
+    the default case set, so a missing file silently breaks the default eval
+    (``FileNotFoundError`` at runtime) while editable-mode tests stay green."""
+    (wheel,) = built_dist.glob("*.whl")
+    with zipfile.ZipFile(wheel) as z:
+        names = z.namelist()
+    assert any(n.endswith("eval_data/v1_cases.json") for n in names), (
+        "wheel missing eval_data/v1_cases.json"
+    )
+    assert any(n.endswith("eval_data/v2_cases.json") for n in names), (
+        "wheel missing eval_data/v2_cases.json"
+    )
+
+
 def test_version_matches_source(built_dist: Path) -> None:
     """The built wheel's metadata version must equal the in-source __version__,
     so a release tag can't drift from what the code reports."""

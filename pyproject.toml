@@ -47,6 +47,10 @@ dependencies = [
 [project.optional-dependencies]
 clip = ["sentence-transformers>=2.2,<6.0"]
 docling = ["docling>=2.0,<3.0"]
+# Local image OCR: PP-OCRv6 small via rapidocr (pure ONNX, no paddlepaddle).
+# The [ocr] extra enables ENABLE_OCR=true with the default OCR_BACKEND=local —
+# models ship inside the rapidocr wheel, so no extra download is needed.
+ocr = ["rapidocr>=3.9.0,<4.0", "onnxruntime>=1.16,<2.0"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",

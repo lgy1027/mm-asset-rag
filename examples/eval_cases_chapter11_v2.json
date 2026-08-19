@@ -1,0 +1,497 @@
+{
+  "version": "v2",
+  "groups": {
+    "zh_on_en": [
+      {
+        "query": "CLIP 模型",
+        "expected_asset_ids": [
+          "Learning Transferable Visual Models From Natural Language Supervision"
+        ]
+      },
+      {
+        "query": "BERT 预训练双向 transformer",
+        "expected_asset_ids": [
+          "Bert"
+        ]
+      },
+      {
+        "query": "扩散模型 论文",
+        "expected_asset_ids": [
+          "Ddpm"
+        ]
+      },
+      {
+        "query": "RAG 检索增强生成",
+        "expected_asset_ids": [
+          "Retrieval Augmented Generation"
+        ]
+      },
+      {
+        "query": "YOLO 实时目标检测",
+        "expected_asset_ids": [
+          "You Only Look Once"
+        ]
+      },
+      {
+        "query": "U-Net 医学图像分割",
+        "expected_asset_ids": [
+          "U-Net Convolutional Networks for Biomedical Image Segmentation"
+        ]
+      },
+      {
+        "query": "残差网络 ResNet",
+        "expected_asset_ids": [
+          "Resnet"
+        ]
+      },
+      {
+        "query": "变分自编码器 VAE",
+        "expected_asset_ids": [
+          "Vae"
+        ]
+      },
+      {
+        "query": "目标检测模型",
+        "expected_asset_ids": [
+          "You Only Look Once",
+          "Rich Feature Hierarchies For Accurate Object Detection And Semantic Segmentation",
+          "Ssd",
+          "Detr"
+        ]
+      },
+      {
+        "query": "图像分割方法",
+        "expected_asset_ids": [
+          "U-Net Convolutional Networks for Biomedical Image Segmentation",
+          "Segment Anything"
+        ]
+      },
+      {
+        "query": "少样本学习",
+        "expected_asset_ids": [
+          "Flamingo",
+          "Gpt3"
+        ]
+      },
+      {
+        "query": "transformer 自注意力机制",
+        "expected_asset_ids": [
+          "Attention Is All You Need"
+        ]
+      },
+      {
+        "query": "CLIP 的对比学习 contrastive loss",
+        "expected_asset_ids": [
+          "Learning Transferable Visual Models From Natural Language Supervision"
+        ]
+      },
+      {
+        "query": "BERT 的 masked language model 掩码语言模型",
+        "expected_asset_ids": [
+          "Bert"
+        ]
+      },
+      {
+        "query": "U-Net 跳跃连接 skip connection",
+        "expected_asset_ids": [
+          "U-Net Convolutional Networks for Biomedical Image Segmentation"
+        ]
+      },
+      {
+        "query": "讲图像分类的深度卷积神经网络",
+        "expected_asset_ids": [
+          "Alexnet"
+        ]
+      },
+      {
+        "query": "transformer 用于视觉识别的",
+        "expected_asset_ids": [
+          "Vit"
+        ]
+      },
+      {
+        "query": "讲 diffusion 去噪扩散的论文",
+        "expected_asset_ids": [
+          "Ddpm"
+        ]
+      },
+      {
+        "query": "Residual network 残差",
+        "expected_asset_ids": [
+          "Resnet"
+        ]
+      },
+      {
+        "query": "embedding 词嵌入",
+        "expected_asset_ids": [
+          "Word2Vec",
+          "Glove"
+        ]
+      }
+    ],
+    "en_on_en": [
+      {
+        "query": "image classification deep learning",
+        "expected_asset_ids": [
+          "Alexnet"
+        ]
+      },
+      {
+        "query": "real-time object detection",
+        "expected_asset_ids": [
+          "You Only Look Once"
+        ]
+      },
+      {
+        "query": "distributed word representations",
+        "expected_asset_ids": [
+          "Word2Vec"
+        ]
+      },
+      {
+        "query": "image generation diffusion",
+        "expected_asset_ids": [
+          "Ddpm",
+          "Stable Diffusion"
+        ]
+      },
+      {
+        "query": "text to image generation",
+        "expected_asset_ids": [
+          "Stable Diffusion",
+          "Learning Transferable Visual Models From Natural Language Supervision"
+        ]
+      },
+      {
+        "query": "transformr self attention",
+        "expected_asset_ids": [
+          "Attention Is All You Need"
+        ]
+      },
+      {
+        "query": "RESNET residual learning",
+        "expected_asset_ids": [
+          "Resnet"
+        ]
+      },
+      {
+        "query": "GAN generative adversarial nets",
+        "expected_asset_ids": [
+          "Gan"
+        ]
+      },
+      {
+        "query": "BERT pretraining",
+        "expected_asset_ids": [
+          "Bert"
+        ]
+      },
+      {
+        "query": "LORA parameter efficient",
+        "expected_asset_ids": [
+          "Lora"
+        ]
+      }
+    ],
+    "zh_on_zh": [
+      {
+        "query": "联宝 ESG 年度报告",
+        "expected_asset_ids": [
+          "责任联宝"
+        ]
+      },
+      {
+        "query": "Codex 全景指南 AI 编程",
+        "expected_asset_ids": [
+          "所有深度用 AI 编程"
+        ]
+      },
+      {
+        "query": "联宝 CES 未来 PC",
+        "expected_asset_ids": [
+          "CES 2026"
+        ]
+      },
+      {
+        "query": "联宝 媒眼 安徽外贸",
+        "expected_asset_ids": [
+          "媒眼看联宝"
+        ]
+      },
+      {
+        "query": "联宝 中试基地 省级备案",
+        "expected_asset_ids": [
+          "创新联宝"
+        ]
+      },
+      {
+        "query": "Obsidian AI Skill 工具",
+        "expected_asset_ids": [
+          "Obsidian"
+        ]
+      },
+      {
+        "query": "联宝 机器人 经开区",
+        "expected_asset_ids": [
+          "媒眼看联宝"
+        ]
+      },
+      {
+        "query": "联宝 ESG",
+        "expected_asset_ids": [
+          "责任联宝"
+        ]
+      },
+      {
+        "query": "联宝 2026 财年 启幕",
+        "expected_asset_ids": [
+          "敢AI敢为"
+        ]
+      },
+      {
+        "query": "transformer 论文 中文",
+        "expected_asset_ids": [
+          "Attention Is All You Need"
+        ]
+      },
+      {
+        "query": "CLIP 中文版",
+        "expected_asset_ids": [
+          "Learning Transferable Visual Models"
+        ]
+      }
+    ],
+    "negative": [
+      {
+        "query": "强化学习算法 PPO DQN",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "联邦学习框架",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "元学习综述 few-shot learning survey",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "图神经网络 GCN",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "知识蒸馏综述 knowledge distillation",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "推荐系统 deep learning recommendation",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "speech recognition 语音识别",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "neural machine translation 机器翻译",
+        "expected_asset_ids": []
+      }
+    ],
+    "text_to_image": [
+      {
+        "query": "飞机",
+        "expected_asset_ids": [
+          "Caltech Airplanes"
+        ]
+      },
+      {
+        "query": "熊猫",
+        "expected_asset_ids": [
+          "Caltech Panda"
+        ]
+      },
+      {
+        "query": "向日葵",
+        "expected_asset_ids": [
+          "Caltech Sunflower"
+        ]
+      },
+      {
+        "query": "笔记本电脑",
+        "expected_asset_ids": [
+          "Caltech Laptop"
+        ]
+      },
+      {
+        "query": "手表 腕表",
+        "expected_asset_ids": [
+          "Caltech Watch"
+        ]
+      },
+      {
+        "query": "披萨 食物",
+        "expected_asset_ids": [
+          "Caltech Pizza"
+        ]
+      },
+      {
+        "query": "海豚",
+        "expected_asset_ids": [
+          "Caltech Dolphin"
+        ]
+      },
+      {
+        "query": "直升机",
+        "expected_asset_ids": [
+          "Caltech Helicopter"
+        ]
+      },
+      {
+        "query": "萨克斯 乐器",
+        "expected_asset_ids": [
+          "Caltech Saxophone"
+        ]
+      },
+      {
+        "query": "古董车 老爷车",
+        "expected_asset_ids": [
+          "Caltech Car Side"
+        ]
+      },
+      {
+        "query": "手风琴",
+        "expected_asset_ids": [
+          "Caltech Accordion"
+        ]
+      },
+      {
+        "query": "帆船 船",
+        "expected_asset_ids": [
+          "Caltech Ketch"
+        ]
+      },
+      {
+        "query": "大象",
+        "expected_asset_ids": [
+          "Caltech Elephant"
+        ]
+      },
+      {
+        "query": "大脑 MRI",
+        "expected_asset_ids": [
+          "Caltech Brain"
+        ]
+      },
+      {
+        "query": "KO 活动 2026",
+        "expected_asset_ids": [
+          "2026年KO活动"
+        ]
+      },
+      {
+        "query": "联宝 发展史",
+        "expected_asset_ids": [
+          "联宝发展史"
+        ]
+      },
+      {
+        "query": "联宝 体育活动",
+        "expected_asset_ids": [
+          "联宝体育活动"
+        ]
+      },
+      {
+        "query": "airplane",
+        "expected_asset_ids": [
+          "Caltech Airplanes"
+        ]
+      },
+      {
+        "query": "panda bear",
+        "expected_asset_ids": [
+          "Caltech Panda"
+        ]
+      },
+      {
+        "query": "sunflower flower",
+        "expected_asset_ids": [
+          "Caltech Sunflower"
+        ]
+      },
+      {
+        "query": "毛绒玩具 plush toy",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "高速公路 highway",
+        "expected_asset_ids": []
+      },
+      {
+        "query": "山脉 mountain",
+        "expected_asset_ids": []
+      }
+    ],
+    "image_to_image": [
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Airplanes 01_9fe67b3f.jpg",
+        "expected_asset_ids": [
+          "Caltech Airplanes"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Motorbikes 01_00a780a9.jpg",
+        "expected_asset_ids": [
+          "Caltech Motorbikes"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Pizza 01_ffa99a8f.jpg",
+        "expected_asset_ids": [
+          "Caltech Pizza"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Panda 01_3443a5d5.jpg",
+        "expected_asset_ids": [
+          "Caltech Panda"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Dolphin 01_bbd397c6.jpg",
+        "expected_asset_ids": [
+          "Caltech Dolphin"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Sunflower 01_76ab29c7.jpg",
+        "expected_asset_ids": [
+          "Caltech Sunflower"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Laptop 01_1b73ff27.jpg",
+        "expected_asset_ids": [
+          "Caltech Laptop"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Helicopter 01_b81b5710.jpg",
+        "expected_asset_ids": [
+          "Caltech Helicopter"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Helicopter 01_b81b5710.jpg",
+        "expected_asset_ids": [
+          "Caltech Helicopter",
+          "Caltech Airplanes"
+        ]
+      },
+      {
+        "image_path": "examples/data/chapter11_assets/images/Caltech Dolphin 01_bbd397c6.jpg",
+        "expected_asset_ids": [
+          "Caltech Dolphin",
+          "Caltech Sea Horse"
+        ]
+      }
+    ]
+  }
+}

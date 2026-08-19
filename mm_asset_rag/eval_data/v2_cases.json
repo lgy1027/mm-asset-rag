@@ -1,0 +1,20 @@
+{
+  "version": "v2",
+  "groups": {
+    "zh_on_en": [
+      {"query": "CLIP 模型", "expected_asset_ids": ["Learning Transferable Visual Models From Natural Language Supervision"]},
+      {"query": "BERT 预训练双向 transformer", "expected_asset_ids": ["Bert"]},
+      {"query": "RAG 检索增强生成", "expected_asset_ids": ["Retrieval Augmented Generation"]},
+      {"query": "残差网络 ResNet", "expected_asset_ids": ["Resnet"]}
+    ],
+    "en_on_en": [
+      {"query": "image classification deep learning", "expected_asset_ids": ["Alexnet"]},
+      {"query": "real-time object detection", "expected_asset_ids": ["You Only Look Once"]},
+      {"query": "GAN generative adversarial nets", "expected_asset_ids": ["Gan"]}
+    ],
+    "negative": [
+      {"query": "强化学习算法 PPO DQN", "expected_asset_ids": []},
+      {"query": "联邦学习框架", "expected_asset_ids": []}
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "version": "v1",
+  "groups": {
+    "en": [
+      {"query": "retrieval augmented generation RAG", "expected_asset_ids": ["Retrieval Augmented Generation"]},
+      {"query": "attention is all you need transformer architecture", "expected_asset_ids": ["Attention Is All You Need"]},
+      {"query": "deep residual learning image recognition ResNet", "expected_asset_ids": ["Resnet"]},
+      {"query": "generative adversarial networks", "expected_asset_ids": ["Gan"]},
+      {"query": "learning transferable visual models natural language supervision contrastive", "expected_asset_ids": ["Learning Transferable Visual Models From Natural Language Supervision"]}
+    ],
+    "zh": [
+      {"query": "哪份资料讲了 retrieval augmented generation？", "expected_asset_ids": ["Retrieval Augmented Generation"]},
+      {"query": "残差网络 怎么解决梯度消失", "expected_asset_ids": ["Resnet"]},
+      {"query": "关于自注意力 Transformer 的原始论文", "expected_asset_ids": ["Attention Is All You Need"]}
+    ]
+  }
+}

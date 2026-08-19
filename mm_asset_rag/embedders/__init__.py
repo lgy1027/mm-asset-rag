@@ -14,6 +14,7 @@ from __future__ import annotations
 from threading import Lock
 
 from ..registry import get_embedder, register_embedder
+from .cn_clip_embedder import CnClipImageEmbedder, CnClipImageUnavailable
 from .image_embedder import ImageEmbedder, ImageEmbeddingUnavailable
 from .reranker import Reranker, get_default_reranker, reset_reranker
 from .text_embedder import (
@@ -24,12 +25,15 @@ from .text_embedder import (
 )
 
 __all__ = [
+    "CnClipImageEmbedder",
+    "CnClipImageUnavailable",
     "EmbeddingConfigError",
     "ImageEmbedder",
     "ImageEmbeddingUnavailable",
     "Reranker",
     "SentenceTransformerTextEmbedder",
     "TextEmbedder",
+    "build_default_image_embedder",
     "build_default_text_embedder",
     "get_default_image_embedder",
     "get_default_reranker",
@@ -86,11 +90,33 @@ def _ensure_image_registered() -> None:
         # See note in ``_ensure_text_registered``: log instead of
         # silently suppressing the missing-CLIP / missing-Pillow error.
         try:
-            _embedders.register(_DEFAULT_IMAGE_KEY, ImageEmbedder(), replace=False)
-        except ImageEmbeddingUnavailable as exc:
+            _embedders.register(_DEFAULT_IMAGE_KEY, build_default_image_embedder(), replace=False)
+        except (ImageEmbeddingUnavailable, CnClipImageUnavailable) as exc:
             print(f"[embedders] default image embedder not registered: {exc}")
         except ValueError:
             pass
+
+
+def build_default_image_embedder():
+    """工厂:依据 ``Settings.image_provider`` 选择 image embedder 实现。
+
+    - ``cn_clip`` → :class:`CnClipImageEmbedder`(Chinese-CLIP,中文 zero-shot ~71%)
+    - ``lite`` / ``sentence_transformers`` → :class:`ImageEmbedder`(sentence-transformers CLIP)
+      两者是别名,都需要 [clip] extra;缺 [clip] 时构造抛
+      ``ImageEmbeddingUnavailable``,被 :func:`_ensure_image_registered` 兜底,
+      索引 / 搜索路径返回空。
+
+    与 :func:`build_default_text_embedder` 对称,镜像 text 侧的双 backend dispatch。
+    """
+    from ..settings import get_settings
+
+    s = get_settings()
+    if s.image_provider == "cn_clip":
+        return CnClipImageEmbedder()
+    # 默认 + sentence_transformers 都走 sentence-transformers CLIP
+    # (行为等价;区分只是为让旧 .env 里写 ``sentence_transformers`` 的用户
+    # 显式看到自己选了 ST 而非 "lite 兜底")。
+    return ImageEmbedder()
 
 
 def get_default_text_embedder() -> TextEmbedder:
@@ -125,11 +151,14 @@ def get_default_text_embedder() -> TextEmbedder:
             return build_default_text_embedder()  # raises EmbeddingConfigError
 
 
-def get_default_image_embedder() -> ImageEmbedder:
-    """Return the process-wide default :class:`ImageEmbedder`.
+def get_default_image_embedder():
+    """Return the process-wide default image embedder.
 
     See :func:`get_default_text_embedder` for the slot convention and
-    the one-shot retry on a transient empty registry.
+    the one-shot retry on a transient empty registry. The concrete
+    subclass (sentence-transformers ``ImageEmbedder`` or
+    ``CnClipImageEmbedder``) depends on ``Settings.image_provider``;
+    see :func:`build_default_image_embedder`.
     """
     _ensure_image_registered()
     try:
@@ -139,5 +168,7 @@ def get_default_image_embedder() -> ImageEmbedder:
         try:
             return get_embedder(*_DEFAULT_IMAGE_KEY)  # type: ignore[return-value]
         except KeyError:
-            # Still empty after retry → CLIP/Pillow genuinely unavailable.
-            return ImageEmbedder()  # raises ImageEmbeddingUnavailable
+            # Registry still empty after a retry → factory genuinely failing.
+            # 走工厂让其真实错误上报(cn_clip 缺 transformers / sentence-transformers 缺
+            # [clip] extra),而不是统一报 "需要 [clip] extra"。
+            return build_default_image_embedder()

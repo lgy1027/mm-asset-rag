@@ -1,21 +1,12 @@
-"""Shared retrieval-quality metrics.
-
-The legacy ``scripts/eval_rag.py`` and ``scripts/eval_extended.py`` each
-rolled their own ``hit_rate`` / ``MRR`` helpers; the new full-suite run
-also needs ``NDCG@k`` / ``Precision@k`` / ``Recall@k`` / ``MAP`` / ``F1@k``
-so the eval reports read like a standard RAG benchmark. Keeping the
-math in one place makes it easy to test and easy to swap in a C
-implementation later if the suite grows.
+"""Shared retrieval-quality metrics (hit_rate@k, MRR, NDCG@k, Precision@k,
+Recall@k, MAP, F1@k). Kept in one place so the eval runners and tests share
+a single implementation.
 
 Every metric takes:
 
-- ``actual_ids``  — list of ``asset_id`` strings returned by the
-  retriever at rank ``1..k``
-- ``expected_ids`` — list of acceptable ground-truth ids
+- ``actual_ids``  — ids returned by the retriever at rank ``1..k``
+- ``expected_ids`` — acceptable ground-truth ids
 - ``k``           — cutoff
-
-For "any-of" relevance (one expected id is enough to count as a hit)
-the helpers handle the set-style match automatically.
 """
 
 from __future__ import annotations

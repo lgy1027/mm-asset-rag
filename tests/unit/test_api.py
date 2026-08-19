@@ -7,6 +7,7 @@ background ingest / embeddings / Qdrant are monkeypatched.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -210,6 +211,54 @@ def test_eval_endpoint_runs_cases(client: TestClient) -> None:
     assert response.json() == {"results": []}
 
 
+def test_eval_endpoint_rejects_traversal_cases_path(client: TestClient) -> None:
+    """``cases_path`` with ``..`` or an absolute path is bounced at the API
+    boundary (422) so an untrusted ``/eval {cases_path}`` can't read an
+    arbitrary file via ``load_cases`` → ``read_text``."""
+    response = client.post("/eval", json={"cases_path": "../../etc/passwd.json"})
+    assert response.status_code == 422
+
+
+def test_eval_endpoint_rejects_absolute_cases_path(client: TestClient) -> None:
+    response = client.post("/eval", json={"cases_path": "/etc/passwd.json"})
+    assert response.status_code == 422
+
+
+def test_eval_endpoint_rejects_non_json_cases_path(client: TestClient) -> None:
+    response = client.post("/eval", json={"cases_path": "secret.txt"})
+    assert response.status_code == 422
+
+
+def test_eval_endpoint_resolves_cases_in_eval_cases_dir(client: TestClient) -> None:
+    """A user-supplied case file in eval_cases/ resolves and is forwarded
+    to run_eval. Pins the shared resolver's existence check on the API path."""
+    from mm_asset_rag.paths import get_eval_cases_dir
+
+    case_file = get_eval_cases_dir() / "user_case.json"
+    case_file.write_text('{"version":"v1","groups":{}}', encoding="utf-8")
+
+    captured: dict[str, object] = {}
+
+    def fake_run_eval(top_k, *, cases_path=None):
+        captured["cases_path"] = cases_path
+        return []
+
+    with patch("mm_asset_rag.api.run_eval", side_effect=fake_run_eval):
+        response = client.post("/eval", json={"cases_path": "user_case.json"})
+    assert response.status_code == 200
+    forwarded = captured.get("cases_path")
+    assert forwarded is not None
+    assert Path(forwarded).name == "user_case.json"
+    assert Path(forwarded).is_file()
+
+
+def test_eval_endpoint_rejects_missing_cases_path(client: TestClient) -> None:
+    """A legitimate-shaped cases_path that doesn't exist in either allowed
+    dir surfaces as 422 (not 500) — the resolver checks existence."""
+    response = client.post("/eval", json={"cases_path": "definitely_missing.json"})
+    assert response.status_code == 422
+
+
 def test_upload_preview_rejects_empty_batch(client: TestClient) -> None:
     response = client.post("/upload/preview", files=[])
     assert response.status_code == 422  # FastAPI requires at least one file field
@@ -255,6 +304,73 @@ def test_upload_preview_accepts_pdf(client: TestClient, pdf_bytes: bytes) -> Non
     assert response.status_code == 200, response.text
     preview = response.json()["previews"][0]
     assert preview["sniff"]["source_type"] == "pdf"
+
+
+def test_upload_preview_runs_sync_preview_off_event_loop(
+    client: TestClient, png_bytes: bytes
+) -> None:
+    """``/upload/preview`` must hand the sync ``preview()`` call to a worker
+    thread via ``asyncio.to_thread`` so the event loop isn't blocked. Pins
+    that the route is ``async def`` + ``to_thread`` — the regression would be
+    inlining the call back."""
+    import inspect
+
+    from mm_asset_rag.api import upload_preview
+
+    # The route must be a coroutine function (so the handler runs on the
+    # event loop and can await to_thread).
+    assert inspect.iscoroutinefunction(upload_preview)
+
+    # And it must call to_thread around the pipeline preview — assert by
+    # patching asyncio.to_thread and confirming the pipeline runs inside it.
+    with (
+        patch(
+            "mm_asset_rag.api.asyncio.to_thread", side_effect=lambda f, *a, **kw: f(*a)
+        ) as to_thread,
+        patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None),
+    ):
+        response = client.post(
+            "/upload/preview",
+            files=[("files", ("scene.png", png_bytes, "image/png"))],
+        )
+    assert response.status_code == 200, response.text
+    assert to_thread.called, "preview() must run via asyncio.to_thread"
+
+
+def test_blocking_routes_are_async_and_use_to_thread() -> None:
+    """The blocking routes (``/search``, ``/answer``, ``/eval``, ``/chat``,
+    ``/upload/preview``) must be ``async def`` so their sync retrieval / LLM /
+    eval work runs in the worker pool via ``asyncio.to_thread`` — not inline
+    on the event loop (which would freeze the server on every request). A
+    regression that flips any back to ``def`` would keep TestClient green
+    (behaviour-equivalent), so this is the guard that catches it.
+    """
+    import inspect
+
+    import mm_asset_rag.api as api_mod
+
+    for name in ("search", "answer", "eval_endpoint", "chat", "upload_preview"):
+        fn = getattr(api_mod, name, None)
+        assert fn is not None, f"route {name} disappeared from api module"
+        assert inspect.iscoroutinefunction(fn), (
+            f"route {name} must be async def so blocking work runs via to_thread"
+        )
+
+
+def test_blocking_route_dispatches_via_to_thread(client: TestClient) -> None:
+    """``/search`` must actually route its sync work through
+    ``asyncio.to_thread`` (not just be ``async def`` with an inline call).
+    Patches ``asyncio.to_thread`` and confirms dispatch_search runs inside it."""
+    with (
+        patch(
+            "mm_asset_rag.api.asyncio.to_thread",
+            side_effect=lambda f, *a, **kw: f(*a),
+        ) as to_thread,
+        patch("mm_asset_rag.api.dispatch_search", return_value=[]),
+    ):
+        response = client.post("/search", json={"query": "x", "mode": "text", "top_k": 3})
+    assert response.status_code == 200
+    assert to_thread.called, "/search must run dispatch_search via asyncio.to_thread"
 
 
 def test_upload_confirm_spawns_ingest_task(

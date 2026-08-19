@@ -184,3 +184,86 @@ def test_embed_text_and_image_unchanged(fake_embedder: ImageEmbedder) -> None:
     text_vec = fake_embedder.embed_text("hi")
     assert len(text_vec) == 4
     assert len(fake_embedder._model.calls) == 1
+
+
+def test_embed_image_returns_none_for_non_image_file(
+    fake_embedder: ImageEmbedder, tmp_path: Path
+) -> None:
+    """``embed_image`` 对非图片文件返回 ``None``,不抛 — 契约要求。"""
+    bad = tmp_path / "not_image.txt"
+    bad.write_bytes(b"this is not a PNG")
+    assert fake_embedder.embed_image(bad) is None
+    # 模型没被调用过
+    assert fake_embedder._model.calls == []
+
+
+def test_embed_image_returns_none_for_missing_file(
+    fake_embedder: ImageEmbedder, tmp_path: Path
+) -> None:
+    missing = tmp_path / "does_not_exist.png"
+    assert fake_embedder.embed_image(missing) is None
+
+
+def test_embed_image_batch_marks_invalid_files_as_none(
+    fake_embedder: ImageEmbedder, tmp_path: Path
+) -> None:
+    """``embed_image_batch`` 跳过 PIL 无法打开的文件,在其槽位放 ``None``。"""
+    from PIL import Image
+
+    good = tmp_path / "good.png"
+    Image.new("RGB", (4, 4), color=(1, 2, 3)).save(good)
+    bad = tmp_path / "bad.txt"
+    bad.write_bytes(b"not an image")
+
+    out = fake_embedder.embed_image_batch([bad, good, bad])
+    assert len(out) == 3
+    assert out[0] is None
+    assert isinstance(out[1], list)
+    assert len(out[1]) == 4
+    assert out[2] is None
+    # 只 encode 一次(合法的 image)
+    assert len(fake_embedder._model.calls) == 1
+
+
+def test_embed_image_batch_all_invalid_returns_all_none(
+    fake_embedder: ImageEmbedder, tmp_path: Path
+) -> None:
+    bad = tmp_path / "bad.txt"
+    bad.write_bytes(b"not an image")
+    out = fake_embedder.embed_image_batch([bad, bad])
+    assert out == [None, None]
+    assert fake_embedder._model.calls == []
+
+
+def test_dim_settings_override_skips_probe(fake_embedder: ImageEmbedder, monkeypatch) -> None:
+    """``Settings.image_embedding_dim`` 覆盖 probe,跳过模型调用。"""
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "image_embedding_dim", 768)
+    # fake_embedder._model 是 fake,如果有 probe 会调用它; 但 probe 也用 _model
+    # 通过 set _model None 可证明不调
+    fake_embedder._model = None
+    fake_embedder._dim = None
+    assert fake_embedder.dim() == 768
+
+
+def test_dim_settings_override_beats_cached_value(
+    fake_embedder: ImageEmbedder, monkeypatch
+) -> None:
+    """settings 覆盖优先于 _dim 缓存(让运行时切换配置生效)。"""
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "image_embedding_dim", 1024)
+    fake_embedder._dim = 512  # 缓存旧值,应被 settings 覆盖
+    assert fake_embedder.dim() == 1024
+
+
+def test_dim_falls_back_to_probe_when_settings_unset(
+    fake_embedder: ImageEmbedder, monkeypatch
+) -> None:
+    """settings 未设时走 probe(fake_embedder 注入的 _model.dim=4)。"""
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "image_embedding_dim", None)
+    fake_embedder._dim = None
+    assert fake_embedder.dim() == 4

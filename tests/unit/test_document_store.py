@@ -40,3 +40,32 @@ def test_write_documents_uses_default_location(tmp_home: Path) -> None:
     write_documents(docs)
     assert get_documents_jsonl().exists()
     assert read_documents()[0].text == "hi"
+
+
+def test_read_documents_skips_malformed_rows(tmp_path: Path) -> None:
+    """A truncated / corrupted row from a mid-write crash must be skipped,
+    not abort the whole index build. The surviving rows still load."""
+    target = tmp_path / "docs.jsonl"
+    target.write_text(
+        # row 0: valid
+        '{"text": "alpha", "metadata": {"asset_id": "a"}}\n'
+        # row 1: truncated (half-written) — not valid JSON
+        '{"text": "bet\n'
+        # row 2: valid
+        '{"text": "gamma", "metadata": {"asset_id": "c"}}\n',
+        encoding="utf-8",
+    )
+    docs = read_documents(path=target)
+    assert [d.text for d in docs] == ["alpha", "gamma"]
+
+
+def test_read_documents_skips_row_missing_text(tmp_path: Path) -> None:
+    """A row missing the ``text`` key (KeyError) is skipped, not fatal."""
+    target = tmp_path / "docs.jsonl"
+    target.write_text(
+        '{"metadata": {"asset_id": "a"}}\n'  # no "text"
+        '{"text": "beta", "metadata": {"asset_id": "b"}}\n',
+        encoding="utf-8",
+    )
+    docs = read_documents(path=target)
+    assert [d.text for d in docs] == ["beta"]

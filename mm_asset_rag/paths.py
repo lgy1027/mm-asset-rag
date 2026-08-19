@@ -77,18 +77,6 @@ def get_indexes_dir() -> Path:
     return get_data_dir() / "indexes"
 
 
-def get_text_index_dir() -> Path:
-    """Legacy, unused — text index lives in Qdrant now (``indexes/qdrant``).
-
-    Retained for backward compatibility with callers that still probe this
-    directory (e.g. ``api.py:/health``'s ``text_index_exists`` KPI). The
-    LlamaIndex-era ``indexes/text`` directory is no longer written to by the
-    ingest pipeline; new code should read the Qdrant collection state via
-    :func:`get_qdrant_path` instead. Do not add new callers.
-    """
-    return get_indexes_dir() / "text"
-
-
 def get_qdrant_path() -> Path:
     return get_indexes_dir() / "qdrant"
 
@@ -99,6 +87,82 @@ def get_documents_jsonl() -> Path:
 
 def get_eval_report() -> Path:
     return get_data_dir() / "eval_report.json"
+
+
+def get_eval_cases_dir() -> Path:
+    """Directory for user-supplied eval case JSONs accepted by ``cases_path``.
+
+    ``/eval`` and ``--cases`` restrict user-supplied case files to this dir
+    (or the repo ``examples/`` dir) so an untrusted ``cases_path`` can't read
+    arbitrary files. Created lazily on first access.
+    """
+    path = get_data_dir() / "eval_cases"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def resolve_cases_path(value: str | Path | None) -> Path | None:
+    """Resolve a user-supplied ``cases_path`` against the allowed dirs.
+
+    ``None`` → ``None`` (the caller uses the bundled default /
+    ``EVAL_CASES_PATH``, resolved server-side and trusted). A non-None path
+    is validated (relative, ``.json`` suffix, no ``..`` / absolute
+    traversal), then resolved under ``$MM_ASSET_RAG_HOME/eval_cases/``
+    first and the repo ``examples/`` dir second. The resolved path must
+    exist on disk and stay inside one of those dirs — "lands inside an
+    allowed dir" is not enough; the file has to be there so a typo'd path
+    raises rather than silently falling through.
+
+    Shared by the API (``POST /eval``) and CLI (``--cases``) so the two
+    surfaces can't drift. Raises :class:`ValueError` on a malformed path
+    and :class:`FileNotFoundError` when the file isn't in either dir;
+    callers translate those to 422 / ``SystemExit``.
+
+    Note: the repo ``examples/`` dir only exists for source / editable
+    installs (it's excluded from the wheel); a wheel install's user should
+    put case files in ``eval_cases/`` or use the bundled default.
+    """
+    if value is None:
+        return None
+    raw = Path(str(value)).expanduser()
+    if raw.is_absolute() or ".." in raw.parts:
+        raise ValueError(f"cases_path must be a relative path inside eval_cases/: {value!r}")
+    suffix = raw.suffix.lower()
+    if suffix and suffix != ".json":
+        raise ValueError(f"cases_path must point at a .json file: {value!r}")
+
+    candidate = raw
+    # The README / docs use the ``examples/<name>`` form (e.g.
+    # ``--cases examples/eval_cases_chapter11_v1.json``). ``repo_examples``
+    # *is* the ``examples/`` dir, so joining it with ``examples/<name>``
+    # would double the prefix (``examples/examples/<name>``) and miss.
+    # Strip a leading ``examples/`` segment for the examples/ root only;
+    # eval_cases/ keeps the raw candidate so a file literally named that
+    # under eval_cases/ still wins (and a bare ``<name>`` works on both).
+    parts = candidate.parts
+    candidate_examples = (
+        Path(*parts[1:]) if len(parts) > 1 and parts[0] == "examples" else candidate
+    )
+
+    def _inside(existing_base: Path, cand: Path) -> Path | None:
+        base = existing_base.resolve()
+        resolved = (base / cand).resolve()
+        try:
+            resolved.relative_to(base)
+        except ValueError:
+            return None
+        return resolved if resolved.is_file() else None
+
+    # eval_cases/ under the data dir — the user's own case file location.
+    found = _inside(get_eval_cases_dir(), candidate)
+    if found is not None:
+        return found
+    # Repo examples/ — chapter11 baselines ship there (source installs only).
+    repo_examples = Path(__file__).resolve().parents[1] / "examples"
+    found = _inside(repo_examples, candidate_examples)
+    if found is not None:
+        return found
+    raise FileNotFoundError(f"cases_path not found in eval_cases/ or examples/: {value!r}")
 
 
 def get_asset_index_path() -> Path:

@@ -66,8 +66,8 @@ async def lifespan(app: FastAPI):
         get_pipeline().cleanup_expired_caches()
     yield
     # Graceful shutdown: close the qdrant client so it removes its .lock
-    # file. If the process is killed before this runs, the next startup will
-    # also tolerate a stale .lock (see qdrant_store._clean_stale_lock).
+    # file. If the process is killed before this runs, the next startup
+    # tolerates a stale .lock (see backends.qdrant_backend._clean_stale_lock).
     with suppress(Exception):
         get_qdrant_client().close()
 
@@ -81,25 +81,12 @@ app = FastAPI(
 
 
 # ─── Auth + host guard ───────────────────────────────────────────────────
-#
-# Two independent layers, both opt-in but with safe defaults:
-#
-# * ``TrustedHostMiddleware`` — locked to loopback (127.0.0.1, localhost) by
-#   default so a malicious web page cannot reach the API via DNS rebinding
-#   (the browser SOP preflight blocks JSON POST, but multipart ``/upload``
-#   is a simple request and the rebinding trick can read GET responses).
-#   Set ``MMRAG_TRUSTED_HOSTS`` to your public hostname(s) or ``*`` to relax.
-#
-# * bearer-token dependency — when ``MMRAG_API_TOKEN`` is set, the
-#   destructive + write endpoints *and* the LLM-calling endpoints
-#   (/answer, /chat, /chat/stream — they spend provider quota) require
-#   ``Authorization: Bearer <token>`` or ``X-API-Key: <token>``. Unset =
-#   zero-config loopback (no auth), so the bundled web UI works out of
-#   the box on a developer's machine.
-#
-# Read endpoints (/search /assets* /tasks* /health /) stay open so the
-# web UI's same-origin fetches keep working without a token; they don't
-# mutate data or spend quota.
+# TrustedHostMiddleware is locked to loopback by default so a malicious web
+# page can't read GET responses via DNS rebinding (multipart /upload is a
+# simple request, no SOP preflight). Relax via MMRAG_TRUSTED_HOSTS.
+# When MMRAG_API_TOKEN is set, write + destructive + LLM-calling endpoints
+# (/answer, /chat … — they spend provider quota) require a bearer / X-API-Key
+# token; unset = zero-config loopback. Read endpoints stay open.
 
 _DEFAULT_TRUSTED_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
 
@@ -265,6 +252,39 @@ def _validate_image_path(value: str | None) -> str | None:
     return value
 
 
+def _validate_cases_path(value: str | None) -> str | None:
+    """Lightweight request-time guard: reject absolute / ``..`` / non-.json
+    ``cases_path`` with 422 before the handler runs. Full resolution +
+    existence check is :func:`mm_asset_rag.paths.resolve_cases_path` (shared
+    with the CLI) — this only bounces clearly-bad shapes early."""
+    if value is None:
+        return value
+    raw = Path(value).expanduser()
+    if raw.is_absolute() or ".." in raw.parts:
+        raise ValueError("cases_path must be a relative path inside eval_cases/")
+    suffix = raw.suffix.lower()
+    if suffix and suffix != ".json":
+        raise ValueError("cases_path must point at a .json file")
+    return value
+
+
+def _resolve_cases_path(value: str | None) -> str | Path | None:
+    """Resolve a validated ``cases_path`` to an on-disk path inside
+    ``eval_cases/`` or the repo ``examples/`` dir. ``None`` passes through
+    (bundled default / ``EVAL_CASES_PATH`` are resolved server-side and
+    trusted). Translates the shared resolver's ``ValueError`` /
+    ``FileNotFoundError`` into HTTP 422 so a bad path surfaces as a proper
+    client error instead of a 500 from ``load_cases``.
+    """
+    from .paths import resolve_cases_path
+
+    try:
+        resolved = resolve_cases_path(value)
+    except (ValueError, FileNotFoundError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return None if resolved is None else str(resolved)
+
+
 class _RouteRequest(BaseModel):
     """Shared fields for ``SearchRequest`` and ``ChatRequest``.
 
@@ -298,10 +318,24 @@ class EvalRequest(BaseModel):
     v2: bool = Field(
         default=False,
         description=(
-            "Run the v2 regression set (83 cases, Chinese-primary, "
-            "multi-dimensional) instead of v1. Default is v1."
+            "Run the v2 regression set (multi-dimensional, Chinese-primary) "
+            "instead of v1. Default is v1."
         ),
     )
+    cases_path: str | None = Field(
+        default=None,
+        description=(
+            "Optional relative path to a case JSON inside eval_cases/ "
+            "(or examples/), overriding the default "
+            "(Settings.EVAL_CASES_PATH → the bundled sample). Same "
+            "schema as ``mmrag eval --cases``."
+        ),
+    )
+
+    @field_validator("cases_path")
+    @classmethod
+    def _check_cases_path(cls, v: str | None) -> str | None:
+        return _validate_cases_path(v)
 
 
 class ChatRequest(_RouteRequest):
@@ -502,45 +536,49 @@ def _qdrant_collection_alive(kind: str) -> bool:
 
 
 @app.post("/search")
-def search(request: SearchRequest) -> dict[str, object]:
-    hits = _run_search(request)
+async def search(request: SearchRequest) -> dict[str, object]:
+    hits = await asyncio.to_thread(_run_search, request)
     return {"query": request.query, "mode": request.mode, "hits": [h.__dict__ for h in hits]}
 
 
 @app.post("/answer")
-def answer(
+async def answer(
     request: AnswerRequest,
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
-    return answer_question(request.question, top_k=request.top_k)
+    return await asyncio.to_thread(answer_question, request.question, top_k=request.top_k)
 
 
 @app.post("/eval")
-def eval_endpoint(
+async def eval_endpoint(
     request: EvalRequest,
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
+    cases_path = _resolve_cases_path(request.cases_path)
     if request.v2:
         from .evaluation_v2 import run_eval_v2
 
-        results = run_eval_v2(top_k=request.top_k)
+        results = await asyncio.to_thread(run_eval_v2, top_k=request.top_k, cases_path=cases_path)
         # ``V2Result`` mirrors v1's ``EvalResult`` (same fields:
         # query / expected_asset_ids / actual_asset_ids / hit / rank /
         # group), so ``asdict`` produces the same row shape the v1
         # branch returns; the only addition is a ``version`` tag so
         # clients can tell which set ran.
         return {"results": [asdict(r) for r in results], "version": "v2"}
-    return {"results": [r.__dict__ for r in run_eval(top_k=request.top_k)]}
+    results = await asyncio.to_thread(run_eval, top_k=request.top_k, cases_path=cases_path)
+    return {"results": [r.__dict__ for r in results]}
 
 
 @app.post("/chat")
-def chat(
+async def chat(
     request: ChatRequest,
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
     """One-call: retrieve + grounded LLM answer in a single response."""
-    hits = _run_search(request)
-    answer = answer_question(request.question, top_k=request.top_k, hits=hits)
+    hits = await asyncio.to_thread(_run_search, request)
+    answer = await asyncio.to_thread(
+        answer_question, request.question, top_k=request.top_k, hits=hits
+    )
     return {
         "question": request.question,
         "answer": answer,
@@ -772,7 +810,12 @@ async def upload_preview(
         if not staged:
             raise HTTPException(status_code=400, detail={"rejected": rejected})
 
-        previews = get_pipeline().preview(staged)
+        # ``UploadPipeline.preview`` does sync I/O (shutil copy, sha256,
+        # sniff via PyMuPDF/Pillow, optional VLM HTTP calls). Running it
+        # inline in this ``async def`` would freeze the event loop for the
+        # whole batch — /health, other /search, and SSE heartbeats all stall.
+        # Hand it to the default thread pool so the loop stays responsive.
+        previews = await asyncio.to_thread(get_pipeline().preview, staged)
     except HTTPException:
         raise
     finally:

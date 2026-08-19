@@ -1,14 +1,13 @@
-"""Regression set for retrieval quality (v1 historical baseline).
+"""Retrieval quality eval (v1): cases loaded from JSON.
 
-The set is split into three groups:
-
-- ``EN_PAPER_QUERIES`` — one to two natural-language topic queries per
-  chapter11 arxiv paper. Used to compute hit_rate / MRR / NDCG across
-  the 32-paper English corpus.
-- ``ZH_PAPER_QUERIES`` — Chinese queries that map to the same papers,
-  exercising the cross-language path (Chinese BM25 / dense).
-- ``LEGACY_QUERIES`` — the original three-case regression set kept for
-  backwards compatibility.
+**Cases are parameterized** — loaded from a JSON file via
+:func:`load_cases` (``{"version", "groups": {group: [case, ...]}}``).
+The bundled default (``mm_asset_rag/eval_data/v1_cases.json``) is a
+small text→text generic sample over well-known arxiv papers; point
+``EVAL_CASES_PATH`` / ``--cases`` at your own file to score a custom
+corpus. A larger internal baseline ships at
+``examples/eval_cases_chapter11_v1.json`` for reproducibility (see
+that file's README — it needs its own corpus ingested).
 
 Every case pairs a free-text ``query`` with one or more
 ``expected_asset_ids``. Matching is prefix-tolerant: a case "hits" if
@@ -23,12 +22,10 @@ Use :func:`run_eval` to compute the raw results and
 plus aggregate metrics (hit_rate, MRR, NDCG@k, MAP, ...) are dumped
 as JSON.
 
-This module is the v6-corrected historical baseline; the newer
-:mod:`mm_asset_rag.evaluation_v2` is the active development surface.
 The shared pure helpers — :func:`strip_trailing_hash`, :func:`_match`,
 :func:`_normalize_id_list`, and :func:`_expand` — live in
 :mod:`mm_asset_rag.evaluation_v2` and are re-exported here so v1 keeps
-its public surface (``EVAL_CASES``, ``run_eval``, ``EvalResult``) while
+its public surface (``load_cases``, ``run_eval``, ``EvalResult``) while
 de-duplicating the matcher / normalisation logic. v2 never imports v1,
 so there is no circular dependency.
 """
@@ -36,71 +33,43 @@ so there is no circular dependency.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass
 from itertools import zip_longest
+from pathlib import Path
 
 # Shared pure helpers live in evaluation_v2 (the new-generation module).
 # v2 never imports v1, so importing here is cycle-free.
 from .evaluation_v2 import (
-    _expand,
     _match,
     _normalize_id_list,
     strip_trailing_hash,
+)
+from .evaluation_v2 import (
+    load_cases as _load_cases_v2,
 )
 from .metrics import aggregate_metrics
 from .paths import get_asset_index_path, get_eval_report
 from .retrieval import hybrid_search
 
 
-def _load_asset_id_index() -> dict[str, str]:
-    """Build a ``bare_id`` (no _hash) → ``full_id`` map from ``asset_index.jsonl``.
+def load_cases(path: str | Path | None = None) -> dict[str, list[dict]]:
+    """Load v1 eval cases as a ``{group: [case, ...]}`` dict.
 
-    The chapter11 corpus is parsed with content-hash asset_ids, but the
-    :data:`EVAL_CASES` reference bare model names (``"Alexnet"``,
-    ``"Bert"``, ...). To compute standard IR metrics
-    (hit_rate@k / MRR / NDCG) the expected set has to be the same shape
-    as the returned actual set, so we expand bare names to the full
-    hashed ids the index actually returns.
+    Thin wrapper over :func:`mm_asset_rag.evaluation_v2.load_cases` pinned
+    to ``version="v1"``. Resolution: explicit ``path`` →
+    ``Settings.eval_cases_path`` → the bundled ``v1_cases.json``.
     """
-    index_path = get_asset_index_path()
-    if not index_path.exists():
-        return {}
-    latest: dict[str, dict] = {}
-    with index_path.open(encoding="utf-8") as f:
-        for line in f:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if row.get("deleted"):
-                continue
-            latest[row["sha256"]] = row
-    bare_to_full: dict[str, str] = {}
-    for row in latest.values():
-        full = row.get("asset_id", "")
-        m = re.match(r"^(.+)_([0-9a-f]{8})$", full)
-        bare = m.group(1) if m else full
-        # If multiple rows share the same bare id (e.g. reparse of the
-        # same source under a new hash), keep the most recent by
-        # file mtime ordering — first-wins is fine since the latest
-        # row wins in our ``latest`` dict.
-        bare_to_full.setdefault(bare, full)
-    return bare_to_full
+    return _load_cases_v2(path, version="v1")
 
 
 def _load_bare_to_all_fulls() -> dict[str, list[str]]:
     """Build a ``bare`` → ``[full, ...]`` map covering every hash variant.
 
-    Unlike :func:`_load_asset_id_index` (which keeps only the latest
-    hash per bare title), this preserves all duplicates so the matcher
-    accepts the retriever returning *any* hash of the same source —
-    relevant when re-parsing produces a new SHA but the document
-    content is unchanged. Keys are :func:`strip_trailing_hash`-normalised
-    (hash stripped + casefolded) so a case-different expected id still
-    resolves to the full-variant set.
+    Preserves all duplicates so the matcher accepts the retriever returning
+    *any* hash of the same source — relevant when re-parsing produces a new
+    SHA but the document content is unchanged. Keys are
+    :func:`strip_trailing_hash`-normalised (hash stripped + casefolded) so a
+    case-different expected id still resolves to the full-variant set.
     """
     index_path = get_asset_index_path()
     if not index_path.exists():
@@ -128,227 +97,6 @@ def _load_bare_to_all_fulls() -> dict[str, list[str]]:
     return bare_to_all
 
 
-# ── English paper queries ─────────────────────────────────────────────
-# Format: (query, [expected_asset_id_or_substring, ...])
-EN_PAPER_QUERIES: list[dict] = [
-    {
-        "query": "ImageNet classification with deep convolutional neural networks",
-        "expected_asset_ids": ["Alexnet"],
-    },
-    {
-        "query": "attention is all you need transformer architecture",
-        "expected_asset_ids": ["Attention Is All You Need"],
-    },
-    {
-        "query": "BERT pre-training bidirectional transformer language model",
-        "expected_asset_ids": ["Bert"],
-    },
-    {
-        "query": "learning transferable visual models natural language supervision contrastive",
-        "expected_asset_ids": [
-            "Learning Transferable Visual Models From Natural Language Supervision"
-        ],
-    },
-    {"query": "denoising diffusion probabilistic models", "expected_asset_ids": ["Ddpm"]},
-    {"query": "densely connected convolutional networks", "expected_asset_ids": ["Densenet"]},
-    {
-        "query": "end-to-end object detection with transformers set prediction",
-        "expected_asset_ids": ["Detr"],
-    },
-    {
-        "query": "compound scaling of convolutional neural networks efficientnet",
-        "expected_asset_ids": ["EfficientNet"],
-    },
-    {
-        "query": "flamingo visual language model few-shot learning",
-        "expected_asset_ids": ["Flamingo"],
-    },
-    {"query": "generative adversarial networks", "expected_asset_ids": ["Gan"]},
-    {"query": "GloVe global vectors for word representation", "expected_asset_ids": ["Glove"]},
-    {"query": "language models are few-shot learners GPT-3", "expected_asset_ids": ["Gpt3"]},
-    {
-        "query": "LayoutLM pre-training text and layout document image understanding",
-        "expected_asset_ids": ["LayoutLM"],
-    },
-    {
-        "query": "LLaMA open and efficient foundation language models",
-        "expected_asset_ids": ["Llama"],
-    },
-    {"query": "LoRA low-rank adaptation of large language models", "expected_asset_ids": ["Lora"]},
-    {
-        "query": "MobileNets efficient convolutional networks for mobile vision",
-        "expected_asset_ids": ["Mobilenet"],
-    },
-    {
-        "query": "MobileNetV2 inverted residuals linear bottlenecks",
-        "expected_asset_ids": ["Mobilenetv2"],
-    },
-    {
-        "query": "Pix2Pix image-to-image translation conditional adversarial",
-        "expected_asset_ids": ["Pix2Pix"],
-    },
-    {
-        "query": "rich feature hierarchies object detection semantic segmentation R-CNN",
-        "expected_asset_ids": ["Rich feature hierarchies"],
-    },
-    {"query": "deep residual learning image recognition ResNet", "expected_asset_ids": ["Resnet"]},
-    {
-        "query": "aggregated residual transformations ResNeXt",
-        "expected_asset_ids": ["Aggregated Residual Transformations"],
-    },
-    {
-        "query": "retrieval augmented generation RAG",
-        "expected_asset_ids": ["Retrieval Augmented Generation"],
-    },
-    {"query": "segment anything foundation model", "expected_asset_ids": ["Segment Anything"]},
-    {"query": "SSD single shot multibox detector", "expected_asset_ids": ["Ssd"]},
-    {
-        "query": "high-resolution image synthesis latent diffusion stable diffusion",
-        "expected_asset_ids": ["Stable Diffusion"],
-    },
-    {
-        "query": "U-Net convolutional networks biomedical image segmentation",
-        "expected_asset_ids": ["U-Net Convolutional Networks for Biomedical Image Segmentation"],
-    },
-    {"query": "auto-encoding variational Bayes", "expected_asset_ids": ["Vae"]},
-    {"query": "vision transformer image recognition ViT", "expected_asset_ids": ["Vit"]},
-    {
-        "query": "word2vec efficient estimation of word representations",
-        "expected_asset_ids": ["Word2Vec"],
-    },
-    {
-        "query": "YOLO you only look once unified real-time object detection",
-        "expected_asset_ids": ["You Only Look Once"],
-    },
-    # Chinese-language non-paper assets:
-    {
-        "query": "Obsidian 的 10 大 AI Skill 工具介绍",
-        "expected_asset_ids": ["Obsidian 的 10 大 AI Skill"],
-    },
-]
-
-# ── Chinese queries on the English corpus (cross-language) ────────────
-ZH_PAPER_QUERIES: list[dict] = [
-    {
-        "query": "哪份资料讲了 retrieval augmented generation？",
-        "expected_asset_ids": ["Retrieval Augmented Generation"],
-    },
-    {
-        "query": "找和 CLIP 图文对齐有关的资料",
-        "expected_asset_ids": [
-            "Learning Transferable Visual Models From Natural Language Supervision"
-        ],
-    },
-    {"query": "有没有包含文档版面理解或 OCR 的资料？", "expected_asset_ids": ["LayoutLM"]},
-    {"query": "讲生成对抗网络 GAN 的论文", "expected_asset_ids": ["Gan"]},
-    {
-        "query": "关于自注意力 Transformer 的原始论文",
-        "expected_asset_ids": ["Attention Is All You Need"],
-    },
-    {"query": "图像分类 深度卷积神经网络 AlexNet", "expected_asset_ids": ["Alexnet"]},
-    # More cross-language (Chinese query → English paper) cases. These stress
-    # the multilingual dense + BM25 channels with shorter, more colloquial
-    # phrasings than the title-anchored cases above.
-    {"query": "去噪扩散概率模型", "expected_asset_ids": ["Ddpm"]},
-    {"query": "残差网络 怎么解决梯度消失", "expected_asset_ids": ["Resnet"]},
-    {"query": "目标检测 端到端 Transformer 候选框", "expected_asset_ids": ["Detr"]},
-    {"query": "高效移动端卷积网络 反向残差线性瓶颈", "expected_asset_ids": ["Mobilenetv2"]},
-    {"query": "词向量 Word2Vec 连续词袋模型", "expected_asset_ids": ["Word2Vec"]},
-    {"query": "变分自编码器 VAE", "expected_asset_ids": ["Vae"]},
-    {"query": "分割一切 SAM 图像分割基础模型", "expected_asset_ids": ["Segment Anything"]},
-    {"query": "低秩适配 LoRA 大模型微调", "expected_asset_ids": ["Lora"]},
-]
-
-# ── Chinese queries on the Chinese (联宝 / AI-tutorial) corpus ─────────
-# These exercise BM25-zh + recursive chunking on real long Chinese
-# documents (WeChat-exported news + AI walkthroughs). Queries are phrased
-# the way a user actually asks — by sub-topic, not by title.
-ZH_DOC_QUERIES: list[dict] = [
-    {"query": "联宝科技可发电键盘专利 压电薄膜", "expected_asset_ids": ["创新联宝 会发电的键盘"]},
-    {
-        "query": "联宝中试基地 省级备案 科技成果转化",
-        "expected_asset_ids": ["联宝科技中试基地获省级备案"],
-    },
-    {"query": "CES 2026 联想可拉伸屏幕 未来PC", "expected_asset_ids": ["CES 2026再绽光芒"]},
-    {"query": "联宝科技 合肥新春第一会 新质生产力", "expected_asset_ids": ["受邀参加合肥"]},
-    {"query": "一台笔记本到一群机器人 联宝转型", "expected_asset_ids": ["媒眼看联宝"]},
-    {"query": "安徽外贸破万亿 联宝贡献", "expected_asset_ids": ["安徽外贸再创新高"]},
-    {"query": "联宝科技 2026 财年启幕 ESG", "expected_asset_ids": ["敢AI敢为"]},
-    {"query": "联宝 ESG 年度答卷 绿色转型", "expected_asset_ids": ["ESG年度答卷"]},
-    {"query": "Obsidian AI Skill 本地知识库", "expected_asset_ids": ["Obsidian 的 10 大 AI Skill"]},
-    {"query": "Codex 全景指南 OpenAI 编程模型", "expected_asset_ids": ["Codex 全景指南"]},
-]
-
-
-# ── Original 3-case regression (kept for backwards compat) ────────────
-LEGACY_QUERIES: list[dict] = [
-    {
-        "query": "哪份资料讲了 retrieval augmented generation？",
-        "expected_asset_ids": ["Retrieval Augmented Generation"],
-    },
-    {
-        "query": "找和 CLIP 图文对齐有关的资料",
-        "expected_asset_ids": [
-            "Learning Transferable Visual Models From Natural Language Supervision"
-        ],
-    },
-    {"query": "有没有包含文档版面理解或 OCR 的资料？", "expected_asset_ids": ["LayoutLM"]},
-]
-
-EVAL_CASES: list[dict] = EN_PAPER_QUERIES + ZH_PAPER_QUERIES + ZH_DOC_QUERIES
-
-# ── Text-to-image (CLIP) queries on the Caltech-101 image set ──────────
-# Each case is a free-text category name; the prefix-tolerant matcher
-# picks up any image whose asset_id starts with ``Caltech <Category>``.
-TEXT_TO_IMAGE_QUERIES: list[dict] = [
-    {"query": "airplane", "expected_asset_ids": ["Caltech Airplanes"]},
-    {"query": "motorbike", "expected_asset_ids": ["Caltech Motorbikes"]},
-    {"query": "pizza", "expected_asset_ids": ["Caltech Pizza"]},
-    {"query": "panda", "expected_asset_ids": ["Caltech Panda"]},
-    {"query": "dolphin", "expected_asset_ids": ["Caltech Dolphin"]},
-    {"query": "sunflower", "expected_asset_ids": ["Caltech Sunflower"]},
-    {"query": "helicopter", "expected_asset_ids": ["Caltech Helicopter"]},
-    {"query": "laptop computer", "expected_asset_ids": ["Caltech Laptop"]},
-    {"query": "wristwatch", "expected_asset_ids": ["Caltech Watch"]},
-    {"query": "saxophone", "expected_asset_ids": ["Caltech Saxophone"]},
-    # Chinese queries on the same corpus (cross-language CLIP).
-    {"query": "飞机", "expected_asset_ids": ["Caltech Airplanes"]},
-    {"query": "熊猫", "expected_asset_ids": ["Caltech Panda"]},
-    {"query": "披萨", "expected_asset_ids": ["Caltech Pizza"]},
-]
-
-# ── Image-to-image (CLIP) queries ──────────────────────────────────────
-# ``image_path`` is the on-disk file used as the query vector. The
-# expected ids use the ``Caltech <Category>`` prefix so the prefix-
-# tolerant matcher picks up any of the 3 samples per category.
-IMAGE_TO_IMAGE_QUERIES: list[dict] = [
-    {
-        "image_path": "examples/data/chapter11_assets/images/Caltech Airplanes 01_9fe67b3f.jpg",
-        "expected_asset_ids": ["Caltech Airplanes"],
-    },
-    {
-        "image_path": "examples/data/chapter11_assets/images/Caltech Motorbikes 01_00a780a9.jpg",
-        "expected_asset_ids": ["Caltech Motorbikes"],
-    },
-    {
-        "image_path": "examples/data/chapter11_assets/images/Caltech Pizza 01_ffa99a8f.jpg",
-        "expected_asset_ids": ["Caltech Pizza"],
-    },
-    {
-        "image_path": "examples/data/chapter11_assets/images/Caltech Panda 01_3443a5d5.jpg",
-        "expected_asset_ids": ["Caltech Panda"],
-    },
-    {
-        "image_path": "examples/data/chapter11_assets/images/Caltech Dolphin 01_bbd397c6.jpg",
-        "expected_asset_ids": ["Caltech Dolphin"],
-    },
-    {
-        "image_path": "examples/data/chapter11_assets/images/Caltech Laptop 01_1b73ff27.jpg",
-        "expected_asset_ids": ["Caltech Laptop"],
-    },
-]
-
-
 @dataclass
 class EvalResult:
     query: str
@@ -367,21 +115,23 @@ class EvalResult:
             self.actual_titles = []
 
 
-def run_eval(top_k: int = 5) -> list[EvalResult]:
-    """Run the full regression set against the live index.
+def run_eval(top_k: int = 5, *, cases_path: str | Path | None = None) -> list[EvalResult]:
+    """Run the full text→text regression set against the live index.
 
     Returns a list of :class:`EvalResult` — one per case, in declared
-    order. The combined EN + ZH + legacy sets are scored independently
-    so the report can break down cross-language accuracy.
+    order. Iterates the text→text groups present in the loaded case file
+    (``en`` / ``zh`` / ``zh_doc`` / ``legacy`` — whichever the file
+    defines; absent groups are skipped) so the report can break down
+    cross-language accuracy.
+
+    ``cases_path`` overrides the case file for this run (default:
+    ``Settings.eval_cases_path`` → the bundled ``v1_cases.json``).
     """
     bare_to_all_fulls = _load_bare_to_all_fulls()
+    groups = load_cases(cases_path)
     results: list[EvalResult] = []
-    for group, cases in (
-        ("en", EN_PAPER_QUERIES),
-        ("zh", ZH_PAPER_QUERIES),
-        ("zh_doc", ZH_DOC_QUERIES),
-    ):
-        for case in cases:
+    for group in ("en", "zh", "zh_doc", "legacy"):
+        for case in groups.get(group, ()):
             hits = hybrid_search(str(case["query"]), top_k=top_k)
             # Resolve expected ids to the set of full ids the index
             # actually returns. Accepts both bare titles and full
@@ -412,127 +162,6 @@ def run_eval(top_k: int = 5) -> list[EvalResult]:
                     actual_titles=[hit.title or "" for hit in hits],
                 )
             )
-    return results
-
-
-def _expand_bare_expected_to_full(bare_ids: list[str], full_ids: set[str]) -> list[str]:
-    """Expand a list of bare expected ids (e.g. ``"Caltech Airplanes"``)
-    to all full hashed asset_ids that start with the bare prefix.
-
-    Thin wrapper over :func:`mm_asset_rag.evaluation_v2._expand` (which
-    handles a single prefix) so v1 keeps its list-in / list-out call
-    sites. Used by the image-route evals so that the strict set match
-    inside :func:`aggregate_metrics` accepts any of the 3 Caltech-101
-    samples as a valid hit instead of only the exact
-    ``Caltech Airplanes 01_*`` one would happen to test against.
-    """
-    expanded: list[str] = []
-    for bare in bare_ids:
-        for f in _expand(bare, full_ids):
-            if f not in expanded:
-                expanded.append(f)
-    return expanded
-
-
-def _all_active_full_asset_ids() -> set[str]:
-    """Return the set of full asset_ids (not the bare → full map) for
-    the currently-active (non-deleted) rows in ``asset_index.jsonl``."""
-    latest: dict[str, dict] = {}
-    index_path = get_asset_index_path()
-    if index_path.exists():
-        with index_path.open(encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if row.get("deleted"):
-                    continue
-                latest[row["sha256"]] = row
-    return {row["asset_id"] for row in latest.values()}
-
-
-def run_text_to_image_eval(top_k: int = 5) -> list[EvalResult]:
-    """Run the text-to-image regression set against the CLIP-backed image index.
-
-    Each case is a free-text query; ``qdrant_text_to_image_search``
-    embeds the text with the same CLIP model used for image indexing
-    and returns the top-k nearest images. The image collection must
-    exist (run ``mmrag reindex --image-only`` after ingesting images).
-    """
-    from .backends.qdrant_backend import qdrant_text_to_image_search
-
-    full_ids = _all_active_full_asset_ids()
-    results: list[EvalResult] = []
-    for case in TEXT_TO_IMAGE_QUERIES:
-        hits = qdrant_text_to_image_search(str(case["query"]), top_k=top_k)
-        actual = [hit.asset_id for hit in hits]
-        expected = _expand_bare_expected_to_full(
-            [str(item) for item in case["expected_asset_ids"]], full_ids
-        )
-        rank = _match(actual, expected)
-        results.append(
-            EvalResult(
-                query=str(case["query"]),
-                expected_asset_ids=expected,
-                actual_asset_ids=actual,
-                hit=rank is not None,
-                rank=rank,
-                group="text_to_image",
-            )
-        )
-    return results
-
-
-def run_image_to_image_eval(cases: list[dict] | None = None, top_k: int = 5) -> list[EvalResult]:
-    """Run the image-to-image regression set using a real image as query.
-
-    Each case carries ``image_path`` (the on-disk file used to embed the
-    query vector) and ``expected_asset_ids`` (the asset_id prefix or full
-    id of the asset that *should* be in the top-k). The default set
-    covers the 6 most-confident Caltech-101 categories that came up
-    clean in the text-to-image sweep.
-    """
-    from .backends.qdrant_backend import qdrant_image_to_image_search
-
-    if cases is None:
-        cases = IMAGE_TO_IMAGE_QUERIES
-    full_ids = _all_active_full_asset_ids()
-    results: list[EvalResult] = []
-    for case in cases:
-        from pathlib import Path
-
-        image_path = Path(case["image_path"])
-        if not image_path.exists():
-            results.append(
-                EvalResult(
-                    query=str(image_path),
-                    expected_asset_ids=list(case["expected_asset_ids"]),
-                    actual_asset_ids=[],
-                    hit=False,
-                    rank=None,
-                    group="image_to_image",
-                )
-            )
-            continue
-        hits = qdrant_image_to_image_search(image_path, top_k=top_k)
-        actual = [hit.asset_id for hit in hits]
-        expected = _expand_bare_expected_to_full(
-            [str(item) for item in case["expected_asset_ids"]], full_ids
-        )
-        rank = _match(actual, expected)
-        results.append(
-            EvalResult(
-                query=str(image_path.name),
-                expected_asset_ids=expected,
-                actual_asset_ids=actual,
-                hit=rank is not None,
-                rank=rank,
-                group="image_to_image",
-            )
-        )
     return results
 
 
@@ -584,7 +213,13 @@ def write_eval_report(results: list[EvalResult], path=None) -> None:
             ]
         )
 
-    by_group: dict[str, list[EvalResult]] = {"all": list(results), "en": [], "zh": []}
+    # Per-group aggregates: ``all`` + every group present in ``results``
+    # (en / zh / zh_doc / legacy / negative / … — whichever the loaded
+    # case file defines). Hard-coding only ``en``/``zh`` here used to
+    # silently drop the ``zh_doc`` aggregate when running the chapter11
+    # opt-in set, so its 10 cross-doc cases counted in ``all`` but had
+    # no breakdown of their own.
+    by_group: dict[str, list[EvalResult]] = {"all": list(results)}
     for r in results:
         by_group.setdefault(r.group, []).append(r)
 
@@ -593,11 +228,7 @@ def write_eval_report(results: list[EvalResult], path=None) -> None:
         "hit_count": sum(1 for r in results if r.hit),
         "hit_rate": (sum(1 for r in results if r.hit) / max(len(results), 1)),
         "per_query": per_query,
-        "metrics": {
-            "all": _agg(by_group["all"]),
-            "en": _agg(by_group.get("en", [])),
-            "zh": _agg(by_group.get("zh", [])),
-        },
+        "metrics": {g: _agg(rs) for g, rs in by_group.items()},
     }
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

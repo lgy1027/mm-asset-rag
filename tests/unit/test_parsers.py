@@ -160,6 +160,86 @@ def test_parse_image_emits_chunk_when_only_title_present(tmp_home: Path) -> None
     assert "Linux logo" in docs[0].text
 
 
+def test_run_ocr_dispatches_to_local_by_default(
+    image_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OCR_BACKEND defaults to ``local`` — run_ocr calls the in-process
+    rapidocr path, not the HTTP server. We stub the rapidocr handle so no
+    model is actually loaded."""
+    import mm_asset_rag.parsers.image_parser as ip
+
+    class _FakeOutput:
+        txts = ("line one", "line two")
+        scores = (0.97, 0.91)
+
+    monkeypatch.setattr(ip, "_RAPID_OCR", lambda p: _FakeOutput())
+    monkeypatch.delenv("OCR_BACKEND", raising=False)
+    blocks = ip.run_ocr(image_asset.file_path)
+    assert [b["text"] for b in blocks] == ["line one", "line two"]
+    assert all(b["confidence"] is not None for b in blocks)
+
+
+def test_run_ocr_dispatches_to_http_when_configured(
+    image_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """OCR_BACKEND=http keeps the legacy external /ocr server contract."""
+    import mm_asset_rag.parsers.image_parser as ip
+
+    monkeypatch.setenv("OCR_BACKEND", "http")
+    monkeypatch.setenv("OCR_HTTP_URL", "http://127.0.0.1:8000/ocr")
+
+    captured = {}
+
+    def _fake_http(path: Path) -> list[dict[str, object]]:
+        captured["called"] = True
+        return [{"text": "from http", "bbox": None, "confidence": None}]
+
+    monkeypatch.setattr(ip, "call_ocr_http", _fake_http)
+    blocks = ip.run_ocr(image_asset.file_path)
+    assert captured.get("called") is True
+    assert [b["text"] for b in blocks] == ["from http"]
+
+
+def test_call_ocr_local_raises_friendly_when_extra_missing(
+    image_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the [ocr] extra installed, the local path raises a hint that
+    names the extra rather than a bare ImportError. We force the import to
+    fail to simulate the missing-extra case without uninstalling anything."""
+    import mm_asset_rag.parsers.image_parser as ip
+
+    monkeypatch.setattr(ip, "_RAPID_OCR", None)
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_rapidocr(name, *args, **kwargs):
+        if name == "rapidocr":
+            raise ImportError("simulated missing [ocr] extra")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_rapidocr)
+    with pytest.raises(RuntimeError, match=r"\[ocr\] extra"):
+        ip.call_ocr_local(image_asset.file_path)
+
+
+def test_parse_image_via_local_ocr(image_asset: Asset, monkeypatch: pytest.MonkeyPatch) -> None:
+    """OCR on via the default local backend — extracted text enters the
+    chunk and is retrievable. Stub the rapidocr handle so no model loads."""
+    import mm_asset_rag.parsers.image_parser as ip
+
+    class _FakeOutput:
+        txts = ("E = mc squared", "photo of a cat")
+        scores = None
+
+    monkeypatch.setattr(ip, "_RAPID_OCR", lambda p: _FakeOutput())
+    monkeypatch.delenv("OCR_BACKEND", raising=False)
+    docs = parse_image(image_asset, enable_ocr=True, enable_vlm=False)
+    assert len(docs) == 1
+    assert "E = mc squared" in docs[0].text
+    assert "photo of a cat" in docs[0].text
+
+
 def test_parse_pdf_auto_falls_back_to_paddle_on_scan(
     pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -218,6 +298,129 @@ def test_parse_pdf_auto_stays_on_pymupdf_for_text_pdf(
     # Real pdf_asset has real text → not scanned → no fallback.
     parse_pdf(pdf_asset, parser="auto")
     assert called == {"paddle": 0}
+
+
+def _scanned_ir(asset: Asset):
+    """A DocumentIR so text-poor that looks_scanned() is True."""
+    from mm_asset_rag.parsers.document_ir import Block, DocumentIR
+
+    return DocumentIR(blocks=[Block(text="x", page=0)], images=[], asset=asset, parser="pymupdf")
+
+
+def test_parse_pdf_auto_falls_back_to_local_ppocr_without_token(
+    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Zero-config default: a scanned PDF with no online token routes to the
+    local PP-OCRv6 page-OCR path, never touching the network."""
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.delenv("PADDLEOCR_VL_API_TOKEN", raising=False)
+    get_settings.cache_clear()
+    called = {"paddle": 0, "ppocr": 0}
+
+    monkeypatch.setattr(pdf_parser, "build_ir_pymupdf", _scanned_ir)
+    monkeypatch.setattr(
+        pdf_parser,
+        "parse_with_paddleocr_vl",
+        lambda a: called.__setitem__("paddle", called["paddle"] + 1) or [],
+    )
+
+    # build_ir_from_page_ocr must return a real DocumentIR so ir_to_documents
+    # can process it; the call-count is what we assert, not its contents.
+    def fake_page_ocr(a):
+        called["ppocr"] += 1
+        return _scanned_ir(a)
+
+    monkeypatch.setattr(pdf_parser, "build_ir_from_page_ocr", fake_page_ocr)
+    parse_pdf(pdf_asset, parser="auto")
+    assert called == {"paddle": 0, "ppocr": 1}
+
+
+def test_parse_pdf_auto_uses_online_when_token_configured(
+    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deployer who set PADDLEOCR_VL_API_TOKEN keeps using the online API
+    for scans — the default ``auto`` routing respects the explicit opt-in."""
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
+    get_settings.cache_clear()
+    called = {"paddle": 0, "ppocr": 0}
+
+    monkeypatch.setattr(pdf_parser, "build_ir_pymupdf", _scanned_ir)
+    monkeypatch.setattr(
+        pdf_parser,
+        "parse_with_paddleocr_vl",
+        lambda a: called.__setitem__("paddle", called["paddle"] + 1) or [],
+    )
+    monkeypatch.setattr(
+        pdf_parser,
+        "build_ir_from_page_ocr",
+        lambda a: called.__setitem__("ppocr", called["ppocr"] + 1) or _scanned_ir(a),
+    )
+    parse_pdf(pdf_asset, parser="auto")
+    assert called == {"paddle": 1, "ppocr": 0}
+
+
+def test_parse_pdf_explicit_ppocr_skips_online(
+    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--pdf-parser ppocr`` force-routes to local page-OCR even when an
+    online token is configured — the explicit override wins."""
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
+    get_settings.cache_clear()
+    called = {"paddle": 0, "ppocr": 0}
+
+    monkeypatch.setattr(
+        pdf_parser,
+        "parse_with_paddleocr_vl",
+        lambda a: called.__setitem__("paddle", called["paddle"] + 1) or [],
+    )
+
+    def fake_page_ocr(a):
+        called["ppocr"] += 1
+        return _scanned_ir(a)
+
+    monkeypatch.setattr(pdf_parser, "build_ir_from_page_ocr", fake_page_ocr)
+    parse_pdf(pdf_asset, parser="ppocr")
+    assert called == {"paddle": 0, "ppocr": 1}
+
+
+def test_build_ir_from_page_ocr_renders_and_builds_blocks(
+    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``build_ir_from_page_ocr`` (the local PP-OCRv6 scanned-PDF path) is
+    normally mocked away in the routing tests above. This exercises the real
+    function body — PyMuPDF renders pages to PNG, the OCR handle is stubbed
+    so no model loads — and asserts the Block construction + parser tag, so a
+    regression in render DPI / page indexing / empty-page skipping surfaces."""
+    from mm_asset_rag.parsers import image_parser, pdf_parser
+    from mm_asset_rag.parsers.document_ir import DocumentIR
+
+    # Stub the OCR handle on the image_parser module (where run_ocr reads it)
+    # so PP-OCRv6 doesn't need to load. Return one recognized line per call.
+    class _FakeOutput:
+        txts = ("recognized page text",)
+        scores = None
+
+    monkeypatch.setattr(image_parser, "_RAPID_OCR", lambda p: _FakeOutput())
+
+    ir = pdf_parser.build_ir_from_page_ocr(pdf_asset)
+
+    assert isinstance(ir, DocumentIR)
+    assert ir.parser == "ppocr-page-ocr"
+    assert ir.asset is pdf_asset
+    # The fixture's single-page PDF produced one non-empty Block carrying
+    # the OCR'd text; the empty-page skip path is covered by the strip()
+    # guard inside the loop.
+    assert any("recognized page text" in (b.text or "") for b in ir.blocks)
+    # pages_dir is created and recorded as the images dir.
+    assert ir.images_dir and Path(ir.images_dir).exists()
 
 
 def test_submit_paddleocr_vl_job_uses_settings(

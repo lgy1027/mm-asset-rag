@@ -6,10 +6,11 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from mm_asset_rag.evaluation import (
-    EN_PAPER_QUERIES,
-    EVAL_CASES,
     EvalResult,
+    load_cases,
     run_eval,
     strip_trailing_hash,
     write_eval_report,
@@ -17,67 +18,17 @@ from mm_asset_rag.evaluation import (
 from mm_asset_rag.schema import SearchHit
 
 # asset_id returned by the fake retriever for each query substring.
-# Keyed on a unique phrase that appears in the actual EVAL_CASES. Keeps
-# the test independent of how the asset_id is built (bare / full / hashed).
+# Keyed on a unique phrase that appears in the bundled default case set.
+# Keeps the test independent of how the asset_id is built (bare / full /
+# hashed) — the prefix-tolerant _match handles the suffix transparently.
 _QUERY_TO_ASSET = {
     "retrieval augmented generation": "Retrieval Augmented Generation_caaa534b",
-    "ImageNet classification": "Alexnet_caaa534b",
     "attention is all you need": "Attention Is All You Need_caaa534b",
-    "BERT pre-training": "Bert_caaa534b",
-    "transferable visual models": "Learning Transferable Visual Models From Natural Language Supervision_caaa534b",
-    "denoising diffusion": "Ddpm_caaa534b",
-    "densely connected": "Densenet_caaa534b",
-    "object detection with transformers": "Detr_caaa534b",
-    "compound scaling": "EfficientNet_caaa534b",
-    "flamingo visual": "Flamingo_caaa534b",
+    "deep residual learning": "Resnet_caaa534b",
     "generative adversarial": "Gan_caaa534b",
-    "GloVe global": "Glove_caaa534b",
-    "Language Models are Few-Shot": "Gpt3_caaa534b",
-    "LayoutLM": "LayoutLM_caaa534b",
-    "LLaMA open": "Llama_caaa534b",
-    "LoRA low-rank": "Lora_caaa534b",
-    "MobileNets": "Mobilenet_caaa534b",
-    "MobileNetV2": "Mobilenetv2_caaa534b",
-    "Pix2Pix": "Pix2Pix_caaa534b",
-    "rich feature hierarchies": "Rich feature hierarchies_caaa534b",
-    "Deep Residual": "Resnet_caaa534b",
-    "Aggregated Residual": "Aggregated Residual Transformations_caaa534b",
-    "RAG": "Retrieval Augmented Generation_caaa534b",
-    "segment anything": "Segment Anything_caaa534b",
-    "SSD single shot": "Ssd_caaa534b",
-    "latent diffusion": "Stable Diffusion_caaa534b",
-    "U-Net convolutional": "U-Net Convolutional Networks for Biomedical Image Segmentation_caaa534b",
-    "auto-encoding": "Vae_caaa534b",
-    "vision transformer": "Vit_caaa534b",
-    "word2vec": "Word2Vec_caaa534b",
-    "YOLO you only": "You Only Look Once_caaa534b",
-    "2026 年 AI": "2026 年 AI 技术趋势与 Codex 模型发展_caaa534b",
-    "Obsidian": "Obsidian 的 10 大 AI Skill_caaa534b",
-    "CLIP 图文对齐": "Learning Transferable Visual Models From Natural Language Supervision_caaa534b",
-    "文档版面": "LayoutLM_caaa534b",
-    "GAN": "Gan_caaa534b",
-    "自注意力": "Attention Is All You Need_caaa534b",
-    "图像分类 深度卷积": "Alexnet_caaa534b",
-    # ── ZH_PAPER_QUERIES — the queries not already matched by an EN needle
-    # above (e.g. 去噪扩散概率模型 has no English substring in the table).
-    "去噪扩散概率模型": "Ddpm_caaa534b",
+    "transferable visual models": "Learning Transferable Visual Models From Natural Language Supervision_caaa534b",
     "残差网络": "Resnet_caaa534b",
-    "端到端 Transformer 候选框": "Detr_caaa534b",
-    "反向残差线性瓶颈": "Mobilenetv2_caaa534b",
-    "变分自编码器 VAE": "Vae_caaa534b",
-    "分割一切 SAM": "Segment Anything_caaa534b",
-    "低秩适配 LoRA 大模型微调": "Lora_caaa534b",
-    # ── ZH_DOC_QUERIES — 联宝 / AI-tutorial Chinese corpus (10).
-    "可发电键盘专利": "创新联宝 会发电的键盘_caaa534b",
-    "中试基地 省级备案": "联宝科技中试基地获省级备案_caaa534b",
-    "可拉伸屏幕": "CES 2026再绽光芒_caaa534b",
-    "合肥新春第一会": "受邀参加合肥_caaa534b",
-    "一群机器人": "媒眼看联宝_caaa534b",
-    "外贸破万亿": "安徽外贸再创新高_caaa534b",
-    "财年启幕": "敢AI敢为_caaa534b",
-    "ESG 年度答卷": "ESG年度答卷_caaa534b",
-    "Obsidian AI Skill 本地知识库": "Obsidian 的 10 大 AI Skill_caaa534b",
-    "Codex 全景指南": "Codex 全景指南_caaa534b",
+    "自注意力": "Attention Is All You Need_caaa534b",
 }
 
 
@@ -100,24 +51,27 @@ def _fake_hybrid(query: str, **kwargs):
     ]
 
 
-def test_eval_cases_count() -> None:
-    # EVAL_CASES = EN_PAPER_QUERIES + ZH_PAPER_QUERIES + ZH_DOC_QUERIES.
-    from mm_asset_rag.evaluation import ZH_DOC_QUERIES, ZH_PAPER_QUERIES
+def _default_case_count() -> int:
+    """Total text→text cases in the bundled default v1 case set."""
+    groups = load_cases()
+    return sum(len(groups.get(g, ())) for g in ("en", "zh", "zh_doc", "legacy"))
 
-    assert len(EVAL_CASES) == len(EN_PAPER_QUERIES) + len(ZH_PAPER_QUERIES) + len(ZH_DOC_QUERIES)
-    assert len(EVAL_CASES) >= 30  # guard against accidental pruning
+
+def test_eval_cases_count() -> None:
+    # The bundled default ships a small generic en + zh text→text set.
+    groups = load_cases()
+    assert len(groups["en"]) == 5
+    assert len(groups["zh"]) == 3
+    assert _default_case_count() == 8
 
 
 def test_run_eval_hits_expected_assets() -> None:
-    # Skip bare→full expansion so the expected ids stay as the model
-    # names from EVAL_CASES; the prefix-tolerant _match handles the
+    # Skip bare→full expansion so the expected ids stay as the bare
+    # titles from the case file; the prefix-tolerant _match handles the
     # test's mock asset_id suffix transparently.
-    with (
-        patch("mm_asset_rag.evaluation.hybrid_search", side_effect=_fake_hybrid),
-        patch("mm_asset_rag.evaluation._load_asset_id_index", return_value={}),
-    ):
+    with patch("mm_asset_rag.evaluation.hybrid_search", side_effect=_fake_hybrid):
         results = run_eval()
-    assert len(results) == len(EVAL_CASES)
+    assert len(results) == _default_case_count()
     misses = [r for r in results if not r.hit]
     assert not misses, misses
 
@@ -145,10 +99,7 @@ def test_run_eval_misses_when_assets_wrong() -> None:
 
 
 def test_run_eval_records_rank_and_group() -> None:
-    with (
-        patch("mm_asset_rag.evaluation.hybrid_search", side_effect=_fake_hybrid),
-        patch("mm_asset_rag.evaluation._load_asset_id_index", return_value={}),
-    ):
+    with patch("mm_asset_rag.evaluation.hybrid_search", side_effect=_fake_hybrid):
         results = run_eval()
     en = [r for r in results if r.group == "en"]
     zh = [r for r in results if r.group == "zh"]
@@ -158,6 +109,116 @@ def test_run_eval_records_rank_and_group() -> None:
         assert r.rank == 1, r
     for r in zh:
         assert r.rank == 1, r
+
+
+def test_run_eval_respects_cases_path(tmp_path: Path) -> None:
+    """``cases_path`` overrides the default file for one run — a custom
+    two-case file produces exactly two results, regardless of the
+    bundled default's size."""
+    custom = tmp_path / "custom.json"
+    custom.write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "groups": {
+                    "en": [
+                        {"query": "q1", "expected_asset_ids": ["A"]},
+                        {"query": "q2", "expected_asset_ids": ["B"]},
+                    ]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    with patch("mm_asset_rag.evaluation.hybrid_search", side_effect=_fake_hybrid):
+        results = run_eval(cases_path=custom)
+    assert len(results) == 2
+    assert all(r.group == "en" for r in results)
+
+
+def test_load_cases_reads_eval_cases_path_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The middle resolution tier: when no explicit path is passed,
+    ``load_cases`` falls back to ``Settings.EVAL_CASES_PATH``."""
+    from mm_asset_rag.settings import get_settings
+
+    custom = tmp_path / "env_cases.json"
+    custom.write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "groups": {"en": [{"query": "env", "expected_asset_ids": ["X"]}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EVAL_CASES_PATH", str(custom))
+    get_settings.cache_clear()
+    try:
+        groups = load_cases()
+    finally:
+        get_settings.cache_clear()
+    assert groups == {"en": [{"query": "env", "expected_asset_ids": ["X"]}]}
+
+
+def test_load_cases_explicit_path_overrides_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ``path`` wins over ``EVAL_CASES_PATH``."""
+    from mm_asset_rag.settings import get_settings
+
+    env_file = tmp_path / "env.json"
+    env_file.write_text(
+        json.dumps(
+            {"version": "v1", "groups": {"en": [{"query": "env", "expected_asset_ids": ["E"]}]}}
+        ),
+        encoding="utf-8",
+    )
+    explicit = tmp_path / "explicit.json"
+    explicit.write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "groups": {"en": [{"query": "explicit", "expected_asset_ids": ["X"]}]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EVAL_CASES_PATH", str(env_file))
+    get_settings.cache_clear()
+    try:
+        groups = load_cases(explicit)
+    finally:
+        get_settings.cache_clear()
+    assert groups["en"][0]["query"] == "explicit"
+
+
+def test_load_cases_version_mismatch_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A v2 file fed to v1 ``load_cases`` must raise — otherwise the v1
+    runner's groups are all absent and it silently scores 0 cases."""
+    from mm_asset_rag.evaluation_v2 import load_cases as load_v2
+
+    v2_file = tmp_path / "v2.json"
+    v2_file.write_text(
+        json.dumps(
+            {"version": "v2", "groups": {"zh_on_en": [{"query": "q", "expected_asset_ids": ["A"]}]}}
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="version mismatch"):
+        load_cases(v2_file)  # v1 loader, v2 file
+    # Omitted version is tolerated (user-authored file may skip the field).
+    no_version = tmp_path / "no_version.json"
+    no_version.write_text(
+        json.dumps({"groups": {"en": [{"query": "q", "expected_asset_ids": ["A"]}]}}),
+        encoding="utf-8",
+    )
+    assert load_cases(no_version)  # v1 loader, no version → ok
+    # And v2 loader accepts a v2 file.
+    assert load_v2(v2_file, version="v2")
 
 
 def test_write_eval_report(tmp_path: Path) -> None:
@@ -182,9 +243,43 @@ def test_write_eval_report(tmp_path: Path) -> None:
     assert payload["per_query"][0]["rank"] == 1
     assert payload["per_query"][0]["group"] == "en"
     assert "metrics" in payload
+    # Per-group metrics are built dynamically from the groups present in
+    # ``results`` (all + every group that appears). A single en case
+    # produces all + en; zh is absent because no zh case was supplied.
     assert "all" in payload["metrics"]
     assert "en" in payload["metrics"]
-    assert "zh" in payload["metrics"]
+    assert "zh" not in payload["metrics"]
+
+
+def test_write_eval_report_metrics_cover_every_present_group(tmp_path: Path) -> None:
+    """The metrics block reflects every group present in ``results`` —
+    no group's aggregate is silently dropped. Regression for the
+    ``zh_doc`` loss: ``write_eval_report`` used to hard-code only
+    en/zh, so a run carrying zh_doc counted it in ``all`` but had no
+    breakdown of its own."""
+    results = [
+        EvalResult(
+            query="a",
+            expected_asset_ids=["x"],
+            actual_asset_ids=["x"],
+            hit=True,
+            rank=1,
+            group="en",
+        ),
+        EvalResult(
+            query="b",
+            expected_asset_ids=["y"],
+            actual_asset_ids=["y"],
+            hit=True,
+            rank=1,
+            group="zh_doc",
+        ),
+    ]
+    target = tmp_path / "report.json"
+    write_eval_report(results, path=target)
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    assert set(payload["metrics"].keys()) == {"all", "en", "zh_doc"}
+    assert payload["metrics"]["zh_doc"]["hit_rate"]["5"] == 1.0
 
 
 # ── strip_trailing_hash + casefold normalisation ─────────────────────────

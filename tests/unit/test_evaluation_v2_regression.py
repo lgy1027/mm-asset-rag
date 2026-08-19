@@ -3,20 +3,18 @@
 This is the CI gate: when the retriever changes, this test runs in
 under a second against a fixed mock corpus and asserts that hit_rate
 does not regress below a recorded floor. The full v2 eval (with a
-real Qdrant collection + ollama embedding) is the manual
-``/tmp/run_v2_eval.py`` path; this test exists to catch the obvious
-"someone changed ``_match`` and now nothing hits" class of bug
-before it lands.
+real Qdrant collection + ollama embedding) is a manual path against a
+real corpus; this test exists to catch the obvious "someone changed
+``_match`` and now nothing hits" class of bug before it lands.
 
 How it works
 ============
 
-* A small fixed corpus of 20 assets (``MOCK_FULL_IDS``) is passed via
-  the ``full_ids`` kwarg ``run_text_to_text_eval_v2`` accepts. No
+* A small fixed corpus (``MOCK_FULL_IDS``) is passed via the
+  ``full_ids`` kwarg ``run_text_to_text_eval_v2`` accepts. No
   ``asset_index.jsonl`` is read.
-* A canned ``search_fn`` returns deterministic top-k results for a
-  small set of "golden" queries. These results were captured from
-  the live retriever at v4 baseline.
+* A canned ``search_fn`` returns deterministic top-k results for the
+  "golden" queries drawn from the bundled default v2 case set.
 * Per-group hit_rate@5 is asserted against a minimum threshold. If
   someone breaks ``_match`` / ``_expand`` / ``_title_of`` such that
   these golden queries stop hitting, the test fails.
@@ -24,11 +22,10 @@ How it works
 Adding a new query
 ==================
 
-1. Run ``/tmp/run_v2_eval.py`` against the live retriever.
-2. Pick a query whose current ``actual_asset_ids`` is "what we want".
-3. Add the query + expected + actual to ``GOLDEN_QUERIES``.
-4. Re-baseline ``MIN_HIT_RATE_PER_GROUP`` based on the new group
-   hit counts.
+1. Add a case to ``mm_asset_rag/eval_data/v2_cases.json``.
+2. Add the query + the canned ``actual_top_k`` to ``GOLDEN_QUERIES``
+   and an id it should resolve to ``MOCK_FULL_IDS``.
+3. Re-baseline ``MIN_HIT_RATE`` based on the new group hit counts.
 """
 
 from __future__ import annotations
@@ -43,66 +40,38 @@ from mm_asset_rag.evaluation_v2 import (
 )
 from mm_asset_rag.schema import SearchHit
 
-# 20 mock asset_ids spanning 5 groups: english papers, chinese
-# papers, mixed (with hash variants), Picsum-style images, Caltech.
+# Mock asset_ids spanning the bundled default v2 case set (zh_on_en +
+# en_on_en + negative) plus a distractor. Each expected bare title has a
+# matching ``_<hash>`` variant so ``_expand`` resolves it.
 MOCK_FULL_IDS: set[str] = {
-    # English arxiv papers (each has 1-2 hash variants to exercise
-    # the ``_title_of`` cross-hash matcher).
     "Learning Transferable Visual Models From Natural Language Supervision_6ea9db01",
-    "Learning Transferable Visual Models From Natural Language Supervision_79e328a2",
-    "Bert B42C52E2_5e8f0e8e",
     "Bert_ec793c5d",
+    "Retrieval Augmented Generation_caaa534b",
+    "Resnet_0c1c2b23",
     "Alexnet_0c1c2b23",
-    "Alexnet Caaa534B_12f94731",
     "You Only Look Once_4582d878",
-    "Detr_4582d878",
-    "Attention Is All You Need_23e87012",
-    "Attention Is All You Need 2A6E3761_86e3baff",
-    "Ddpm_598d0928",
-    "Ddpm D6E2716C_b7029c9a",
-    # Chinese arxiv-style
-    "所有深度用 AI 编程的朋友，这篇 Codex 全景指南值得存好，架构生态横评和最佳实践一次讲透_c1cf02d1",
-    "所有深度用 AI 编程的朋友，这篇 Codex 全景指南值得存好，架构生态横评和最佳实践一次讲透_0363cb35",
-    "CES 2026再绽光芒！ 联想两大“未来PC”背后的联宝智造力量_7df7f3f8",
-    # Picsum-style images (positive-control for the text→image mocks)
-    "Caltech Panda 01_7d47dc53",
-    "Caltech Panda 01 3443A5D5_0698851d",
-    # Negative-control distractors
+    "Gan_caaa534b",
+    # Negative-control distractor.
     "Picsum 240 A3C86556_5747a9a9",
-    "Picsum 291 9E581Fa7_e180b972",
-    "Densenet_330fe977",
 }
 
-# Golden queries — captured from v4 baseline against the bundled
-# corpus. ``actual_top_k`` is what the live retriever returned; the
-# auto-eval asserts the same shape against the same search_fn stub so
-# any regression in ``_match`` / ``_expand`` / ``_title_of`` is caught.
+# Golden queries — drawn from the bundled default v2 case set.
+# ``actual_top_k`` is the canned list the stub returns; the auto-eval
+# asserts ``_match`` / ``_expand`` / ``_title_of`` still resolve them.
 GOLDEN_QUERIES: dict[str, list[str]] = {
-    # Bare title with no hash — _expand should resolve via prefix.
-    "Bert": [
-        "Bert B42C52E2_5e8f0e8e",
-        "Bert_ec793c5d",
-    ],
-    # Different hash variant of the same content — _match should still
-    # accept via _title_of stripping.
-    "Learning Transferable Visual Models From Natural Language Supervision": [
-        "Learning Transferable Visual Models From Natural Language Supervision_6ea9db01",
-    ],
-    # Cross-language: Chinese query, English expected.
+    # zh_on_en — Chinese query, English paper expected.
     "CLIP 模型": [
         "Learning Transferable Visual Models From Natural Language Supervision_6ea9db01",
     ],
-    # Chinese-only corpus (Codex).
-    "Codex 全景指南": [
-        "所有深度用 AI 编程的朋友，这篇 Codex 全景指南值得存好，架构生态横评和最佳实践一次讲透_c1cf02d1",
-    ],
-    # Negative — empty expected (designed to return nothing or be
-    # over-recalled; we only assert the structure here, not the hit).
-    "强化学习算法": [
-        # Whatever the retriever returns is fine; we just don't want
-        # an exception. The mock returns a Picsum + Caltech distractor.
-        "Picsum 240 A3C86556_5747a9a9",
-    ],
+    "BERT 预训练双向 transformer": ["Bert_ec793c5d"],
+    "RAG 检索增强生成": ["Retrieval Augmented Generation_caaa534b"],
+    # en_on_en — English query, English paper.
+    "image classification deep learning": ["Alexnet_0c1c2b23"],
+    "real-time object detection": ["You Only Look Once_4582d878"],
+    # Negative — empty expected; the mock returns a distractor. We only
+    # assert the runner completes and respects the empty-expected
+    # contract (hit=False), not a hit_rate floor.
+    "强化学习算法 PPO DQN": ["Picsum 240 A3C86556_5747a9a9"],
 }
 
 
@@ -133,23 +102,22 @@ def _isolated_home(tmp_path, monkeypatch):
     yield
 
 
-# Per-group minimum hit_rate@5. Calibrated from the v4 mock corpus
-# against the live retriever — adjust when intentionally retuning
-# the retriever, never silently.
+# Per-group minimum hit_rate@5. Calibrated against the golden queries
+# above — adjust when intentionally retuning the retriever or the case
+# set, never silently.
 MIN_HIT_RATE = {
-    "zh_on_en": 0.50,  # 1/2 golden queries should hit (CLIP / Bert)
-    "en_on_en": 0.50,  # 1/2 (Bert, CLIP)
-    "zh_on_zh": 0.50,  # 1/2 (Codex)
-    # negative group is structural — we don't assert a hit_rate floor
-    # because the design intent is "return nothing"; we only verify
-    # the runner completes and respects the empty-expected contract.
+    "zh_on_en": 1.0,  # 3/3 golden (CLIP / BERT / RAG)
+    "en_on_en": 1.0,  # 2/2 (Alexnet, YOLO)
+    # negative group is structural — not floored: the design intent is
+    # "return nothing"; we only verify the runner completes and respects
+    # the empty-expected contract.
 }
 
 
 def test_text_to_text_runner_uses_injected_search_fn() -> None:
     """The runner must honour the ``search_fn`` injection — no live Qdrant call."""
     results = run_text_to_text_eval_v2(top_k=5, search_fn=_stub_search_fn, full_ids=MOCK_FULL_IDS)
-    # Run is non-empty (50+ v2 cases produce many per_query entries).
+    # Run is non-empty (the bundled default v2 set has 9 cases).
     assert len(results) > 0
     # Each result has a valid group label.
     assert {r.group for r in results} <= {
@@ -169,8 +137,6 @@ def test_golden_queries_hit_at_expected_rate() -> None:
     / ``_expand`` / ``_title_of`` in a way that breaks hash-variant
     or bare-prefix resolution.
     """
-    # Filter the runner output to only the queries that appear in
-    # GOLDEN_QUERIES, then assert per-group hit_rate floors.
     results = run_text_to_text_eval_v2(top_k=5, search_fn=_stub_search_fn, full_ids=MOCK_FULL_IDS)
     by_query = {r.query: r for r in results}
 
@@ -209,18 +175,18 @@ def test_negative_queries_run_without_crash() -> None:
         assert r.hit is False
 
 
-def test_text_to_image_runner_uses_injected_search_fn() -> None:
-    """Same DI contract for the text→image runner."""
+def test_text_to_image_runner_absent_group_returns_empty() -> None:
+    """The bundled default v2 case file has no ``text_to_image`` group
+    (image routes live in the opt-in chapter11 file). The runner must
+    return ``[]`` rather than crash when the group is absent — this is
+    the contract ``mmrag eval --v2`` relies on by default.
+    """
 
     def _t2i_stub(query: str, top_k: int) -> list[SearchHit]:
         return _stub_search_fn(query, top_k)
 
     results = run_text_to_image_eval_v2(top_k=5, search_fn=_t2i_stub, full_ids=MOCK_FULL_IDS)
-    # Some V2_TEXT_TO_IMAGE cases expect Caltech Panda hits; the mock
-    # returns the same canned results regardless of query. The runner
-    # should still finish and report the right group.
-    for r in results:
-        assert r.group == "text_to_image"
+    assert results == []
 
 
 def test_run_text_to_text_eval_v2_signature_includes_search_fn() -> None:
@@ -232,16 +198,18 @@ def test_run_text_to_text_eval_v2_signature_includes_search_fn() -> None:
     sig = inspect.signature(run_text_to_text_eval_v2)
     assert "search_fn" in sig.parameters
     assert "full_ids" in sig.parameters
+    assert "cases_path" in sig.parameters
 
 
-def test_evaluation_module_unchanged_construction() -> None:
-    """Sanity: the module-level case lists still exist and have the
-    expected sizes (guards against accidental reformatting that would
-    shrink the eval set silently).
+def test_default_case_set_has_expected_groups() -> None:
+    """Sanity: the bundled default v2 case set has the expected groups
+    and sizes (guards against accidental reformatting that would shrink
+    the eval set silently).
     """
-    assert len(evaluation_v2.V2_ZH_ON_EN_PAPERS) >= 15
-    assert len(evaluation_v2.V2_EN_ON_EN_PAPERS) >= 8
-    assert len(evaluation_v2.V2_ZH_ON_ZH_CORPUS) >= 8
-    assert len(evaluation_v2.V2_NEGATIVE_QUERIES) >= 6
-    assert len(evaluation_v2.V2_TEXT_TO_IMAGE) >= 15
-    assert len(evaluation_v2.V2_IMAGE_TO_IMAGE) >= 5
+    groups = evaluation_v2.load_cases(version="v2")
+    assert len(groups["zh_on_en"]) == 4
+    assert len(groups["en_on_en"]) == 3
+    assert len(groups["negative"]) == 2
+    # Image groups belong to the opt-in chapter11 file, not the default.
+    assert groups.get("text_to_image", []) == []
+    assert groups.get("image_to_image", []) == []

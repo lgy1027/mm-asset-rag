@@ -115,8 +115,6 @@ Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`. 
 | `RRF_WEIGHT_BM25_ZH` | `1.0` | Per-channel RRF bias for the BM25-zh prefetch (raise to ~1.5 for Chinese-only recall) |
 | `MAX_CHUNKS_PER_PDF` | unset | Per-PDF chunk cap before text indexing |
 | `IMAGE_RELEVANCE_THRESHOLD` | `0.24` | CLIP cosine floor for image routes |
-| `IMAGE_PREFILTER_FIELDS` | `tags,asset_id,asset_title` | Payload fields used for sparse image pre-filter |
-| `IMAGE_PREFILTER_MIN_TOKEN_LEN` | `3` | Drop shorter tokens from image pre-filter |
 
 Changing `MAX_CHUNKS_PER_PDF` requires `mmrag reindex` to rebuild existing collections.
 
@@ -140,14 +138,6 @@ After heading-based splitting, each section body is recursively split to a token
 | `CHUNK_MAX_TOKENS` | `800` | Hard max tokens per chunk |
 | `CHUNK_OVERLAP_TOKENS` | `60` | Overlap tokens between adjacent chunks |
 | `CHUNK_TOKENIZER` | unset | HF tokenizer id for exact counts; unset = char approximation |
-
-## Semantic dedup (asset-level)
-
-On top of the exact content-hash dedup (`find_by_sha256`), the asset index keeps a title / first-chunk embedding index. A new asset whose embedding is cosine-close to an existing active asset (different sha256) reuses the existing `asset_id` so near-duplicates aren't re-indexed. This threshold is the cosine cutoff; default `0.92` matches LlamaIndex's `DeduplicationModule`. Note: this dedup path is implemented in `asset_index` but not yet wired into the ingest/upload pipeline, so it does not trigger on real uploads today.
-
-| Variable | Default | Purpose |
-| --- | ---: | --- |
-| `DEDUP_SEMANTIC_THRESHOLD` | `0.92` | Cosine cutoff for near-duplicate asset reuse |
 
 ## PDF embedded-image extraction
 
@@ -249,6 +239,24 @@ RERANKER_API_KEY=sk-xxx           # DASHSCOPE_API_KEY value
 | `BM25_ZH_B` | `0.75` | BM25 b |
 | `BM25_ZH_VECTOR_NAME` | `bm25_zh` | Qdrant sparse vector name |
 
+## Evaluation cases
+
+`mmrag eval` (and `POST /eval`) score a set of `query → expected_asset_ids` cases against the live index. Cases live in a JSON file:
+
+```json
+{"version": "v1", "groups": {"en": [{"query": "...", "expected_asset_ids": ["..."]}]}}
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EVAL_CASES_PATH` | unset | Path to a case JSON overriding the bundled default |
+
+The default (unset) loads the small generic sample shipped with the package (`mm_asset_rag/eval_data/<version>_cases.json`) — a **text→text-only** template over well-known arxiv papers, so it runs out of the box once you ingest matching assets. The CLI `--cases` flag overrides `EVAL_CASES_PATH` for one run; `--cases` and `POST /eval {cases_path}` take the same path.
+
+The file's `version` field is checked (`v1` vs `v2`): loading a v2 file under `mmrag eval` (or vice versa) raises an error instead of silently scoring 0 cases.
+
+A larger internal baseline ships at `examples/eval_cases_chapter11_v{1,2}.json` (load with `--cases`) for reproducibility, but it references assets not in this repo — see `examples/eval_cases_README.md`. Without matching assets ingested, every case returns `hit: false`.
+
 ## Upload safety limits
 
 These limits protect `/upload/preview` from accidental very large uploads. Oversized multipart bodies return HTTP 413; files that sniff as too large/complex are shown as rejected preview cards and cannot be confirmed.
@@ -281,12 +289,38 @@ The upload preview pipeline can call a VLM once per file to extract title / desc
 | `AUTO_META_PDF_RENDER_DPI` | `120` | DPI used for the first-page render |
 | `AUTO_META_PDF_MAX_RENDER_PIXELS` | `8000000` | Skip VLM when the rendered first page is too large |
 
-## OCR / VLM backends
+## Image OCR (PP-OCRv6)
+
+Standalone image assets (screenshots, photos, scanned pages) have no extractable text layer, so they would be invisible to the text→text route. When OCR is enabled, in-image text is recognised and entered into the text index. Off by default — turn it on only when the corpus has image assets whose text matters for retrieval.
+
+Two backends, selected by `OCR_BACKEND`:
+
+- **`local`** (default) — runs PP-OCRv6 small in-process via the `[ocr]` extra (rapidocr + onnxruntime, pure ONNX, models ship with the wheel). Self-contained, zero-network.
+- **`http`** — keeps the legacy external-OCR-server contract. Point `OCR_HTTP_URL` at your own `/ocr` endpoint that accepts `POST {image_base64, file_name}` → `{blocks:[{text}]}`.
+
+Install the extra to use the `local` backend:
+
+```bash
+pip install -e ".[ocr]"
+```
+
+`ENABLE_OCR` is the legacy master switch (applies to both backends); `OCR_BACKEND` selects which one.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `OCR_HTTP_URL` | unset | Optional local OCR service for image text extraction |
-| `OCR_HTTP_TIMEOUT` | `60.0` | OCR timeout |
+| `ENABLE_OCR` | `false` | Master switch for image OCR |
+| `OCR_BACKEND` | `local` | `local` (PP-OCRv6, needs `[ocr]`) or `http` (external service) |
+| `OCR_HTTP_URL` | unset | External OCR endpoint (only used when `OCR_BACKEND=http`) |
+| `OCR_HTTP_TIMEOUT` | `60.0` | External OCR timeout seconds |
+
+For scanned PDFs (a different path — `PDF_PARSER=auto` with `PDF_SCAN_FALLBACK_PARSER=ppocr`), the local PP-OCRv6 page-OCR runs via the same `[ocr]` extra regardless of `ENABLE_OCR`.
+
+## OCR / VLM backends
+
+These cover the legacy `http` OCR backend and the VLM channels; the default `local` PP-OCRv6 backend is documented in the section above.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
 | `VLM_BASE_URL` | `OPENAI_BASE_URL` fallback | VLM endpoint for image captions / auto metadata |
 | `VLM_API_KEY` | `OPENAI_API_KEY` fallback | VLM API key |
 | `VLM_MODEL` | `OPENAI_MODEL` fallback | VLM model |
@@ -304,8 +338,9 @@ The PDF parser is chosen by `PDF_PARSER` (CLI `--pdf-parser`):
 | `pymupdf` | PyMuPDF | Local, text-only. Drops embedded figures unless `PDF_EXTRACT_IMAGES` is on |
 | `paddleocr_vl` | PaddleOCR-VL | Online API; needs `PADDLEOCR_VL_API_TOKEN`. Best for scanned / image-only PDFs |
 | `docling` | docling | Local multi-format parser; needs the `[docling]` extra. Pulls torch / transformers |
+| `ppocr` | PP-OCRv6 (local) | Local page-by-page OCR via the `[ocr]` extra (rapidocr + onnxruntime). Zero-network fallback for scanned PDFs |
 
-`pymupdf` remains a hard dependency; `paddleocr_vl` is online; `docling` is an optional extra (`pip install -e ".[docling]"`). Without the extra, `--pdf-parser docling` raises a friendly install hint at parse time rather than an `ImportError` at startup.
+`pymupdf` remains a hard dependency; `paddleocr_vl` is online; `docling` needs the `[docling]` extra; `ppocr` needs the `[ocr]` extra. Without the extra, `--pdf-parser docling` / `ppocr` raises a friendly install hint at parse time rather than an `ImportError` at startup.
 
 ## Document parser selection
 
@@ -320,13 +355,13 @@ Both backends produce the same `DocumentIR`, so chunking / image association / c
 
 ### Scanned-PDF fallback (auto parser)
 
-The `auto` parser runs fast local PyMuPDF first, then falls back to an OCR backend when the result looks like a scan (image-only, near-zero text). `PDF_SCAN_TEXT_THRESHOLD` is the total non-empty chars/page budget below which a document is treated as scanned — corpus-agnostic (pure char density, no domain words): `total_chars < threshold * page_count`. `PDF_SCAN_FALLBACK_PARSER` picks the OCR backend: `paddleocr_vl` (default, online API, needs `PADDLEOCR_VL_API_TOKEN`) or `docling` (local, needs the `[docling]` extra). Disable with `PDF_SCAN_FALLBACK_ENABLED=false` to always stay on PyMuPDF (the pre-IR `auto` behaviour).
+The `auto` parser runs fast local PyMuPDF first, then falls back to an OCR backend when the result looks like a scan (image-only, near-zero text). `PDF_SCAN_TEXT_THRESHOLD` is the total non-empty chars/page budget below which a document is treated as scanned — corpus-agnostic (pure char density, no domain words): `total_chars < threshold * page_count`. `PDF_SCAN_FALLBACK_PARSER` picks the OCR backend; the default `auto` routes by token availability — `paddleocr_vl` (online API, needs `PADDLEOCR_VL_API_TOKEN`) when a token is set, `ppocr` (local PP-OCRv6 via the `[ocr]` extra, zero-network) when it is not. Set it explicitly to `docling` to force the local docling OCR (needs the `[docling]` extra). Disable the whole fallback with `PDF_SCAN_FALLBACK_ENABLED=false` to always stay on PyMuPDF (the pre-IR `auto` behaviour).
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `PDF_SCAN_FALLBACK_ENABLED` | `true` | Master switch for the scanned-PDF fallback in `auto` mode |
 | `PDF_SCAN_TEXT_THRESHOLD` | `10` | Avg non-empty chars/page below which a PDF is treated as scanned |
-| `PDF_SCAN_FALLBACK_PARSER` | `paddleocr_vl` | Fallback backend: `paddleocr_vl` or `docling` |
+| `PDF_SCAN_FALLBACK_PARSER` | `auto` | Fallback backend: `auto` / `paddleocr_vl` / `docling` / `ppocr` |
 
 The threshold default of `10` is tuned for genuinely scanned (image-only) PDFs, which yield ~0 extractable chars. A text PDF with a single short page (~45 chars) stays on PyMuPDF since `45 ≥ 10 * 1`. Raise it if your corpus has dense-figure PDFs whose thin text layers should trigger OCR.
 

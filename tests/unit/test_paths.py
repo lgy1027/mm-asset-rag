@@ -34,7 +34,6 @@ def test_get_data_dir_falls_back_to_home(monkeypatch) -> None:
         (paths.get_parsed_dir, "parsed"),
         (paths.get_captions_dir, "captions"),
         (paths.get_indexes_dir, "indexes"),
-        (paths.get_text_index_dir, "indexes/text"),
         (paths.get_qdrant_path, "indexes/qdrant"),
     ],
 )

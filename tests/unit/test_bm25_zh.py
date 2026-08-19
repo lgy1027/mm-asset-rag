@@ -173,6 +173,46 @@ def test_build_index_hashes_are_deterministic_across_calls() -> None:
     assert v1[0].values == pytest.approx(v2[0].values)
 
 
+def test_build_index_injects_context_preamble_into_tokens() -> None:
+    """Contextual Retrieval: ``metadata["context"]`` is prepended to the
+    tokenised text so the zh sparse channel carries the same disambiguating
+    terms the dense + BM25-en channels do. Without this the zh channel is
+    context-less and Chinese ambiguous chunks miss the preamble's terms.
+
+    Pins the contract: a doc whose body lacks term ``扩散`` but whose
+    context carries it must produce a vector whose tokens include ``扩散``.
+    """
+    doc = ParsedDocument(
+        text="这一节讨论具体实现细节",  # body without "扩散"
+        metadata={"asset_id": "a1", "context": "关于DDPM去噪扩散概率模型的前缀"},
+    )
+    vectors, _ = bm25_zh.build_bm25_zh_index([doc])
+    # Re-tokenise the expected context-prefixed text and assert every token
+    # from the context survives into the indexed vector's index set.
+    expected_tokens = bm25_zh.tokenize_zh(
+        "关于DDPM去噪扩散概率模型的前缀\n\n这一节讨论具体实现细节"
+    )
+    expected_indices = {bm25_zh._term_to_index(t) for t in expected_tokens}
+    assert expected_indices, "fixture tokens unexpectedly empty"
+    indexed = set(vectors[0].indices)
+    # The context tokens must all be present (the body's tokens ride along
+    # too; we only assert the context ones landed).
+    assert expected_indices.issubset(indexed), (
+        "context preamble tokens missing from the bm25_zh vector — the zh "
+        "sparse channel would not benefit from Contextual Retrieval."
+    )
+
+
+def test_build_index_without_context_matches_legacy_behaviour() -> None:
+    """A doc with no ``context`` key tokenises the bare body — identical to
+    the pre-contextual behaviour, so the zh channel doesn't regress on
+    non-contextual corpora."""
+    doc = ParsedDocument(text="猫 狗", metadata={"asset_id": "a1"})
+    vectors, _ = bm25_zh.build_bm25_zh_index([doc])
+    expected = {bm25_zh._term_to_index(t) for t in bm25_zh.tokenize_zh("猫 狗")}
+    assert expected == set(vectors[0].indices)
+
+
 # ─── _term_to_index collision guard (64-bit) ───────────────────────────────
 
 

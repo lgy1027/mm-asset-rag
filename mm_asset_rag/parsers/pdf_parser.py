@@ -44,7 +44,6 @@ def build_ir_pymupdf(asset: Asset) -> DocumentIR:
     so this function does only what PyMuPDF uniquely knows: page geometry
     and font sizes.
     """
-    from .chunk_splitter import _make_token_counter  # noqa: F401  (kept for callers)
     from .pdf_images import (
         LineItem,
         detect_figure_captions,
@@ -465,18 +464,76 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
     return ir_to_documents(build_ir_paddleocr_vl(asset))
 
 
+def build_ir_from_page_ocr(asset: Asset) -> DocumentIR:
+    """Local scanned-PDF fallback: render each page to an image with PyMuPDF
+    and OCR it page-by-page via the in-process PP-OCRv6 (:func:`run_ocr`).
+
+    This is the zero-network fallback for scanned PDFs when no online OCR
+    token is configured. PyMuPDF already opened the file for the upstream
+    ``looks_scanned`` check, so we re-open here for rendering. Pages render
+    to PNG at a modest DPI (200) — enough for PP-OCRv6 recognition without
+    ballooning memory on long scans. Each page's recognised lines become one
+    ``Block``; :func:`ir_to_documents` chunks and indexes them.
+
+    Tables / formulas are not structurally recovered (PP-OCRv6 is a text
+    spotter, not a layout VLM) — but every word on the page enters the
+    text→text index, which is the retrieval goal.
+    """
+    from .image_parser import run_ocr
+
+    output_dir = get_parsed_dir() / asset.asset_id
+    pages_dir = output_dir / "pages"
+    pages_dir.mkdir(parents=True, exist_ok=True)
+
+    blocks: list[Block] = []
+    with fitz.open(str(asset.file_path)) as doc:
+        for page_num in range(doc.page_count):
+            page = doc.load_page(page_num)
+            # 200 DPI balances recognition accuracy against render cost; the
+            # PP-OCRv6 det model handles typical scan resolutions fine here.
+            pix = page.get_pixmap(dpi=200)
+            img_path = pages_dir / f"page_{page_num}.png"
+            pix.save(str(img_path))
+            try:
+                ocr_blocks = run_ocr(img_path)
+            except Exception as exc:  # pragma: no cover - per-page resilience
+                print(f"page OCR failed for {asset.asset_id} p{page_num}: {exc}")
+                ocr_blocks = []
+            page_text = "\n".join(str(b["text"]) for b in ocr_blocks if b.get("text"))
+            if page_text.strip():
+                blocks.append(Block(text=page_text, page=page_num, bbox=None))
+
+    return DocumentIR(
+        blocks=blocks,
+        images=[],
+        asset=asset,
+        parser="ppocr-page-ocr",
+        markdown_paths=[],
+        images_dir=str(pages_dir) if pages_dir.exists() else "",
+    )
+
+
 def parse_pdf(asset: Asset, parser: str) -> list[ParsedDocument]:
     """Dispatch a PDF parse by backend name.
 
-    ``auto`` (the default) now does scanned-PDF detection: it runs the
-    fast local PyMuPDF extraction first, and if the resulting text density
-    is below ``Settings.pdf_scan_text_threshold`` (image-only / scanned
-    pages) it falls back to an OCR backend chosen by
-    ``Settings.pdf_scan_fallback_parser`` (default ``paddleocr_vl``,
-    optionally ``docling`` when the extra is installed). This replaces the
-    old "token-configured → always OCR, else always local" behaviour,
-    which sent text PDFs through OCR unnecessarily and silently dropped
-    scanned PDFs to zero chunks when no token was configured.
+    ``auto`` (the default) runs the fast local PyMuPDF extraction first, and
+    if the result looks like a scan (image-only, near-zero text per page) it
+    falls back to an OCR backend. The fallback is chosen by
+    ``Settings.pdf_scan_fallback_parser`` with a sensible zero-config default:
+
+    * ``paddleocr_vl`` (online API) — used only when
+      ``PADDLEOCR_VL_API_TOKEN`` is configured. This is the "user opted into
+      online OCR" path; their PDF is uploaded to the Baidu service.
+    * ``docling`` (local, heavy) — explicit opt-in for layout-aware parsing.
+    * ``ppocr`` (local, default) — render each page with PyMuPDF and OCR
+      page-by-page via the in-process PP-OCRv6 (needs the [ocr] extra). This
+      is the zero-network fallback: scanned PDFs are parsed locally without
+      any token or external service.
+
+    The default ``pdf_scan_fallback_parser`` is ``auto``, which routes to
+    ``paddleocr_vl`` when a token is present and ``ppocr`` otherwise — so a
+    bare install with the [ocr] extra handles scans offline out of the box,
+    while a deployment that configured the online token keeps using it.
     """
     from .document_ir import ir_to_documents, looks_scanned
 
@@ -491,17 +548,29 @@ def parse_pdf(asset: Asset, parser: str) -> list[ParsedDocument]:
             ir, text_threshold_per_page=settings.pdf_scan_text_threshold
         ):
             fallback = settings.pdf_scan_fallback_parser
+            # ``auto`` (the default) routes by token: online PaddleOCR-VL when
+            # the deployer configured its token, else local PP-OCRv6. This is
+            # the zero-config path — bare installs parse scans offline.
+            if fallback == "auto":
+                fallback = "paddleocr_vl" if settings.paddleocr_vl_api_token else "ppocr"
+            # Explicit overrides win — a deployer who sets a specific backend
+            # gets exactly that, regardless of token presence.
             if fallback == "docling":
                 return parse_with_docling(asset)
-            # Default fallback: PaddleOCR-VL. Only fall back when its API
-            # token is configured — otherwise we'd raise where the old
-            # code silently produced zero chunks. A bare token-less scan
-            # stays on the (empty) PyMuPDF output to preserve behaviour.
-            if settings.paddleocr_vl_api_token:
+            if fallback == "ppocr":
+                return ir_to_documents(build_ir_from_page_ocr(asset))
+            # paddleocr_vl (online). Only used when its API token is configured —
+            # a token-less scan would otherwise raise where the old code
+            # silently produced zero chunks. Without a token, fall through to
+            # local PP-OCRv6 (zero-network).
+            if fallback == "paddleocr_vl" and settings.paddleocr_vl_api_token:
                 return parse_with_paddleocr_vl(asset)
+            return ir_to_documents(build_ir_from_page_ocr(asset))
         return ir_to_documents(ir)
     if parser == "docling":
         return parse_with_docling(asset)
+    if parser == "ppocr":
+        return ir_to_documents(build_ir_from_page_ocr(asset))
     raise ValueError(f"Unsupported PDF parser: {parser}")
 
 

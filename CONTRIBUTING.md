@@ -69,7 +69,7 @@ mm-asset-rag/
 ├── tests/unit/           # offline unit tests (fast)
 ├── tests/integration/    # marked @pytest.mark.integration
 ├── docs/                 # architecture, configuration, api
-└── scripts/              # eval_rag.py, benchmark.py
+└── scripts/              # benchmark.py
 ```
 
 ## Adding a new modality (audio, video)
@@ -124,7 +124,7 @@ This project follows a lightweight convention:
 <body>
 ```
 
-Common types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`. Scope is usually a module name (e.g. `qdrant_store`, `api`, `web`).
+Common types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`. Scope is usually a module name (e.g. `qdrant_backend`, `api`, `web`).
 
 ## Pull request checklist
 

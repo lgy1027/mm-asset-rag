@@ -29,10 +29,12 @@ mmrag answer "your question"
 mmrag eval
 ```
 
-The `EVAL_CASES` in `mm_asset_rag/evaluation.py` target specific asset
-titles/ids, so `mmrag eval` returns useful hit/miss signals only when a
-matching corpus is indexed. Treat the bundled eval cases as a template
-to adapt to your own corpus, not as a fixed benchmark.
+The bundled eval cases (`mm_asset_rag/eval_data/*.json`) are a small
+generic text→text sample; a larger chapter11 baseline ships at
+`examples/eval_cases_chapter11_v{1,2}.json` (load with `mmrag eval
+--cases <file>`). Either returns useful hit/miss signals only when a
+matching corpus is indexed — treat them as templates to adapt to your
+own corpus, not as a fixed benchmark.
 
 ## Layout (when populated locally)
 

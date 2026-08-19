@@ -38,6 +38,11 @@
   (jsonl store)         vectors        collections     (merged)      (text)
 ```
 
+> This is the **component** view. For the end-to-end **data flow** view
+> (how a file moves from upload → parse → index → retrieval → answer,
+> and how the text line vs the image line stay separate), see
+> [`data-flow.md`](data-flow.md).
+
 ## What each layer does
 
 - **`api.py` / `cli.py`** are thin entry points. Both use the upload-first

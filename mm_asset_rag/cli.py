@@ -34,7 +34,7 @@ def _wait_for_task(task_id: str, poll_interval: float = 1.0) -> None:
         if cur != last_line:
             print(f"[task {rec.task_id}] {rec.status} · {cur}", flush=True)
             last_line = cur
-        if rec.status in ("done", "partial", "failed", "interrupted"):
+        if rec.status in ("done", "partial", "failed", "interrupted", "cancelled"):
             return
         time.sleep(poll_interval)
 
@@ -156,22 +156,38 @@ def command_search(args: argparse.Namespace) -> None:
     print_hits(hits)
 
 
+def _resolve_cli_cases_path(value: str | None) -> str | Path | None:
+    """Resolve ``--cases`` via the shared resolver (``paths.resolve_cases_path``).
+
+    The resolver validates the path (relative, ``.json``, no traversal),
+    resolves it under ``eval_cases/`` then ``examples/``, and checks the
+    file exists. A bad path raises ``ValueError`` / ``FileNotFoundError``;
+    we translate both to a CLI-friendly ``SystemExit``.
+    """
+    from .paths import resolve_cases_path
+
+    try:
+        resolved = resolve_cases_path(value)
+    except (ValueError, FileNotFoundError) as exc:
+        raise SystemExit(str(exc)) from exc
+    return None if resolved is None else str(resolved)
+
+
 def command_eval(args: argparse.Namespace) -> None:
+    cases_path = _resolve_cli_cases_path(args.cases)
     if args.v2:
         from .evaluation_v2 import run_eval_v2, write_eval_report_v2
 
-        results = run_eval_v2(top_k=args.top_k)
-        # v2 has multiple groups (text-to-text here, plus separate
-        # text→image / image→image runners); ``write_eval_report_v2``
-        # expects a ``{group_name: [V2Result, ...]}`` mapping. We run only
-        # the text→text group because that is what v1's ``run_eval``
-        # covers and what the default ``mmrag eval`` output compares
-        # against; the other groups have their own CLI one-shot in
-        # ``evaluation_v2.__main__``.
+        results = run_eval_v2(top_k=args.top_k, cases_path=cases_path)
+        # Only the text→text group runs here; the text→image / image→image
+        # groups live in their own one-shots under ``evaluation_v2.__main__``.
+        # ``write_eval_report_v2`` expects a ``{group_name: [V2Result, ...]}``
+        # mapping, so we wrap the text→text results. The default ``mmrag eval``
+        # output compares against v1's ``run_eval``, which is also text→text.
         write_eval_report_v2({"text_to_text": results})
         safe_print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
         return
-    results = run_eval(top_k=args.top_k)
+    results = run_eval(top_k=args.top_k, cases_path=cases_path)
     write_eval_report(results)
     safe_print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
 
@@ -228,7 +244,9 @@ def build_parser() -> argparse.ArgumentParser:
     parse_cmd = subparsers.add_parser("parse", help="Parse and index PDF/image files")
     parse_cmd.add_argument("files", nargs="+", help="PDF/image files to ingest")
     parse_cmd.add_argument(
-        "--pdf-parser", choices=["auto", "pymupdf", "paddleocr_vl", "docling"], default="auto"
+        "--pdf-parser",
+        choices=["auto", "pymupdf", "paddleocr_vl", "docling", "ppocr"],
+        default="auto",
     )
     parse_cmd.add_argument(
         "--document-parser",
@@ -292,13 +310,23 @@ def build_parser() -> argparse.ArgumentParser:
     eval_cmd = subparsers.add_parser("eval", help="Run the small retrieval regression set")
     eval_cmd.add_argument("--top-k", type=int, default=5)
     eval_cmd.add_argument(
+        "--cases",
+        default=None,
+        help=(
+            "Path to a case JSON overriding the default "
+            "(Settings.EVAL_CASES_PATH → the bundled sample). Schema: "
+            '{"version","groups":{group:[{query,expected_asset_ids}]}}. '
+            "Ship your own or use examples/eval_cases_chapter11_v{1,2}.json."
+        ),
+    )
+    eval_cmd.add_argument(
         "--v2",
         action="store_true",
         help=(
-            "Run the v2 regression set (83 cases, Chinese-primary, multi-dimensional: "
-            "cross-language / multi-relevant / negative / typo / image-to-image) "
-            "instead of the v1 set. Writes eval_report_v2.json. Default is v1 "
-            "so existing scripts / dashboards keep their numbers."
+            "Run the v2 regression set (multi-dimensional, Chinese-primary: "
+            "cross-language / multi-relevant / negative) instead of the v1 "
+            "set. Writes eval_report_v2.json. Default is v1 so existing "
+            "scripts / dashboards keep their numbers."
         ),
     )
     eval_cmd.set_defaults(func=command_eval)

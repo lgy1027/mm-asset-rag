@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+### Changed
+### Removed
+### Fixed
+
+## [0.2.0] - 2026-08-19
+
+### Added
 - **Eval expansion**: `mm_asset_rag/evaluation.py` now ships 32 English arxiv-paper queries + 6 Chinese cross-language queries (the original 3-case regression kept as a subset). `run_eval` resolves bare expected ids (`"Alexnet"`) to the actual hashed asset_ids via `asset_index.jsonl` so `aggregate_metrics` can score them with hit_rate / precision / recall / f1 / ndcg at k=1,3,5,10 + MRR + MAP. Per-query results + per-group aggregate metrics are persisted to `$MM_ASSET_RAG_HOME/eval_report.json`. Measured on the 32-paper chapter11 corpus: EN hit_rate@5=0.750, ZH=0.667, MRR=0.734 / 0.583.
 - **v2 eval harness** (`mm_asset_rag/evaluation_v2.py` + `docs/eval-report-v2.md`): 83 Chinese-primary multi-dimensional cases across 3 modes. Findings (drives the 0.2.0 roadmap): text→text MRR=0.133, text→image hit_rate=0.087, image→image hit_rate=1.000. Surfaces three P0 issues — (a) image_parser writes a placeholder text chunk per image (filename + `图片标题/Picsum XXX`) into the text collection, polluting text→text recall; (b) CLIP ViT-B-32 is English-only so Chinese text→image returns 0; (c) `hybrid_search` has no `min_score` threshold so negative queries (`强化学习 / 联邦学习 / 元学习`) still return top-5 irrelevant hits instead of an empty / "I'm not sure" answer.
 - **Image-route evals**: `evaluation.py` now also ships `TEXT_TO_IMAGE_QUERIES` (10 English + 3 Chinese on the Caltech-101 image set) and `IMAGE_TO_IMAGE_QUERIES` (6 categories). `run_text_to_image_eval` / `run_image_to_image_eval` hit the Qdrant image collection directly. Bare `Caltech <Category>` expected ids expand to all 3 sample asset_ids per category via `_expand_bare_expected_to_full`, so the strict set match in `aggregate_metrics` works correctly. Measured: text-to-image hit_rate@5=0.692 (10/13, with the 3 Chinese misses explained by CLIP ViT-B-32 being English-only), image-to-image hit_rate@5=1.000 (6/6 at rank 1).

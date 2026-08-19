@@ -77,6 +77,21 @@ def test_sentence_transformer_dim_cached(monkeypatch) -> None:
     assert emb.dim() == 16
 
 
+def test_sentence_transformer_dim_settings_override_skips_probe(monkeypatch) -> None:
+    """``Settings.embedding_dim`` 覆盖 probe,跳过模型加载。"""
+    monkeypatch.setenv("EMBEDDING_MODEL", "fake-model")
+    monkeypatch.setenv("EMBEDDING_DIM", "1024")
+    s = Settings(_env_file=None)
+    emb = SentenceTransformerTextEmbedder(settings=s)
+    # 不注入 _model —— 如果 dim() 试图 probe,会抛 EmbeddingConfigError
+    emb._model = None
+    emb._dim = None
+    assert emb.dim() == 1024
+    # 即使 _dim 已填也不该走 probe
+    emb._dim = 999  # cached value 应被 settings 覆盖
+    assert emb.dim() == 1024
+
+
 def test_factory_picks_sentence_transformers_when_configured(monkeypatch) -> None:
     monkeypatch.setenv("EMBEDDING_BACKEND", "sentence_transformers")
     monkeypatch.setenv("EMBEDDING_MODEL", "fake-model")

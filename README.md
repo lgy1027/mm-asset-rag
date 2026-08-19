@@ -36,7 +36,7 @@ Compared to larger frameworks:
 Install the latest release from PyPI:
 
 ```bash
-pip install mm-asset-rag   # core: text + image (lite) retrieval, FastAPI web UI
+pip install mm-asset-rag   # core: text retrieval + FastAPI web UI (image indexing needs [clip] extra)
 ```
 
 Optional CLIP-based image embeddings (recommended if you want text→image / image→image routes on real image corpora):
@@ -128,21 +128,26 @@ All settings come from environment variables (a `.env` file in the current direc
 | `VLM_BASE_URL` / `VLM_API_KEY` / `VLM_MODEL` | VLM for upload auto-tagging and image captions. Falls back to `OPENAI_*`. | — |
 | `AUTO_META_ENABLED` | Enable VLM title/description/tag extraction during upload preview. | `true` |
 | `PADDLEOCR_VL_API_TOKEN` | PaddleOCR-VL API token for scanned PDFs. | — |
-| `OCR_HTTP_URL` | Optional local OCR service for image text extraction. | — |
+| `OCR_BACKEND` | Image OCR backend: `local` (PP-OCRv6 via `[ocr]` extra) or `http`. | `local` |
+| `OCR_HTTP_URL` | External OCR endpoint (only used when `OCR_BACKEND=http`). | — |
 
 See [`.env.example`](.env.example) and [`docs/configuration.md`](docs/configuration.md) for the full list.
 
 ## Evaluation
 
-`mmrag eval` runs a fixed set of expected-query → expected-asset cases against the live index and reports hit-rate / MRR. It needs the expected assets to be **already ingested** first — otherwise every case returns `hit: false`, which looks like the system is broken.
+`mmrag eval` runs a set of `query → expected_asset_ids` cases against the live index and reports hit-rate / MRR. Cases live in a JSON file (`{"version","groups":{group:[{query,expected_asset_ids}]}}`). The **default** is a small generic sample shipped with the package (`mm_asset_rag/eval_data/`) — a text→text template over well-known arxiv papers. It needs the expected assets to be **already ingested** first; otherwise every case returns `hit: false`.
+
+To score your own corpus, author a case file and pass `--cases` (or set `EVAL_CASES_PATH`):
 
 ```bash
-# 1. Ingest the eval corpus (the cases reference known PDFs/images —
-#    point mmrag parse at whatever corpus you want to evaluate against).
+# 1. Ingest your eval corpus (cases reference asset titles/ids — point
+#    mmrag parse at whatever you want to evaluate against).
 mmrag parse ./my_eval_corpus/*.pdf
 # 2. Run the evaluation
-mmrag eval          # v1 case set
-mmrag eval --v2     # v2: 83 Chinese-primary, multi-dimensional cases
+mmrag eval                              # bundled default sample
+mmrag eval --cases my_cases.json        # your own case set
+mmrag eval --v2                         # v2: multi-dimensional, Chinese-primary
+mmrag eval --v2 --cases examples/eval_cases_chapter11_v2.json   # internal baseline
 ```
 
 When no LLM is configured, the eval still runs (it measures retrieval only); `/answer`-dependent cases degrade gracefully.
@@ -174,7 +179,7 @@ mm-asset-rag/
 ├── tests/unit/           # offline unit tests
 ├── tests/integration/    # marked @pytest.mark.integration
 ├── docs/                 # architecture, configuration, api
-└── scripts/              # eval_rag.py, benchmark.py, *.sh eval pilots
+└── scripts/              # benchmark.py (perf)
 ```
 
 ### Adding a new modality (audio, video)
@@ -191,6 +196,7 @@ The FastAPI app, CLI, and Qdrant backend all read from the registries at runtime
 
 - [Quickstart(从零到第一次搜索)](docs/quickstart.md)
 - [Architecture](docs/architecture.md)
+- [Data flow(文本 vs 图片两条线)](docs/data-flow.md)
 - [Configuration](docs/configuration.md)
 - [HTTP API](docs/api.md)
 - [Upload flow](docs/upload-flow.md)

@@ -218,8 +218,26 @@ def build_bm25_zh_index(
     document's own tokens — a standard sparse representation that
     pairs with the query-side vector above. Empty texts produce empty
     sparse vectors (Qdrant accepts these as null contributions).
+
+    Contextual Retrieval: when a document carries ``metadata["context"]``
+    (the LLM-generated preamble), it is prepended to the tokenised text
+    so the Chinese sparse channel sees the same disambiguating tokens the
+    dense + BM25-en channels do — otherwise the zh channel is context-less
+    and Chinese ambiguous chunks miss the preamble's exact-match terms.
     """
-    docs_tokens = [tokenize_zh(getattr(d, "text", "") or "") for d in documents]
+
+    def _doc_text(d) -> str:
+        body = getattr(d, "text", "") or ""
+        ctx = getattr(getattr(d, "metadata", None), "get", lambda *_: None)("context")
+        # ``metadata`` may be a dict or missing; guard both. The preamble is
+        # joined with a blank line, matching the dense/BM25-en text assembly
+        # in ``build_qdrant_text_index`` so every sparse sibling carries the
+        # same context the dense vector does.
+        if ctx:
+            return f"{ctx}\n\n{body}"
+        return body
+
+    docs_tokens = [tokenize_zh(_doc_text(d)) for d in documents]
     idf = compute_idf(docs_tokens, k1=k1, b=b)
     avgdl = max(idf["_avgdl"], 1.0)
     k1 = idf["_k1"]
