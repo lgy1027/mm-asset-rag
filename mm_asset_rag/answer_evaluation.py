@@ -148,8 +148,13 @@ def run_answer_eval(
             expected_asset_ids = list(case.get("expected_asset_ids") or [])
             expected_answer_assets = list(case.get("expected_answer_assets") or expected_asset_ids)
 
-            # Retrieval (DI-injected; default = real hybrid_search)
-            hits = search(query, top_k)
+            # Retrieval (DI-injected; default = real hybrid_search).
+            # Use a keyword for ``top_k`` — ``hybrid_search`` also takes a
+            # second positional argument ``image_path`` (Path | None), and
+            # passing ``top_k`` positionally would otherwise collide with
+            # that parameter and the int value would flip on the
+            # image-to-image route.
+            hits = search(query, top_k=top_k)
 
             # Answer generation. llm_answer accepts hits=None and runs
             # hybrid_search itself; passing pre-computed hits keeps the
