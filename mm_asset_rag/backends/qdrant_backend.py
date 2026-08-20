@@ -1302,7 +1302,14 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
     except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
         return []
     client = get_qdrant_client()
-    query_vector = provider.embed_text(query)
+    try:
+        query_vector = provider.embed_text(query)
+    except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
+        # ``embed_text`` itself can surface availability (e.g. cn_clip cache
+        # missing tokenizer files → features is a non-tensor object). Treat
+        # that the same as "no image embedder available at all" — the image
+        # route silently returns empty so text retrieval still works.
+        return []
     # The image collection may not exist yet (e.g. user only ingested
     # PDFs). Treat "no image index" as a clean empty result instead of
     # crashing the hybrid_search call.
