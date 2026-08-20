@@ -1,0 +1,98 @@
+{
+  "version": "answer_v1",
+  "_comment": "Bundled default for `mmrag eval --answer-quality`. Cases pair a query with `expected_answer_keywords` (substring targets the answer should hit) and `expected_answer_assets` (asset_ids the answer should cite via `[N]` markers). The same query appears in v1_cases.json — both files are loaded by different runners, neither is a substitute for the other. To score a custom corpus, point `EVAL_CASES_PATH` at your own file matching this schema.",
+  "groups": {
+    "en": [
+      {
+        "query": "retrieval augmented generation RAG",
+        "expected_asset_ids": ["Retrieval Augmented Generation"],
+        "expected_answer_assets": ["Retrieval Augmented Generation"],
+        "expected_answer_keywords": [
+          "retrieval",
+          "augmented",
+          "generation",
+          "context"
+        ]
+      },
+      {
+        "query": "attention is all you need transformer architecture",
+        "expected_asset_ids": ["Attention Is All You Need"],
+        "expected_answer_assets": ["Attention Is All You Need"],
+        "expected_answer_keywords": [
+          "transformer",
+          "attention",
+          "self-attention",
+          "encoder"
+        ]
+      },
+      {
+        "query": "deep residual learning image recognition ResNet",
+        "expected_asset_ids": ["Resnet"],
+        "expected_answer_assets": ["Resnet"],
+        "expected_answer_keywords": [
+          "residual",
+          "resnet",
+          "skip",
+          "gradient"
+        ]
+      },
+      {
+        "query": "generative adversarial networks GAN",
+        "expected_asset_ids": ["Gan"],
+        "expected_answer_assets": ["Gan"],
+        "expected_answer_keywords": [
+          "generator",
+          "discriminator",
+          "adversarial",
+          "minimax"
+        ]
+      }
+    ],
+    "zh": [
+      {
+        "query": "哪份资料讲了 retrieval augmented generation?",
+        "expected_asset_ids": ["Retrieval Augmented Generation"],
+        "expected_answer_assets": ["Retrieval Augmented Generation"],
+        "expected_answer_keywords": [
+          "检索",
+          "增强",
+          "生成",
+          "上下文"
+        ]
+      },
+      {
+        "query": "残差网络 怎么解决梯度消失",
+        "expected_asset_ids": ["Resnet"],
+        "expected_answer_assets": ["Resnet"],
+        "expected_answer_keywords": [
+          "残差",
+          "梯度",
+          "跳跃",
+          "网络"
+        ]
+      },
+      {
+        "query": "关于自注意力 Transformer 的原始论文",
+        "expected_asset_ids": ["Attention Is All You Need"],
+        "expected_answer_assets": ["Attention Is All You Need"],
+        "expected_answer_keywords": [
+          "自注意力",
+          "transformer",
+          "编码",
+          "解码"
+        ]
+      },
+      {
+        "query": "生成对抗网络的训练目标是什么",
+        "expected_asset_ids": ["Gan"],
+        "expected_answer_assets": ["Gan"],
+        "expected_answer_keywords": [
+          "生成器",
+          "判别器",
+          "对抗",
+          "极大极小"
+        ]
+      }
+    ]
+  }
+}

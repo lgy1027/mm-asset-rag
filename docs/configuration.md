@@ -257,6 +257,24 @@ The file's `version` field is checked (`v1` vs `v2`): loading a v2 file under `m
 
 A larger internal baseline ships at `examples/eval_cases_chapter11_v{1,2}.json` (load with `--cases`) for reproducibility, but it references assets not in this repo — see `examples/eval_cases_README.md`. Without matching assets ingested, every case returns `hit: false`.
 
+## Answer-quality eval (LLM judge)
+
+`mmrag eval --answer-quality` (or `POST /eval {"answer_quality": true}`) scores the **generated** answer, not just retrieval. It runs three scorers per case:
+
+- **coverage** — `|answer ∩ expected_answer_keywords| / |expected_answer_keywords|`. Cheap substring match (NFC + casefold + ZW-char strip), no LLM.
+- **citation precision / recall** — regex extracts `[N]` markers from the answer, looks each up in the top-k evidence, and compares the cited `asset_id`s against `expected_answer_assets` (falls back to `expected_asset_ids` when unset). Adds a `citation_present` flag so reports can split "model never cited" from "model cited wrong".
+- **faithfulness** — LLM-as-judge: prompts the LLM with the question + evidence block + the model's answer, asks it to score whether all factual claims are supported. Returns a float 0.0-1.0 + a list of unsupported claims. Skipped (with `faithfulness_skipped=True, faithfulness_error=...`) when no creds are configured, when the judge times out, when the case is over `EVAL_JUDGE_MAX_CASES`, or on any judge exception — one bad case never aborts the run.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `EVAL_JUDGE_TIMEOUT` | `30.0` | Per-judge-call timeout (s). Tighter than `LLM_TIMEOUT` (120s) since judge is a single-shot JSON response. |
+| `EVAL_JUDGE_MODEL` | unset | Judge model name. Unset → reuse `OPENAI_MODEL` (or `VLM_MODEL` fallback). Override with e.g. `gpt-4o-mini` to save tokens (judge prompt is ~3-5K tokens per case). |
+| `EVAL_JUDGE_MAX_CASES` | unset | Cap the number of cases the judge runs per eval (CI cost guard). Unset = judge every case. Over the cap → `faithfulness_skipped=True, faithfulness_error="max cases reached"`. |
+
+Coverage + citation always run (no LLM needed). Faithfulness is the only LLM-dependent scorer; without it the report still surfaces the answer-quality signal — it's just missing the hallucination dimension. The output lives at `$MM_ASSET_RAG_HOME/eval_report_answer.json` (payload version `answer_v1`).
+
+v0 supports **text→text cases only**; image-route cases (`image_path`, `text_to_image`, `image_to_image` groups) raise a clear `ValueError` — `llm_answer(question, hits)` doesn't accept image input today.
+
 ## Upload safety limits
 
 These limits protect `/upload/preview` from accidental very large uploads. Oversized multipart bodies return HTTP 413; files that sniff as too large/complex are shown as rejected preview cards and cannot be confirmed.

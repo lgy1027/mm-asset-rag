@@ -236,6 +236,14 @@ def fallback_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
             "请先检查 sources 中的原始资料、页码和解析器，再决定是否接入生成式回答。\n\n" + evidence
         ),
         "sources": format_sources(hits),
+        # Marker consumed by ``answer_evaluation.run_answer_eval`` to split
+        # coverage / citation stats between real LLM answers and fallback
+        # evidence summaries. A user running ``mmrag eval --answer-quality``
+        # on a machine without ``OPENAI_*`` / ``VLM_*`` creds needs the
+        # report to distinguish "the LLM is broken" from "we never called
+        # one" — coverage / citation are necessarily near-zero on the
+        # fallback path, but that doesn't mean the eval regressed.
+        "_fallback": True,
     }
 
 

@@ -31,7 +31,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
@@ -322,6 +322,16 @@ class EvalRequest(BaseModel):
             "instead of v1. Default is v1."
         ),
     )
+    answer_quality: bool = Field(
+        default=False,
+        description=(
+            "Run the answer-quality eval (coverage + citation + LLM-judge "
+            "faithfulness) instead of v1 / v2 retrieval. Writes "
+            "eval_report_answer.json. Text→text cases only in v0; image-"
+            "route cases raise ValueError. Faithfulness is skipped when "
+            "no LLM creds are configured."
+        ),
+    )
     cases_path: str | None = Field(
         default=None,
         description=(
@@ -331,6 +341,15 @@ class EvalRequest(BaseModel):
             "schema as ``mmrag eval --cases``."
         ),
     )
+
+    @model_validator(mode="after")
+    def _v2_xor_answer_quality(self) -> EvalRequest:
+        # Mutex at the Pydantic layer → FastAPI returns 422 with a clean
+        # message instead of letting both branches race for top_k +
+        # cases_path and write conflicting reports.
+        if self.v2 and self.answer_quality:
+            raise ValueError("v2 and answer_quality are mutually exclusive")
+        return self
 
     @field_validator("cases_path")
     @classmethod
@@ -555,6 +574,16 @@ async def eval_endpoint(
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
     cases_path = _resolve_cases_path(request.cases_path)
+    if request.answer_quality:
+        from .answer_evaluation import run_answer_eval, write_answer_eval_report
+
+        results = await asyncio.to_thread(
+            run_answer_eval, top_k=request.top_k, cases_path=cases_path
+        )
+        # Persist to disk so the CLI surface and the API surface share
+        # the same report path; the JSON returned below mirrors that.
+        write_answer_eval_report(results)
+        return {"results": [asdict(r) for r in results], "version": "answer_v1"}
     if request.v2:
         from .evaluation_v2 import run_eval_v2
 

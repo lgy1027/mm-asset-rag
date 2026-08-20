@@ -175,6 +175,32 @@ def _resolve_cli_cases_path(value: str | None) -> str | Path | None:
 
 def command_eval(args: argparse.Namespace) -> None:
     cases_path = _resolve_cli_cases_path(args.cases)
+    if args.answer_quality:
+        from .answer_evaluation import run_answer_eval, write_answer_eval_report
+
+        results = run_answer_eval(top_k=args.top_k, cases_path=cases_path)
+        write_answer_eval_report(results)
+        safe_print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
+        # Surface the dominant "all fallback" / "all faithfulness skipped"
+        # outcomes so a user on a machine without an LLM doesn't think the
+        # eval silently broke — the JSON above will read near-zero.
+        from .answer_evaluation import _aggregate_answer_metrics
+
+        payload = _aggregate_answer_metrics(results)
+        breakdown = payload.get("answer_source_breakdown") or {}
+        skipped = payload.get("metrics", {}).get("all", {}).get("faithfulness_skipped", 0)
+        if breakdown.get("fallback") and not breakdown.get("llm"):
+            safe_print(
+                "\n[answer-quality] no LLM creds configured - every case ran "
+                "via fallback_answer (coverage / citation = 0). Set "
+                "OPENAI_* / VLM_* to score /answer."
+            )
+        elif skipped == len(results) and results:
+            safe_print(
+                "\n[answer-quality] every case skipped faithfulness "
+                "(check OPENAI_* / VLM_* creds or raise EVAL_JUDGE_MAX_CASES)."
+            )
+        return
     if args.v2:
         from .evaluation_v2 import run_eval_v2, write_eval_report_v2
 
@@ -319,7 +345,13 @@ def build_parser() -> argparse.ArgumentParser:
             "Ship your own or use examples/eval_cases_chapter11_v{1,2}.json."
         ),
     )
-    eval_cmd.add_argument(
+    # --v2 and --answer-quality are mutually exclusive: they share top_k /
+    # cases_path inputs but write different reports (eval_report_v2.json vs
+    # eval_report_answer.json) and score different things (retrieval vs
+    # generation). argparse requires the mutex group to be created before
+    # any of its members, so both flags live here rather than one per branch.
+    eval_mode = eval_cmd.add_mutually_exclusive_group()
+    eval_mode.add_argument(
         "--v2",
         action="store_true",
         help=(
@@ -327,6 +359,17 @@ def build_parser() -> argparse.ArgumentParser:
             "cross-language / multi-relevant / negative) instead of the v1 "
             "set. Writes eval_report_v2.json. Default is v1 so existing "
             "scripts / dashboards keep their numbers."
+        ),
+    )
+    eval_mode.add_argument(
+        "--answer-quality",
+        action="store_true",
+        help=(
+            "Run the answer-quality eval (coverage + citation + LLM-judge "
+            "faithfulness). Writes eval_report_answer.json. Text→text cases "
+            "only in v0; image-route cases raise ValueError. Coverage / "
+            "citation always run; faithfulness is skipped when no LLM creds "
+            "are configured (set OPENAI_* or VLM_*)."
         ),
     )
     eval_cmd.set_defaults(func=command_eval)

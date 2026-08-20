@@ -484,6 +484,25 @@ class Settings(BaseSettings):
     # corpus; the CLI ``--cases`` flag overrides this for one run.
     eval_cases_path: str | None = None
 
+    # ─── Evaluation answer-quality (LLM judge) ────────────────────────────
+    # Used by ``mmrag eval --answer-quality`` (see ``answer_evaluation.py``).
+    # Three settings decouple the judge from the answer-generation LLM so a
+    # deployment can route judgement to a cheaper model and a tighter
+    # timeout without changing /answer behavior. None for any of these
+    # means "reuse the answer-generation default".
+    # - ``eval_judge_timeout``: judge is single-shot per case, cheaper to
+    #   bound tight than the answer's 120s ``llm_timeout``. 30s is enough
+    #   for a focused JSON response.
+    # - ``eval_judge_model``: None → reuse ``openai_model`` (or ``vlm_model``
+    #   fallback). Override with e.g. ``gpt-4o-mini`` to save tokens.
+    # - ``eval_judge_max_cases``: cap the number of cases that hit the
+    #   judge per run. CI sets this to keep token spend bounded; prod
+    #   leaves it None for full coverage. Cases over the cap get
+    #   ``faithfulness_skipped=True, faithfulness_error="max cases reached"``.
+    eval_judge_timeout: float = 30.0
+    eval_judge_model: str | None = None
+    eval_judge_max_cases: int | None = None
+
     # ─── Derived properties ───────────────────────────────────────────────
 
     @property

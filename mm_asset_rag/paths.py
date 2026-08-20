@@ -89,6 +89,15 @@ def get_eval_report() -> Path:
     return get_data_dir() / "eval_report.json"
 
 
+def get_answer_eval_report() -> Path:
+    """Output path for ``mmrag eval --answer-quality`` (coverage / citation
+    / LLM-judge faithfulness scores). Sits next to ``eval_report.json`` /
+    ``eval_report_v2.json`` and is ``answer_v1``-versioned in the payload
+    so dashboards can tell reports apart after a schema bump.
+    """
+    return get_eval_report().with_name("eval_report_answer.json")
+
+
 def get_eval_cases_dir() -> Path:
     """Directory for user-supplied eval case JSONs accepted by ``cases_path``.
 
