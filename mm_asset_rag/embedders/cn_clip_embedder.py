@@ -27,6 +27,20 @@ class CnClipImageUnavailable(RuntimeError):
     """在没有 ``transformers`` 包或 ``ChineseCLIPModel`` 不可用时抛出。"""
 
 
+def _unwrap_pooler(features: object) -> object:
+    """Pull the actual embedding tensor out of a ChineseCLIP feature output.
+
+    ``ChineseCLIPModel.get_text_features`` and ``get_image_features`` return
+    a ``BaseModelOutputWithPooling`` namespace (not a tensor) in transformers
+    5.x — the projected embedding lives in ``.pooler_output``. Older versions
+    returned the tensor directly. Normalize both shapes so the caller can
+    ``features.norm(...)`` without checking the variant.
+    """
+    if hasattr(features, "pooler_output") and features.pooler_output is not None:
+        return features.pooler_output
+    return features
+
+
 class CnClipImageEmbedder:
     """Chinese-CLIP 图像 + 文本编码器(``transformers`` 后端)。
 
@@ -103,11 +117,20 @@ class CnClipImageEmbedder:
         model, processor = self._load()
         import torch
 
-        inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
-        with torch.no_grad():
-            features = model.get_text_features(**inputs)
-        features = features / features.norm(dim=-1, keepdim=True).clamp(min=1e-12)
-        return [float(v) for v in features[0].tolist()]
+        try:
+            inputs = processor(text=[text], return_tensors="pt", padding=True, truncation=True)
+            with torch.no_grad():
+                features = model.get_text_features(**inputs)
+            # ``ChineseCLIPModel.get_text_features`` returns a
+            # ``BaseModelOutputWithPooling`` (not a tensor) — the embedding
+            # lives in ``.pooler_output``. Older transformers versions returned
+            # the tensor directly, but in 5.x the helper got the can_return_tuple
+            # decorator and the raw pooler projection is now wrapped.
+            features = _unwrap_pooler(features)
+            features = features / features.norm(dim=-1, keepdim=True).clamp(min=1e-12)
+            return [float(v) for v in features[0].tolist()]
+        except Exception as exc:
+            raise CnClipImageUnavailable(f"cn_clip embed_text failed: {exc}") from exc
 
     def embed_image(self, image_path: Path) -> list[float] | None:
         """Encode one image. ``None`` if the file cannot be opened / encoded.
@@ -130,6 +153,8 @@ class CnClipImageEmbedder:
             inputs = processor(images=image, return_tensors="pt")
             with torch.no_grad():
                 features = model.get_image_features(**inputs)
+            # Same ModelOutput → pooler unwrap as ``embed_text``.
+            features = _unwrap_pooler(features)
             features = features / features.norm(dim=-1, keepdim=True).clamp(min=1e-12)
             return [float(v) for v in features[0].tolist()]
         except Exception:
@@ -181,6 +206,7 @@ class CnClipImageEmbedder:
             inputs = processor(images=valid_images, return_tensors="pt")
             with torch.no_grad():
                 features = model.get_image_features(**inputs)
+            features = _unwrap_pooler(features)
             features = features / features.norm(dim=-1, keepdim=True).clamp(min=1e-12)
             rows = features.tolist()
         except Exception:
