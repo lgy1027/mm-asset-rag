@@ -45,7 +45,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-clip = ["sentence-transformers>=2.2,<6.0"]
+clip = ["sentence-transformers>=2.2,<7.0"]
 # Chinese-CLIP backend (``IMAGE_PROVIDER=cn_clip``). Pulls in
 # ``transformers`` so ``ChineseCLIPModel`` / ``ChineseCLIPProcessor`` resolve.
 # Note: ``transformers`` is also pulled transitively by [docling] /
