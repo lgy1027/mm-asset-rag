@@ -107,9 +107,14 @@ Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`. 
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `HYBRID_WEIGHT_TEXT` | `0.80` | Text-route merge weight |
-| `HYBRID_WEIGHT_TEXT_TO_IMAGE` | `0.20` | Text→image merge weight |
-| `HYBRID_WEIGHT_IMAGE_TO_IMAGE` | `0.15` | Image→image merge weight when an image query is provided |
+| `HYBRID_WEIGHT_TEXT` | `0.80` | Text-route merge weight (used when `HYBRID_INTENT_ROUTING_ENABLED=false`) |
+| `HYBRID_WEIGHT_TEXT_TO_IMAGE` | `0.20` | Text→image merge weight (used when `HYBRID_INTENT_ROUTING_ENABLED=false`) |
+| `HYBRID_WEIGHT_IMAGE_TO_IMAGE` | `0.15` | Image→image merge weight when an image query is provided (used when `HYBRID_INTENT_ROUTING_ENABLED=false`) |
+| `HYBRID_INTENT_ROUTING_ENABLED` | `false` | Master switch for per-intent RRF weight routing. When ON, `hybrid_search` picks weights via a local query classifier (CJK ratio / length / stopword) — see [Per-intent RRF weights](#per-intent-rrf-weights) below |
+| `HYBRID_INTENT_WEIGHTS_PRECISE_KEYWORD` | unset | Override the `PRECISE_KEYWORD` intent triple (JSON or CSV `text,t2i,i2i`) |
+| `HYBRID_INTENT_WEIGHTS_DESCRIPTIVE` | unset | Override the `DESCRIPTIVE` intent triple |
+| `HYBRID_INTENT_WEIGHTS_ENTITY_LOOKUP` | unset | Override the `ENTITY_LOOKUP` intent triple |
+| `HYBRID_INTENT_WEIGHTS_CHINESE` | unset | Override the `CHINESE` intent triple |
 | `MIN_SCORE` | `0.0` | Soft low-end guard on the final RRF-fused score (0.0 disables; ~0.001 trims tiny-tail noise) |
 | `RRF_WEIGHT_DENSE` | `1.0` | Per-channel RRF bias for the dense prefetch |
 | `RRF_WEIGHT_BM25` | `1.0` | Per-channel RRF bias for the BM25-en prefetch |
@@ -118,6 +123,23 @@ Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`. 
 | `IMAGE_RELEVANCE_THRESHOLD` | `0.24` | CLIP cosine floor for image routes |
 
 Changing `MAX_CHUNKS_PER_PDF` requires `mmrag reindex` to rebuild existing collections.
+
+## Per-intent RRF weights
+
+`hybrid_search` picks its three-route RRF weight triple based on a fast local classifier on the query (`mm_asset_rag.query_intent.classify_intent`). The four intents — `PRECISE_KEYWORD` / `DESCRIPTIVE` / `ENTITY_LOOKUP` / `CHINESE` — map to weight triples tuned for each query shape:
+
+| Intent | Default (text / t2i / i2i) | When |
+| --- | --- | --- |
+| `PRECISE_KEYWORD` | `0.60 / 0.20 / 0.15` | Short, no-stopword queries: `联宝 ESG`, `BERT`, `双碳目标` |
+| `DESCRIPTIVE` | `0.85 / 0.15 / 0.10` | Long (≥30 chars after stripping) sentences — let dense carry the paraphrase signal |
+| `ENTITY_LOOKUP` | `0.75 / 0.25 / 0.10` | Short English / mixed fallback (between keyword and descriptive) — slight image boost so a single entity can surface a logo / photo |
+| `CHINESE` | `0.70 / 0.20 / 0.15` | CJK ratio ≥ 70% — biases text so the BM25-zh channel (enabled by default) wins |
+
+Classification rule (first match wins): CJK ratio ≥ 70% → `CHINESE`; stripped length ≤ 12 chars and no Chinese stopword (`的` / `是` / `怎么` / …) → `PRECISE_KEYWORD`; stripped length ≥ 30 chars → `DESCRIPTIVE`; otherwise `ENTITY_LOOKUP`.
+
+Classification is purely local (CJK ratio + length + a small Chinese stopword set), <1ms per query, no LLM. When `HYBRID_INTENT_ROUTING_ENABLED=false` (default), `hybrid_search` ignores the intent and uses the historical global `HYBRID_WEIGHT_*` triple — flip the switch on once you have intent-level eval coverage.
+
+Any `HYBRID_INTENT_WEIGHTS_*` field accepts either a JSON object `{"text":0.7,"text_to_image":0.2,"image_to_image":0.15}` or a CSV triple `0.7,0.2,0.15` (CSV is friendlier in a flat `.env`). Invalid JSON / CSV is logged and falls back to the default — a typo in `.env` doesn't break search. Set the keyword-only `weights_override=` argument on `hybrid_search` (or `retrieval.hybrid_search`) to bypass classification entirely in tests / scripted eval.
 
 ## Chunk keyword enrichment
 
