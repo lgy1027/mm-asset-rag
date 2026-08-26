@@ -17,19 +17,21 @@ Design notes:
   in-tree ``_bm25_okapi_scores`` helper used by the per-asset chunk
   selector. ``k1=1.5`` and ``b=0.75`` are the standard defaults.
 - **Hash-to-int mapping**: a term's sparse-vector index is
-  ``sha1(term)[:8] -> uint64``. SHA1 is deterministic across processes
+  ``sha1(term)[:4] -> uint32``. SHA1 is deterministic across processes
   so an ``indexing`` Python and a ``querying`` Python agree on the
   same integer for the same term, unlike Python's built-in ``hash()``
-  which is salted. 64 bits gives 1.8e19 slots — for a 10k-term
-  lexicon the birthday-bound collision probability is ~3e-12 (vs.
-  ~1% under the previous 32-bit mapping), so distinct terms no
-  longer alias into the same Qdrant sparse index (where duplicate
-  indices are an undefined behaviour).
+  which is salted. 32 bits is the maximum Qdrant's sparse vector
+  index type accepts; the index is clamped via ``sha1[:4]`` rather
+  than ``sha1[:8]`` so every term fits in the wire format. Birthday
+  collision probability is ~1% at 10k terms and ~1 expected collision
+  per build at 100k terms — both colliding terms' BM25 scores then
+  sum during query, which is a small ranking noise rather than
+  dropping either term.
 
   .. note::
 
      Changing the bit width alters the term→index mapping, so any
-     bm25_zh sparse index built under the old 32-bit scheme is
+     bm25_zh sparse index built under a different scheme is
      **incompatible** with query encoders using this module —
      re-index with ``mmrag reindex`` to rebuild the Qdrant
      collection from scratch.
@@ -123,17 +125,23 @@ def tokenize_zh(text: str | None) -> list[str]:
 
 
 def _term_to_index(term: str) -> int:
-    """Deterministic 64-bit hash so indexing and querying agree.
+    """Deterministic 32-bit hash so indexing and querying agree.
 
-    Uses ``sha1(term)[:8]`` (uint64). The 64-bit space makes term
-    collisions negligible (~3e-12 for a 10k-term lexicon) versus the
-    old 32-bit mapping (~1% at 10k terms), which could alias distinct
-    terms into the same Qdrant sparse index (undefined behaviour).
+    Uses ``sha1(term)[:4]`` (uint32). Qdrant's sparse vector indices are
+    unsigned 32-bit; an earlier 64-bit mapping produced indices above
+    ``2**32`` and every ``upsert`` was rejected with a
+    *"data did not match any variant of untagged enum VectorStruct"*
+    error. The 32-bit space keeps distinct terms out of Qdrant's
+    undefined-behaviour range for the vast majority of corpora —
+    birthday collision probability is ~1% at 10k terms, ~1 expected
+    collision per build at 100k terms, which only causes the two
+    colliding terms' BM25 scores to sum during query (slight ranking
+    noise, not silent dropping of either term).
 
     Bit-width changes break every previously-built bm25_zh sparse
     index — run ``mmrag reindex`` to rebuild.
     """
-    digest = hashlib.sha1(term.encode("utf-8")).digest()[:8]
+    digest = hashlib.sha1(term.encode("utf-8")).digest()[:4]
     return int.from_bytes(digest, "big", signed=False)
 
 

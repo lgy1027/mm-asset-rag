@@ -112,6 +112,9 @@ def _bm25_embedder() -> SparseTextEmbedding:
     calls hit the local cache. Thread-safe via a lock because fastembed's
     internal state isn't safe to share across concurrent first-time loads.
     """
+    cache_dir = get_settings().qdrant_bm25_cache_dir
+    if cache_dir:
+        return SparseTextEmbedding(model_name=BM25_MODEL_NAME, cache_dir=cache_dir)
     return SparseTextEmbedding(model_name=BM25_MODEL_NAME)
 
 
@@ -438,7 +441,19 @@ def get_qdrant_client() -> QdrantClient:
                     _QDRANT_CLIENT.close()
                 _QDRANT_CLIENT = None
                 _QDRANT_CLIENT_KEY = None
-        return QdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+        return QdrantClient(
+            url=settings.qdrant_url,
+            api_key=settings.qdrant_api_key,
+            # httpx's default is 5s; a busy Qdrant server can take
+            # 7s+ to clean up a non-empty collection (drain the
+            # optimizer, drop snapshots, release segments) and a
+            # ``client.delete_collection`` that times out client-side
+            # leaves the collection live on the server while the
+            # caller raises — so the next reindex step fails to
+            # recreate it. 30s is well above observed cleanup time
+            # without making healthy calls hang.
+            timeout=30,
+        )
 
     qdrant_path = get_indexes_dir() / "qdrant"
     key = str(qdrant_path)

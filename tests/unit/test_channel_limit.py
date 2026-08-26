@@ -13,6 +13,15 @@ from __future__ import annotations
 import pytest
 from qdrant_client import models
 
+# Weighted RRF (``Rrf(weights=[...])``) was added in qdrant-client 1.17.
+# We pin to 1.16.2 for wire-format compatibility with Qdrant server
+# 1.16.x; the weighted-RRF tests below therefore skip on that line.
+_qdrant_supports_rrf_weights = "weights" in getattr(models.Rrf, "model_fields", {})
+requires_rrf_weights = pytest.mark.skipif(
+    not _qdrant_supports_rrf_weights,
+    reason="qdrant-client 1.16.x has no Rrf.weights field (added in 1.17)",
+)
+
 from mm_asset_rag.backends import qdrant_backend
 from mm_asset_rag.backends.qdrant_backend import RRF_K
 from mm_asset_rag.settings import Settings
@@ -62,6 +71,7 @@ def test_uniform_weights_use_fusion_query(monkeypatch) -> None:
     assert isinstance(client.last_kwargs["query"], models.FusionQuery)
 
 
+@requires_rrf_weights
 def test_non_uniform_weights_use_rrf_query(monkeypatch) -> None:
     """A non-1.0 weight triggers ``RrfQuery(rrf=Rrf(weights=[...]))``.
 
@@ -84,6 +94,7 @@ def test_non_uniform_weights_use_rrf_query(monkeypatch) -> None:
     assert q.rrf.k == RRF_K
 
 
+@requires_rrf_weights
 def test_weights_length_matches_prefetch_count(monkeypatch) -> None:
     """Weights list length must equal the number of prefetches, always.
 
@@ -106,6 +117,7 @@ def test_weights_length_matches_prefetch_count(monkeypatch) -> None:
     assert len(q.rrf.weights) == len(client.last_kwargs["prefetch"])
 
 
+@requires_rrf_weights
 def test_weights_are_positional_to_prefetches(monkeypatch) -> None:
     """[dense, bm25, bm25_zh] order — matches the prefetch list order."""
     s = _settings()

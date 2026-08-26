@@ -122,6 +122,15 @@ class Settings(BaseSettings):
     qdrant_upsert_batch_size: int = 16
     qdrant_bm25_model: str = "Qdrant/bm25"
     qdrant_hybrid_prefetch_limit: int = 50
+    # Override where ``fastembed`` looks for the BM25 model files. Leave
+    # unset to use fastembed's platform default (``~/.cache/fastembed`` on
+    # Linux, ``~/Library/Caches/fastembed`` on macOS, ``%LOCALAPPDATA%\\fastembed``
+    # on Windows). Set this explicitly when the default is on a tmpfs /
+    # ephemeral drive (e.g. macOS ``/var/folders/...`` when running under
+    # a sandbox that symlinks ``$TMPDIR``) — fastembed does not read any
+    # ``FASTEMBED_CACHE_PATH``-style env var on its own, so the override
+    # has to flow through here.
+    qdrant_bm25_cache_dir: str | None = None
 
     # ─── Retrieval tuning ────────────────────────────────────────────────
     # Weights used by ``retrieval.hybrid_search`` to merge the three

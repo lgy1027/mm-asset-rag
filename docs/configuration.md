@@ -96,6 +96,7 @@ pip install -e ".[clip]"
 | `QDRANT_IMAGE_COLLECTION` | `multimodal_image` | Base image collection name |
 | `QDRANT_UPSERT_BATCH_SIZE` | `16` | Upsert batch size |
 | `QDRANT_BM25_MODEL` | `Qdrant/bm25` | fastembed sparse model |
+| `QDRANT_BM25_CACHE_DIR` | unset (fastembed platform default) | Override fastembed's BM25 model cache directory. fastembed does not read any `FASTEMBED_CACHE_PATH`-style env var on its own, so this is the single knob to pin it. Set explicitly when the platform default is ephemeral (e.g. macOS sandboxed `TMPDIR=/var/folders/...`). |
 | `QDRANT_HYBRID_PREFETCH_LIMIT` | `50` | Per-channel prefetch limit |
 | `QDRANT_ACTIVE_TEXT_COLLECTION` | unset | Force a specific active text collection (overrides `{base}_{dim}d` auto-resolution) |
 | `QDRANT_ACTIVE_IMAGE_COLLECTION` | unset | Force a specific active image collection (overrides `{base}_{dim}d` auto-resolution) |

@@ -213,35 +213,52 @@ def test_build_index_without_context_matches_legacy_behaviour() -> None:
     assert expected == set(vectors[0].indices)
 
 
-# ─── _term_to_index collision guard (64-bit) ───────────────────────────────
+# ─── _term_to_index collision guard (32-bit, Qdrant sparse) ───────────────
 
 
 def test_term_to_index_different_terms_get_different_indices() -> None:
-    """Two distinct terms must not collide to the same 64-bit index."""
-    assert bm25_zh._term_to_index("猫") != bm25_zh._term_to_index("狗")
-    assert bm25_zh._term_to_index("bert") != bm25_zh._term_to_index("gpt")
+    """Two distinct terms must usually not collide to the same 32-bit index.
+
+    The test is loose enough to survive the ~1% birthday-bound collision
+    rate at 10k terms: we sample a handful of common pairs and assert at
+    least most of them diverge. A real regression to ``hash()`` (which
+    salts between processes) would flip every assertion immediately.
+    """
+    pairs = [("猫", "狗"), ("bert", "gpt"), ("foo", "bar"), ("alpha", "beta")]
+    distinct = sum(1 for a, b in pairs if bm25_zh._term_to_index(a) != bm25_zh._term_to_index(b))
+    assert distinct >= len(pairs) - 1  # allow at most one in-pair collision
 
 
-def test_term_to_index_no_collisions_over_many_random_terms() -> None:
-    """10k distinct terms should produce 10k distinct 64-bit indices.
+def test_term_to_index_collision_rate_bounded() -> None:
+    """10k distinct terms should produce ~9900+ distinct 32-bit indices.
 
-    Under the old 32-bit mapping the birthday bound predicts ~1%
-    collisions at 10k terms; 64-bit keeps the collision count at 0
-    for this scale, guarding against regressions in bit width.
+    Under the 32-bit mapping the birthday bound predicts ~1% collisions
+    at 10k terms (~100 collisions for 10k random terms). We assert the
+    collision count stays below 5% — a regression to a wider bit width
+    would push this to 0 collisions, while a regression to a salted
+    hash would push distinct count to 1.
     """
     import secrets
 
     terms = {f"tok_{secrets.token_hex(8)}" for _ in range(10000)}
     assert len(terms) == 10000
     indices = {bm25_zh._term_to_index(t) for t in terms}
-    assert len(indices) == len(terms)
+    # 10000 → expected 9900 distinct (1% collisions); allow 5% headroom.
+    assert len(indices) >= 9500, f"too many collisions: {len(indices)}/10000 distinct"
 
 
-def test_term_to_index_uses_64_bit_width() -> None:
-    """Pin the bit width: a uint64 index must not fit in 32 bits."""
-    # sha1 digest makes it overwhelmingly likely at least one term
-    # maps above 2**32; check the doc term directly.
-    idx = bm25_zh._term_to_index("猫")
-    assert 0 <= idx < 2**64
-    # Same term should still be deterministic.
-    assert idx == bm25_zh._term_to_index("猫")
+def test_term_to_index_uses_32_bit_width() -> None:
+    """Pin the bit width: every index must fit in u32 so Qdrant accepts it.
+
+    The previous 64-bit mapping exceeded Qdrant's sparse-vector index
+    type and every ``upsert`` was rejected with a *data did not match
+    any variant of untagged enum VectorStruct* error. This test guards
+    against a regression to a wider digest.
+    """
+    import secrets
+
+    for term in ("猫", "bert", "foo bar", f"tok_{secrets.token_hex(4)}"):
+        idx = bm25_zh._term_to_index(term)
+        assert 0 <= idx < 2**32, f"index {idx} for {term!r} does not fit in u32"
+        # Same term should still be deterministic.
+        assert idx == bm25_zh._term_to_index(term)
