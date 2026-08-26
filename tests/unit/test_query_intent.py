@@ -99,6 +99,45 @@ def test_classify_intent_handles_whitespace_strip() -> None:
     assert classify_intent("  ESG  ") == QueryIntent.PRECISE_KEYWORD
 
 
+def test_classify_intent_short_english_question_is_not_precise() -> None:
+    """MEDIUM-3: short English interrogative queries (``how to use the
+    API``, ``what is AI``) are NOT PRECISE_KEYWORD — they'd otherwise
+    down-weight the dense channel which is the opposite of what a
+    paraphrase query wants. Should fall to ENTITY_LOOKUP."""
+    # 14 chars no whitespace → 14 ≤ 12? No (with space). Without space
+    # the compact form is 14 chars, also > 12. But the rule order still
+    # routes them via step 4 (entity fallback) once the English stopword
+    # short-circuits step 2. Pick queries where the compact length is
+    # *also* ≤ 12 so the precise rule actually fires when stopwords
+    # weren't checked.
+    assert classify_intent("how to use") != QueryIntent.PRECISE_KEYWORD
+    assert classify_intent("how to use") == QueryIntent.ENTITY_LOOKUP
+
+    # "what is AI" — 9 chars after stripping space (compact), contains
+    # "what"/"is" → must NOT be PRECISE_KEYWORD, falls to ENTITY_LOOKUP.
+    assert classify_intent("what is AI") != QueryIntent.PRECISE_KEYWORD
+
+    # Bare entity — still PRECISE_KEYWORD (no question token).
+    assert classify_intent("BERT") == QueryIntent.PRECISE_KEYWORD
+    assert classify_intent("Diffusion") == QueryIntent.PRECISE_KEYWORD
+
+
+def test_parse_intent_weights_rejects_negative(caplog) -> None:
+    """LOW-8: a negative weight is meaningless (merge_hits would silently
+    drop the route); parser must refuse and fall back to defaults so the
+    deployer gets a visible log entry rather than a silently-degraded
+    search."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.query_intent"):
+        # CSV shape
+        assert _parse_intent_weights_json("-0.5,0.2,0.15") is None
+        # JSON shape
+        assert _parse_intent_weights_json('{"text":-1,"text_to_image":0.2,"image_to_image":0.15}') is None
+    # And the warning was logged at least once.
+    assert any("must be non-negative" in rec.message for rec in caplog.records)
+
+
 def test_classify_intent_empty_falls_to_entity() -> None:
     """Empty / whitespace-only query is the safe default (ENTITY_LOOKUP)."""
     assert classify_intent("") == QueryIntent.ENTITY_LOOKUP

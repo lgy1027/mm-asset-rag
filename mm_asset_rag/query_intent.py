@@ -57,9 +57,12 @@ class IntentWeights:
 # * ENTITY_LOOKUP: a single named entity often pairs with a logo / photo;
 #   raise text_to_image slightly (0.25) so an entity query has a real shot
 #   at a relevant image hit.
-# * CHINESE: CJK-heavy queries — bias text heavier (0.70) so the BM25-zh
-#   channel (enabled by default) wins; image_to_image stays at 0.15
-#   matching the historical global default.
+# * CHINESE: CJK-heavy queries — text=0.70 is HIGHER than PRECISE_KEYWORD's
+#   0.60 (BM25-zh is enabled by default and can carry more weight via the
+#   channel's RRF bias), but LOWER than the global ``hybrid_weight_text``
+#   default of 0.80 — the BM25-zh channel doesn't need extra RRF text
+#   weight to dominate when it already wins on its own. image_to_image
+#   stays at 0.15 matching the historical global default.
 DEFAULT_INTENT_WEIGHTS: dict[QueryIntent, IntentWeights] = {
     QueryIntent.PRECISE_KEYWORD: IntentWeights(text=0.60, text_to_image=0.20, image_to_image=0.15),
     QueryIntent.DESCRIPTIVE: IntentWeights(text=0.85, text_to_image=0.15, image_to_image=0.10),
@@ -91,6 +94,40 @@ _CN_STOPWORDS: frozenset[str] = frozenset(
         "呀",
         "嘛",
         "啦",
+    }
+)
+
+# English interrogative / copular tokens that mark a short query as
+# "natural-language question" instead of "precise noun phrase". Without
+# this set the ``len(stripped) <= 12`` branch treats
+# ``how to use the API`` / ``what is AI`` as PRECISE_KEYWORD and
+# down-weights the dense channel — the opposite of what a paraphrase
+# query wants. Kept lowercase; ``classify_intent`` lowercases the query
+# (or the caller's pre-processing has already done so) before matching.
+_EN_QUESTION_TOKENS: frozenset[str] = frozenset(
+    {
+        "how",
+        "what",
+        "why",
+        "where",
+        "when",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "can",
+        "could",
+        "does",
+        "do",
+        "did",
+        "is",
+        "are",
+        "was",
+        "were",
+        "should",
+        "would",
+        "will",
+        "shall",
     }
 )
 
@@ -137,10 +174,12 @@ def classify_intent(query: str) -> QueryIntent:
        CHINESE because the BM25-zh channel wants explicit weight bias
        regardless of length.
     2. Stripped length ≤ 12 chars **and** contains no Chinese stopword
-       ("的" / "是" / "怎么" / …) → ``PRECISE_KEYWORD``. A bare entity
-       ("BERT", "Diffusion") and a noun phrase ("联宝 ESG") both fit;
-       a natural-language question ("什么是 ESG", "怎么用 BERT") does
-       not — it is routed to step 4 instead.
+       ("的" / "是" / "怎么" / …) **and** contains no English question
+       token ("how" / "what" / "why" / …) → ``PRECISE_KEYWORD``. A bare
+       entity ("BERT", "Diffusion") and a noun phrase ("联宝 ESG") both
+       fit; a natural-language question ("什么是 ESG", "怎么用 BERT",
+       "how to use the API") does not — it is routed to step 4
+       instead.
     3. Stripped length ≥ 30 chars → ``DESCRIPTIVE``. The threshold is
        generous on purpose: a 30-char English query is unambiguously
        a sentence; a 30-char CJK query is also descriptive once we
@@ -157,8 +196,14 @@ def classify_intent(query: str) -> QueryIntent:
     if _cjk_ratio(stripped) >= 0.70:
         return QueryIntent.CHINESE
 
+    # Tokenise on whitespace + lowercase for the English stopword check;
+    # keeps the rule cheap (no NLTK / jieba dependency).
+    lower_tokens = stripped.lower().split()
+    has_cn_sw = any(sw in stripped for sw in _CN_STOPWORDS)
+    has_en_q = any(tok in _EN_QUESTION_TOKENS for tok in lower_tokens)
+
     compact = stripped.replace(" ", "").replace("\t", "")
-    if len(compact) <= 12 and not any(sw in stripped for sw in _CN_STOPWORDS):
+    if len(compact) <= 12 and not has_cn_sw and not has_en_q:
         return QueryIntent.PRECISE_KEYWORD
 
     if len(compact) >= 30:
@@ -175,6 +220,11 @@ def _parse_intent_weights_json(raw: str) -> IntentWeights | None:
 
     * JSON object: ``'{"text":0.7,"text_to_image":0.2,"image_to_image":0.15}'``
     * CSV triple: ``'0.7,0.2,0.15'`` — friendlier in a flat .env file.
+
+    Zero is allowed (``image_to_image=0`` is a legitimate way to drop
+    the route for one intent) but negative weights are rejected —
+    ``merge_hits`` would silently drop the route (``if weight <= 0``)
+    and the deployer would get no signal that their config was wrong.
     """
     if not raw:
         return None
@@ -192,7 +242,7 @@ def _parse_intent_weights_json(raw: str) -> IntentWeights | None:
             _LOGGER.warning("intent_weights JSON not an object: %r", raw)
             return None
         try:
-            return IntentWeights(
+            parsed = IntentWeights(
                 text=float(obj["text"]),
                 text_to_image=float(obj["text_to_image"]),
                 image_to_image=float(obj["image_to_image"]),
@@ -200,19 +250,31 @@ def _parse_intent_weights_json(raw: str) -> IntentWeights | None:
         except (KeyError, TypeError, ValueError) as exc:
             _LOGGER.warning("intent_weights JSON missing/bad fields (%s): %r", exc, raw)
             return None
-    parts = [p.strip() for p in raw.split(",")]
-    if len(parts) != 3:
-        _LOGGER.warning("intent_weights CSV must have 3 parts, got %d: %r", len(parts), raw)
-        return None
-    try:
-        return IntentWeights(
-            text=float(parts[0]),
-            text_to_image=float(parts[1]),
-            image_to_image=float(parts[2]),
+    else:
+        parts = [p.strip() for p in raw.split(",")]
+        if len(parts) != 3:
+            _LOGGER.warning("intent_weights CSV must have 3 parts, got %d: %r", len(parts), raw)
+            return None
+        try:
+            parsed = IntentWeights(
+                text=float(parts[0]),
+                text_to_image=float(parts[1]),
+                image_to_image=float(parts[2]),
+            )
+        except ValueError as exc:
+            _LOGGER.warning("intent_weights CSV parse failed (%s): %r", exc, raw)
+            return None
+
+    # Negative weights are meaningless (a route is either on or off;
+    # ``merge_hits`` would silently drop them) — refuse + fall back to
+    # the default table so the deployer gets a visible log entry.
+    if any(w < 0 for w in (parsed.text, parsed.text_to_image, parsed.image_to_image)):
+        _LOGGER.warning(
+            "intent_weights must be non-negative, got %r — falling back to defaults",
+            (parsed.text, parsed.text_to_image, parsed.image_to_image),
         )
-    except ValueError as exc:
-        _LOGGER.warning("intent_weights CSV parse failed (%s): %r", exc, raw)
         return None
+    return parsed
 
 
 def weights_for_intent(intent: QueryIntent, settings: object | None = None) -> IntentWeights:

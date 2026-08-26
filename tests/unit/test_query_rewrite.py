@@ -192,6 +192,10 @@ def test_rewrite_n_variants_clamps_to_range() -> None:
     assert qr._clamp_n_variants("3") == 3
     # Garbage → 1 (defensive default)
     assert qr._clamp_n_variants("garbage") == 1
+    # bool is a subclass of int — without the guard, ``True`` (=1) would
+    # slip through and ``False`` (=0) would coerce to 1 too. Both pinned.
+    assert qr._clamp_n_variants(True) == 1
+    assert qr._clamp_n_variants(False) == 1
 
 
 def test_rewrite_empty_query_returns_empty_string(monkeypatch) -> None:
@@ -492,3 +496,92 @@ def test_dispatch_search_hybrid_uses_rewrite_when_enabled(monkeypatch) -> None:
 
     dispatch_search(query="q", mode="hybrid", image_path=None, top_k=5)
     assert len(rewrite_calls) == 1
+
+
+# ─── 4. Reviewer-fix regression tests ──────────────────────────────────
+
+
+def test_multi_query_dedupes_image_to_image(monkeypatch) -> None:
+    """``multi_query_search`` calls ``backend.search_image`` exactly once
+    even when N variants are fanned out — i2i is invariant to text
+    variants and would otherwise be N× wasted CLIP encode + Qdrant
+    round-trip."""
+    from mm_asset_rag import registry
+
+    queries = ["q0", "q1", "q2", "q3"]
+    fake_text_hits = {q: [_hit(f"text-{q}", 0.5, route="text")] for q in queries}
+
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
+        # Image side should already be None here — dedup pulls it
+        # out before fanning out text searches.
+        assert image_path is None, "i2i should be pulled by multi_query_search, not hybrid_search"
+        return fake_text_hits[query]
+
+    i2i_calls: list[int] = []
+
+    class _Backend:
+        def search_image(self, *, image_path, top_k):
+            i2i_calls.append(1)
+            return [_hit("i2i-asset", 0.9, route="image-to-image")]
+
+        def search_text(self, *, query, top_k):
+            return fake_text_hits[query]
+
+    monkeypatch.setattr(qr, "hybrid_search", _fake_hybrid)
+    monkeypatch.setattr(registry, "get_backend", lambda name: _Backend())
+
+    out = qr.multi_query_search(queries, top_k=5, image_path="img.png")
+
+    # i2i pulled exactly once even with 4 variants.
+    assert len(i2i_calls) == 1
+    # i2i asset surfaces in the fused output.
+    asset_ids = {h.asset_id for h in out}
+    assert "i2i-asset" in asset_ids
+
+
+def test_multi_query_isolates_variant_exceptions(monkeypatch) -> None:
+    """A single variant's ``hybrid_search`` exception is logged + that
+    variant contributes an empty list — the other variants still
+    contribute. Without this guard a single Qdrant 5xx / reranker load
+    failure on variant 1 would 500 the whole search."""
+    queries = ["ok-a", "broken", "ok-c"]
+
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
+        if query == "broken":
+            raise RuntimeError("simulated Qdrant 5xx")
+        return [_hit(f"asset-{query}", 0.5)]
+
+    monkeypatch.setattr(qr, "hybrid_search", _fake_hybrid)
+
+    out = qr.multi_query_search(queries, top_k=5)
+
+    # Two surviving variants contribute; the third's slot is an empty list.
+    asset_ids = {h.asset_id for h in out}
+    assert "asset-ok-a" in asset_ids
+    assert "asset-ok-c" in asset_ids
+    assert not any("asset-broken" in a for a in asset_ids)
+
+
+def test_text_search_with_rewrite_forwards_min_score(monkeypatch) -> None:
+    """``text_search_with_rewrite`` accepts ``min_score`` and forwards it
+    through to the RRF merge — closes the MEDIUM-1 asymmetric gap
+    where ``mode='text'`` silently dropped the settings floor."""
+    captured: list[dict] = []
+
+    def _fake_multi_text(queries, *, top_k, n_parallel=4, min_score=None):
+        captured.append({"min_score": min_score, "n_groups": len(queries)})
+        return [_hit("only-asset", 0.5)]
+
+    monkeypatch.setattr(qr, "_multi_query_text", _fake_multi_text)
+    monkeypatch.setattr(qr, "rewrite_query", lambda q, settings=None: [q])
+
+    qr.text_search_with_rewrite("hello", top_k=5, min_score=0.01)
+    assert captured[0]["min_score"] == 0.01
+    assert captured[0]["n_groups"] == 1
+
+
+def test_dispatch_search_rejects_unknown_mode() -> None:
+    """LOW-7: a typo'd ``mode`` (``"typo"``) raises ``ValueError``
+    instead of silently falling through to ``hybrid``."""
+    with pytest.raises(ValueError, match="unknown mode"):
+        dispatch_search(query="q", mode="typo", image_path=None, top_k=5)

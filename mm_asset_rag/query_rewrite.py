@@ -195,6 +195,10 @@ def _post_chat_json(
 
 def _clamp_n_variants(n: int) -> int:
     """Clamp ``n`` to ``[1, 5]`` and coerce non-positive ints upward."""
+    # ``bool`` is a subclass of ``int`` in Python; without this guard,
+    # ``True`` and ``False`` would silently coerce to 1 and 0.
+    if isinstance(n, bool):
+        return 1
     if not isinstance(n, int):
         try:
             n = int(n)
@@ -353,9 +357,10 @@ def multi_query_search(
             ``top_k`` of each per-variant ``hybrid_search`` *and* the
             ``top_k`` of the RRF merge.
         image_path: Optional image query for the image-to-image route.
-            Forwarded unchanged to every per-variant search; the LLM
-            rewrites only the text side, the image side is identical
-            across variants.
+            When ``N > 1``, the image-to-image route is computed **once**
+            (variants don't change CLIP cosine) and added as a single
+            group instead of being replicated N times — avoids N× CLIP
+            encode + N× Qdrant round-trip waste.
         min_score: Forwarded to ``hybrid_search`` per variant and to the
             RRF merge. None lets each layer pick its own default
             (settings.min_score).
@@ -386,19 +391,57 @@ def multi_query_search(
     # doesn't crash with ``max_workers <= 0``.
     workers = max(1, min(int(n_parallel), len(queries)))
 
-    # Each per-variant search needs to pull a *fatter* candidate pool
-    # than ``top_k`` so the RRF merge has enough headroom to surface
-    # an asset that wasn't top-1 of any single variant but ranks in
-    # the top-k of multiple. We pull ``top_k`` per variant — when
-    # N variants each contribute ``top_k`` hits and the corpus has
-    # many duplicated assets across variants (the common case for
-    # multi-query), the RRF top-k after fusion is already a strict
-    # superset of any single variant's top-k.
+    # Image-to-image dedup: the CLIP cosine match is invariant to text
+    # variants, so ``image_path`` produces the same i2i hits for every
+    # variant. Run it once outside the pool and reuse as a single RRF
+    # group, otherwise we'd pay N× CLIP encode + N× Qdrant round-trip
+    # for nothing. Single-query path keeps i2i inline inside
+    # ``hybrid_search`` so behaviour is byte-identical for that case.
     groups: list[list[SearchHit]] = []
-    args_list = [(q, image_path, top_k, min_score) for q in queries]
+    weights: list[float] = []
+    if image_path is not None:
+        from .registry import get_backend
+
+        try:
+            i2i_hits = get_backend("qdrant").search_image(image_path=image_path, top_k=top_k)
+        except Exception as exc:
+            log.warning("multi_query_search i2i fetch failed (%s): %s", type(exc).__name__, exc)
+            i2i_hits = []
+        if i2i_hits:
+            groups.append(i2i_hits)
+            weights.append(1.0)
+
+    # Per-variant text search: skip the image side (``image_path=None``)
+    # because we already pulled i2i once above.
+    args_list = [(q, None, top_k, min_score) for q in queries]
+
+    # Use ``as_completed`` + per-future ``result()`` so a single variant's
+    # exception (Qdrant 5xx, reranker load failure, timeout) is logged and
+    # replaced with an empty list — the other variants still contribute.
+    # ``pool.map`` propagates the first exception and aborts the merge.
+    # We index results back by submission order (not completion order) so
+    # the RRF tie-break matches the previous ``pool.map`` behaviour —
+    # all RRF scores are equal across single-hit groups, so output order
+    # is determined by group ordering.
+    from concurrent.futures import as_completed
+
+    variant_hits: list[list[SearchHit] | None] = [None] * len(args_list)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="qr-rewrite") as pool:
-        for hits in pool.map(_search_one, args_list):
-            groups.append(hits)
+        future_to_idx = {pool.submit(_search_one, args): i for i, args in enumerate(args_list)}
+        for fut in as_completed(future_to_idx):
+            idx = future_to_idx[fut]
+            variant_q = queries[idx]
+            try:
+                variant_hits[idx] = fut.result()
+            except Exception as exc:
+                log.warning(
+                    "multi_query_search variant failed (query=%r, %s): %s",
+                    variant_q, type(exc).__name__, exc,
+                )
+                variant_hits[idx] = []
+
+    groups.extend(h if h is not None else [] for h in variant_hits)
+    weights.extend(1.0 for _ in variant_hits)
 
     # Uniform per-variant weight — rank-based RRF means the per-asset
     # contribution is ``weight / (RRF_K + rank)`` regardless of how the
@@ -406,7 +449,6 @@ def multi_query_search(
     # equal voice; tweaking this would re-introduce the same
     # cross-variant score-scale coupling the route fusion was designed
     # to remove.
-    weights = [1.0] * len(groups)
     return merge_hits(groups, weights, top_k=top_k, min_score=min_score or 0.0)
 
 
@@ -465,6 +507,7 @@ def _multi_query_text(
     *,
     top_k: int,
     n_parallel: int = 4,
+    min_score: float | None = None,
 ) -> list[SearchHit]:
     """Run ``backend.search_text`` for each variant, fuse via rank-based RRF.
 
@@ -475,6 +518,11 @@ def _multi_query_text(
     what :func:`mm_asset_rag.service.dispatch_search` routes
     ``mode="text"`` through when rewrite is enabled, preserving the
     pre-rewrite "text mode = text-only" semantics.
+
+    ``min_score`` is forwarded to the final RRF merge so an upstream
+    ``Settings.min_score`` (or a per-call override) actually filters the
+    fused set — without this param the text path silently diverged from
+    the hybrid path which does accept ``min_score``.
     """
     if not queries:
         return []
@@ -484,19 +532,40 @@ def _multi_query_text(
         return get_backend("qdrant").search_text(query=queries[0], top_k=top_k)
 
     workers = max(1, min(int(n_parallel), len(queries)))
-    groups: list[list[SearchHit]] = []
+
+    # ``as_completed`` + per-future try/except so a single variant's
+    # exception (Qdrant 5xx, reranker load failure) is logged and
+    # replaced with an empty list — the other variants still contribute.
+    # Index by submission order so RRF tie-break stays stable across
+    # ``pool.map`` → ``as_completed`` migration.
+    from concurrent.futures import as_completed
+
     args_list = [(q, top_k) for q in queries]
+    variant_hits: list[list[SearchHit] | None] = [None] * len(args_list)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="qr-text") as pool:
-        for hits in pool.map(_text_search_one, args_list):
-            groups.append(hits)
+        future_to_idx = {pool.submit(_text_search_one, args): i for i, args in enumerate(args_list)}
+        for fut in as_completed(future_to_idx):
+            idx = future_to_idx[fut]
+            variant_q = queries[idx]
+            try:
+                variant_hits[idx] = fut.result()
+            except Exception as exc:
+                log.warning(
+                    "_multi_query_text variant failed (query=%r, %s): %s",
+                    variant_q, type(exc).__name__, exc,
+                )
+                variant_hits[idx] = []
+
+    groups = [h if h is not None else [] for h in variant_hits]
     weights = [1.0] * len(groups)
-    return merge_hits(groups, weights, top_k=top_k, min_score=0.0)
+    return merge_hits(groups, weights, top_k=top_k, min_score=min_score or 0.0)
 
 
 def text_search_with_rewrite(
     query: str,
     *,
     top_k: int = 5,
+    min_score: float | None = None,
 ) -> list[SearchHit]:
     """Single-route text wrapper for the rewrite path.
 
@@ -511,6 +580,10 @@ def text_search_with_rewrite(
     (dense + BM25 channels) — silently switching it to the full hybrid
     would drag image routes into a "text-only" caller, breaking the
     ``mode`` contract that the API and CLI expose.
+
+    ``min_score`` is forwarded to :func:`_multi_query_text` so the
+    text-mode rewrite path applies the same ``Settings.min_score``
+    filter as the hybrid-mode path and the pre-rewrite text path.
     """
     settings = get_settings()
     queries = rewrite_query(query, settings=settings)
@@ -518,4 +591,5 @@ def text_search_with_rewrite(
         queries,
         top_k=top_k,
         n_parallel=settings.query_rewrite_concurrency,
+        min_score=min_score,
     )

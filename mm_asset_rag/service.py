@@ -118,6 +118,12 @@ def dispatch_search(
     path is sandboxed to ``assets_dir`` so the CLIP encoder cannot be
     steered at an arbitrary local file.
 
+    Raises:
+        ValueError: ``mode`` is not one of the four recognised routes —
+            we refuse to silently fall through to ``hybrid`` because a
+            client typo (``mode="typo"``) would otherwise get a hybrid
+            result and assume it was what they asked for.
+
     For ``text`` mode the call goes through
     :func:`mm_asset_rag.query_rewrite.text_search_with_rewrite` so a
     configured ``query_rewrite_enabled`` runs the LLM-driven expansion
@@ -138,6 +144,11 @@ def dispatch_search(
     wording.
     """
     backend = get_backend("qdrant")
+    if mode not in {"text", "text-to-image", "image-to-image", "hybrid"}:
+        raise ValueError(
+            f"unknown mode {mode!r}; expected one of "
+            "'text', 'text-to-image', 'image-to-image', 'hybrid'"
+        )
     sandboxed_image = _resolve_sandboxed_image_path(image_path) if mode in IMAGE_PATH_USES else None
     if mode == "text":
         return text_search_with_rewrite(query, top_k=top_k)
