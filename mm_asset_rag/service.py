@@ -42,8 +42,8 @@ from .paths import (
     get_documents_jsonl,
     get_parsed_dir,
 )
+from .query_rewrite import hybrid_search_with_rewrite, text_search_with_rewrite
 from .registry import get_backend, get_parser
-from .retrieval import hybrid_search
 from .settings import Settings, get_settings
 from .sniff import sniff
 
@@ -117,19 +117,40 @@ def dispatch_search(
     ``hybrid``) the same way. When ``mode`` consumes ``image_path`` the
     path is sandboxed to ``assets_dir`` so the CLIP encoder cannot be
     steered at an arbitrary local file.
+
+    For ``text`` mode the call goes through
+    :func:`mm_asset_rag.query_rewrite.text_search_with_rewrite` so a
+    configured ``query_rewrite_enabled`` runs the LLM-driven expansion
+    + multi-query RRF path *on the text route only* (dense + BM25-en +
+    BM25-zh inside Qdrant). This preserves the historical
+    ``mode="text"`` = text-only contract — image routes are not pulled
+    in. With the master switch off the wrapper is a pure pass-through
+    to ``backend.search_text``.
+
+    For ``hybrid`` mode the call goes through
+    :func:`mm_asset_rag.query_rewrite.hybrid_search_with_rewrite` so
+    the same rewrite + multi-query expansion is applied across all
+    three routes (text / text-to-image / image-to-image).
+
+    The image routes (``text-to-image`` / ``image-to-image``) bypass
+    the rewrite wrapper entirely — the rewrite only helps the text
+    channels, the CLIP cosine match is invariant to the user's exact
+    wording.
     """
     backend = get_backend("qdrant")
     sandboxed_image = _resolve_sandboxed_image_path(image_path) if mode in IMAGE_PATH_USES else None
     if mode == "text":
-        return backend.search_text(query=query, top_k=top_k)
+        return text_search_with_rewrite(query, top_k=top_k)
     if mode == "text-to-image":
         return backend.search_text_to_image(query=query, top_k=top_k)
     if mode == "image-to-image":
         if sandboxed_image is None:
             raise ValueError("image_path required for image-to-image")
         return backend.search_image(image_path=sandboxed_image, top_k=top_k)
-    # hybrid (default)
-    return hybrid_search(query, image_path=sandboxed_image, top_k=top_k)
+    # hybrid (default) — funnel through the rewrite wrapper so the
+    # master switch in Settings.query_rewrite_enabled takes effect here
+    # without each caller (api.py / cli.py) having to opt in.
+    return hybrid_search_with_rewrite(query, image_path=sandboxed_image, top_k=top_k)
 
 
 # ─── Enums ──────────────────────────────────────────────────────────────

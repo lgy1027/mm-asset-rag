@@ -367,6 +367,41 @@ class Settings(BaseSettings):
     query_expansion: bool = False
     query_expansion_pairs: str | None = None  # path to a JSON file
 
+    # ─── Query rewrite (LLM-driven) ──────────────────────────────────────
+    # ``query_rewrite_enabled`` is the master switch. OFF = the query is
+    # sent to ``hybrid_search`` untouched (legacy ``query_expansion`` /
+    # ``query_expansion_pairs`` still apply in
+    # ``query_preprocess.preprocess``). ON = each text / hybrid search
+    # first calls ``query_rewrite.rewrite_query`` to ask the LLM for N
+    # variants of the user's query, then runs ``hybrid_search`` on each
+    # in parallel and fuses the per-route hits with RRF
+    # (``query_rewrite.multi_query_search``). The image routes
+    # (text-to-image / image-to-image) are unaffected — the LLM-generated
+    # variants only enter the dense + BM25 channels. Anthropic's multi-
+    # query RAG cookbook reports ~15% hit-rate lift on long-tail queries;
+    # on the bundled sample the lift is small (≈0.6 pts MRR) because the
+    # baseline already fuses dense + BM25 + BM25-zh.
+    query_rewrite_enabled: bool = False
+    # Number of rewrite variants the LLM generates, including the
+    # original. Clamped to ``[1, 5]`` at call time. 3 is the sweet spot
+    # per Anthropic's multi-query RAG cookbook — more variants dilute
+    # each variant's contribution under rank-based RRF (each contributes
+    # ``1 / (RRF_K + rank)`` per asset per variant), and the marginal
+    # variant past 3 rarely surfaces new assets.
+    query_rewrite_n_variants: int = 3
+    # Per-call timeout for the rewrite LLM POST. Tighter than
+    # ``llm_timeout=120s`` because a failed rewrite falls back to the
+    # original query anyway, so a hanging request is pure waste — the
+    # user has already submitted the search.
+    query_rewrite_timeout: float = 30.0
+    # Max parallel ``hybrid_search`` invocations during multi-query
+    # fusion. ``hybrid_search`` is a blocking Qdrant round-trip; we
+    # fan out via ``ThreadPoolExecutor``. 4 matches the reranker default
+    # concurrency; lower it if Qdrant ``429``s under burst load, raise it
+    # if you have the Qdrant headroom and a corpus that benefits from
+    # more variant coverage.
+    query_rewrite_concurrency: int = 4
+
     # ─── Per-channel RRF weights ──────────────────────────────────────────
     # Inside ``_hybrid_text_query`` the three prefetches (dense / BM25-en /
     # BM25-zh) are fused by Qdrant's ``RrfQuery(rrf=Rrf(weights=[...]))``
