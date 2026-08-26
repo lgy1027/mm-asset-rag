@@ -36,7 +36,7 @@ from itertools import zip_longest
 from pathlib import Path
 
 from .metrics import _is_relevant, aggregate_metrics
-from .paths import get_asset_index_path, get_eval_report
+from .paths import get_asset_index_path, get_assets_dir, get_eval_report
 from .schema import SearchHit
 from .search_service import SearchCommand, SearchMode, get_search_service
 
@@ -427,7 +427,13 @@ def run_image_to_image_eval_v2(
     search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
     cases_path: str | Path | None = None,
 ) -> list[V2Result]:
-    """Run the v2 image→image cases."""
+    """Run the v2 image→image cases.
+
+    A case file is a trusted evaluator input and historically supports an
+    absolute fixture path. Public callers still go through SearchService's
+    strict relative-to-assets sandbox; only an external evaluator fixture
+    takes the legacy direct adapter below.
+    """
     search = search_fn or get_search_service().execute
     full_ids = _load_full_ids()
     out: list[V2Result] = []
@@ -445,13 +451,17 @@ def run_image_to_image_eval_v2(
                 )
             )
             continue
-        hits = search(
-            SearchCommand(
-                query=str(image_path.name),
-                mode=SearchMode.IMAGE_TO_IMAGE,
-                image_path=image_path,
-                top_k=top_k,
-            )
+        command = SearchCommand(
+            query=str(image_path.name),
+            mode=SearchMode.IMAGE_TO_IMAGE,
+            image_path=image_path,
+            top_k=top_k,
+        )
+        hits = _execute_image_eval_search(
+            command,
+            image_path=image_path,
+            search=search,
+            trusted_case=search_fn is None,
         )
         actual = [hit.asset_id for hit in hits]
         expected: list[str] = []
@@ -469,6 +479,40 @@ def run_image_to_image_eval_v2(
             )
         )
     return out
+
+
+def _execute_image_eval_search(
+    command: SearchCommand,
+    *,
+    image_path: Path,
+    search: Callable[[SearchCommand], list[SearchHit]],
+    trusted_case: bool,
+) -> list[SearchHit]:
+    """Run a case image through SearchService unless it is an external fixture.
+
+    ``SearchService`` deliberately rejects absolute and out-of-assets paths
+    supplied by API/CLI clients. Evaluator case files are trusted project
+    fixtures and predate that public contract, so preserve their established
+    behavior with the legacy backend adapter only for the default evaluator
+    path. Injected search functions always receive the unchanged command.
+    """
+    if not trusted_case:
+        return search(command)
+    try:
+        relative_path = image_path.resolve().relative_to(get_assets_dir().resolve())
+    except ValueError:
+        from .backends.qdrant_backend import qdrant_image_to_image_search
+
+        return qdrant_image_to_image_search(image_path, top_k=command.top_k)
+    return search(
+        SearchCommand(
+            query=command.query,
+            mode=command.mode,
+            image_path=relative_path,
+            top_k=command.top_k,
+            min_score=command.min_score,
+        )
+    )
 
 
 def _normalize_id_list(ids: list[str]) -> list[str]:

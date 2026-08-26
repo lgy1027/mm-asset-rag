@@ -31,7 +31,7 @@ CLI / API surface
 -----------------
 
 - ``mmrag eval --answer-quality`` — runs the runner with default
-  ``hybrid_search`` / ``llm_answer`` and writes
+  ``SearchService`` / ``llm_answer`` and writes
   ``$MM_ASSET_RAG_HOME/eval_report_answer.json``.
 - ``POST /eval {"answer_quality": true}`` — same, via the API.
 
@@ -68,6 +68,7 @@ import requests
 
 from .paths import get_answer_eval_report
 from .schema import SearchHit
+from .search_service import SearchCommand, SearchMode, get_search_service
 from .settings import get_settings
 
 # ─── Dataclass ────────────────────────────────────────────────────────────
@@ -100,7 +101,7 @@ def run_answer_eval(
     cases_path: str | Path | None = None,
     *,
     top_k: int = 5,
-    search_fn: Callable[[str, int], list] | None = None,
+    search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
     answer_fn: Callable[[str, list], dict] | None = None,
     judge_fn: Callable[[str, list, str], float] | None = None,
     full_ids: set[str] | None = None,
@@ -109,7 +110,7 @@ def run_answer_eval(
     """Run the answer-quality eval over a case JSON.
 
     Defaults resolve at call time:
-    - ``search_fn`` → ``mm_asset_rag.retrieval.hybrid_search``
+    - ``search_fn`` → ``get_search_service().execute``
     - ``answer_fn`` → ``mm_asset_rag.answer.llm_answer``
     - ``judge_fn``  → :func:`faithfulness_judge`
     - ``full_ids``  → loaded from ``asset_index.jsonl`` (empty set on miss)
@@ -124,9 +125,8 @@ def run_answer_eval(
     # (see ``tests/conftest._isolate_env_file``).
     from .answer import llm_answer
     from .evaluation_v2 import _load_full_ids as _load_full_ids_v2
-    from .retrieval import hybrid_search
 
-    search = search_fn or hybrid_search
+    search = search_fn or get_search_service().execute
     answer_call = answer_fn or llm_answer
     judge_call = judge_fn or faithfulness_judge
 
@@ -148,17 +148,18 @@ def run_answer_eval(
             expected_asset_ids = list(case.get("expected_asset_ids") or [])
             expected_answer_assets = list(case.get("expected_answer_assets") or expected_asset_ids)
 
-            # Retrieval (DI-injected; default = real hybrid_search).
-            # Use a keyword for ``top_k`` — ``hybrid_search`` also takes a
-            # second positional argument ``image_path`` (Path | None), and
-            # passing ``top_k`` positionally would otherwise collide with
-            # that parameter and the int value would flip on the
-            # image-to-image route.
-            hits = search(query, top_k=top_k)
+            # Retrieval is command-level DI so answer quality uses the same
+            # production search policy as public answer and retrieval eval.
+            hits = search(
+                SearchCommand(
+                    query=query,
+                    mode=SearchMode.HYBRID,
+                    top_k=top_k,
+                )
+            )
 
-            # Answer generation. llm_answer accepts hits=None and runs
-            # hybrid_search itself; passing pre-computed hits keeps the
-            # eval consistent with what /chat would see.
+            # Passing the pre-computed hits keeps answer scoring aligned with
+            # the retrieval command evaluated above.
             answer_result = answer_call(query, hits)
             answer_text = str(answer_result.get("answer", ""))
             sources = answer_result.get("sources") or []

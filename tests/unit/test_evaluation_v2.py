@@ -269,6 +269,75 @@ def test_v2_image_eval_runners_pass_typed_search_commands(tmp_path: Path) -> Non
     assert commands[1].image_path == image_path
 
 
+def test_image_eval_default_accepts_trusted_external_case_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Evaluator case files are trusted inputs, unlike public API image paths."""
+    image_path = tmp_path / "external-query.png"
+    image_path.write_bytes(b"fake image")
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "version": "v2",
+                "groups": {
+                    "image_to_image": [{"image_path": str(image_path), "expected_asset_ids": []}]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    from mm_asset_rag.search_service import SearchService
+
+    service = SearchService(backend=Mock())
+    monkeypatch.setattr("mm_asset_rag.evaluation_v2.get_search_service", lambda: service)
+    legacy_search = Mock(return_value=[])
+    monkeypatch.setattr(
+        "mm_asset_rag.backends.qdrant_backend.qdrant_image_to_image_search",
+        legacy_search,
+    )
+
+    results = run_image_to_image_eval_v2(cases_path=cases_path)
+
+    assert len(results) == 1
+    assert results[0].actual_asset_ids == []
+    legacy_search.assert_called_once_with(image_path, top_k=5)
+
+
+def test_image_eval_default_uses_search_service_for_assets_case(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An in-assets case exercises the normal service policy end to end."""
+    from mm_asset_rag.paths import get_image_assets_dir
+    from mm_asset_rag.search_service import SearchService
+
+    image_path = get_image_assets_dir() / "query.png"
+    image_path.write_bytes(b"fake image")
+    cases_path = tmp_home / "cases.json"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "version": "v2",
+                "groups": {
+                    "image_to_image": [{"image_path": str(image_path), "expected_asset_ids": []}]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    backend = Mock()
+    backend.search_image.return_value = []
+    monkeypatch.setattr(
+        "mm_asset_rag.evaluation_v2.get_search_service",
+        lambda: SearchService(backend=backend),
+    )
+
+    results = run_image_to_image_eval_v2(cases_path=cases_path)
+
+    assert len(results) == 1
+    backend.search_image.assert_called_once_with(image_path=image_path.resolve(), top_k=5)
+
+
 @dataclass
 class _FakeV2Result:
     query: str

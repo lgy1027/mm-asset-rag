@@ -22,6 +22,7 @@ import argparse
 import inspect
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 import requests
@@ -38,6 +39,7 @@ from mm_asset_rag.answer_evaluation import (
     write_answer_eval_report,
 )
 from mm_asset_rag.schema import SearchHit
+from mm_asset_rag.search_service import SearchCommand, SearchMode
 
 # ─── Mocks ────────────────────────────────────────────────────────────────
 
@@ -79,8 +81,8 @@ HITS: list[SearchHit] = [
 MOCK_FULL_IDS: set[str] = {h.asset_id for h in HITS}
 
 
-def _stub_search_fn(query: str, top_k: int) -> list[SearchHit]:
-    return HITS[:top_k]
+def _stub_search_fn(command: SearchCommand) -> list[SearchHit]:
+    return HITS[: command.top_k]
 
 
 def _stub_answer_fn(query: str, hits: list[SearchHit]) -> dict:
@@ -179,6 +181,29 @@ def test_offline_no_llm_runs_gracefully(tmp_home, monkeypatch) -> None:
         assert 0.0 <= r.coverage <= 1.0
         assert 0.0 <= r.citation_precision <= 1.0
         assert 0.0 <= r.citation_recall <= 1.0
+
+
+def test_answer_eval_defaults_to_search_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = Mock()
+    backend.execute.return_value = HITS
+    monkeypatch.setattr(ae, "get_search_service", lambda: backend, raising=False)
+    monkeypatch.setattr(
+        "mm_asset_rag.retrieval.hybrid_search",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy retrieval ran")),
+    )
+
+    run_answer_eval(
+        search_fn=None,
+        answer_fn=_stub_answer_fn,
+        judge_fn=_stub_judge_fn,
+        full_ids=MOCK_FULL_IDS,
+    )
+
+    assert backend.execute.call_args_list[0].args[0] == SearchCommand(
+        query="retrieval augmented generation RAG",
+        mode=SearchMode.HYBRID,
+        top_k=5,
+    )
 
 
 # ─── 3. Per-scorer tests ──────────────────────────────────────────────────
@@ -480,7 +505,8 @@ def test_cli_eval_answer_quality_flag(tmp_home, monkeypatch, capsys) -> None:
     """``command_eval --answer-quality`` runs end-to-end via the CLI and
     prints the [answer-quality] hint when no LLM is configured.
 
-    Stubs ``hybrid_search`` and ``llm_answer`` at the runner module level
+    Stubs the command-level search service and ``llm_answer`` at the runner
+    module level
     so the CLI path doesn't need real embedding creds or a corpus - we
     only want to assert the CLI plumbing (flag routing, report write,
     friendly warning).
@@ -488,9 +514,8 @@ def test_cli_eval_answer_quality_flag(tmp_home, monkeypatch, capsys) -> None:
     from mm_asset_rag.cli import command_eval
 
     monkeypatch.setattr(
-        "mm_asset_rag.retrieval.hybrid_search",
-        _stub_search_fn,
-        raising=False,
+        "mm_asset_rag.answer_evaluation.get_search_service",
+        lambda: type("StubSearchService", (), {"execute": staticmethod(_stub_search_fn)})(),
     )
     monkeypatch.setattr(
         "mm_asset_rag.answer.llm_answer",
