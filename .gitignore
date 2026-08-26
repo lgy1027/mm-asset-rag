@@ -90,3 +90,6 @@ htmlcov/
 # rebuilt from source on the next `graphify --update` or via the
 # `.git/hooks/post-commit` hook.
 graphify-out/
+
+# Local linked worktrees used for isolated development.
+.worktrees/
