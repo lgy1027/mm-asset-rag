@@ -118,6 +118,19 @@ Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`. 
 
 Changing `MAX_CHUNKS_PER_PDF` requires `mmrag reindex` to rebuild existing collections.
 
+## Query rewrite (LLM-driven multi-query RAG)
+
+Layers on top of the legacy `QUERY_LOWERCASE` / `QUERY_FUZZY` / `QUERY_EXPANSION` flags (which still run inside `hybrid_search` per-variant). When `QUERY_REWRITE_ENABLED=true`, every text / hybrid search first asks the LLM (shared `OPENAI_*` / `VLM_*` triple, same resolution as `/answer`) for `QUERY_REWRITE_N_VARIANTS` rewordings of the user's query, then runs each variant through `hybrid_search` in parallel and fuses the hits with rank-based RRF — an asset that surfaces in multiple variants accumulates a higher fused score than one that surfaces in just one. Pattern is Anthropic's multi-query RAG cookbook; the per-variant latency caps at `QUERY_REWRITE_TIMEOUT` because a failed rewrite falls back to the original query and a hanging request is pure waste. Image routes (`text-to-image` / `image-to-image`) bypass this layer — the rewrite only helps the text channels; the CLIP cosine match is invariant to the user's exact wording.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `QUERY_REWRITE_ENABLED` | `false` | Master switch. Off = legacy single-query search (legacy `QUERY_*` flags still apply) |
+| `QUERY_REWRITE_N_VARIANTS` | `3` | Number of variants the LLM generates (incl. the original). Clamped to `[1, 5]`. 3 is the sweet spot — more dilutes each variant's RRF contribution |
+| `QUERY_REWRITE_TIMEOUT` | `30` | Per-call LLM timeout (seconds). Tighter than `LLM_TIMEOUT=120` because failure → original-query fallback |
+| `QUERY_REWRITE_CONCURRENCY` | `4` | Max parallel `hybrid_search` invocations during multi-query fusion (Qdrant-blocking; thread pool). Lower on Qdrant 429s, raise with headroom |
+
+Failure modes are silent fallbacks, not errors: missing creds → `[query]` (single-query search); LLM timeout / HTTP 5xx → `[query]`; bad JSON → `[query]`. Every search request goes through, just without the rewrite lift. See `mm_asset_rag/query_rewrite.py` for the rewrite prompt + JSON-tolerance strategy.
+
 ## Chunk keyword enrichment
 
 Appends a `关键词: ...` footer (jieba TextRank) to every PDF chunk's text before indexing, so the BM25 channel has explicit tokens to match short queries like `联宝 ESG` against long PDF bodies where the tokens would otherwise be diluted. Disable for non-Chinese corpora or when jieba is unavailable. Requires `mmrag reindex` to affect existing collections.
