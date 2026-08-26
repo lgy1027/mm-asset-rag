@@ -141,6 +141,26 @@ class Settings(BaseSettings):
     # ``image_path`` is supplied (previously 0.0 silently disabled the
     # route). Set to ``0.0`` to skip the route entirely.
     hybrid_weight_image_to_image: float = 0.15
+    # ─── Per-intent RRF weights ───────────────────────────────────────────
+    # ``hybrid_intent_routing_enabled`` is the master switch: when ON,
+    # ``hybrid_search`` picks its weights via ``classify_intent(query)``
+    # + ``weights_for_intent(intent, settings)`` from
+    # ``mm_asset_rag.query_intent`` instead of using the global
+    # ``hybrid_weight_*`` triple above. The per-intent defaults live in
+    # ``query_intent.DEFAULT_INTENT_WEIGHTS``; the four ``hybrid_intent_weights_*``
+    # fields below let a deployer override any intent's triple as either
+    # a JSON object ``{"text":0.7,"text_to_image":0.2,"image_to_image":0.15}``
+    # or a CSV triple ``0.7,0.2,0.15`` (CSV is friendlier in a flat
+    # .env). Invalid JSON / CSV logs a warning and falls back to the
+    # default — a typo in ``.env`` shouldn't break search. Default OFF
+    # so a deployment that hasn't tuned per-intent weights keeps the
+    # historical global-weight behaviour; flip on after you've checked
+    # the four ``weights_for_intent`` triples in ``/eval``.
+    hybrid_intent_routing_enabled: bool = False
+    hybrid_intent_weights_precise_keyword: str | None = None
+    hybrid_intent_weights_descriptive: str | None = None
+    hybrid_intent_weights_entity_lookup: str | None = None
+    hybrid_intent_weights_chinese: str | None = None
     # Per-asset chunk cap applied during ``build_qdrant_text_index``.
     # Without a cap, dense embeddings skew toward the largest PDFs
     # (clip / flamingo / gpt3 contribute 48 / 54 / 75 chunks each on the

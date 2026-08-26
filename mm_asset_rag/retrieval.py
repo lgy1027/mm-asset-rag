@@ -25,6 +25,11 @@ from .backends.qdrant_backend import (
     qdrant_text_to_image_search,
 )
 from .embedders import get_default_reranker
+from .query_intent import (
+    IntentWeights,
+    classify_intent,
+    weights_for_intent,
+)
 from .schema import SearchHit
 from .settings import get_settings
 
@@ -160,6 +165,8 @@ def hybrid_search(
     image_path: Path | None = None,
     top_k: int = 5,
     min_score: float | None = None,
+    *,
+    weights_override: IntentWeights | None = None,
 ) -> list[SearchHit]:
     """Run a hybrid search across text + (optionally) image routes.
 
@@ -171,6 +178,20 @@ def hybrid_search(
     forwarded to :func:`merge_hits` as a soft low-end guard on the
     final RRF score. The default ``0.0`` keeps every RRF hit; pass an
     explicit value to override per call.
+
+    Weight selection (keyword-only ``weights_override`` first):
+
+    * Explicit ``weights_override`` wins — callers (tests, scripted
+      eval) get a stable weight triple without going through the
+      ``classify_intent`` heuristic.
+    * Otherwise, when ``Settings.hybrid_intent_routing_enabled`` is on,
+      ``classify_intent(query)`` picks an :class:`IntentWeights` from
+      :data:`query_intent.DEFAULT_INTENT_WEIGHTS` (with the four
+      ``Settings.hybrid_intent_weights_*`` fields as overrides).
+    * Otherwise, the historical global
+      ``Settings.hybrid_weight_text / text_to_image / image_to_image``
+      triple is used — preserves the pre-intent-routing behaviour for
+      any deployment that hasn't flipped the master switch.
 
     When ``Settings.reranker_enabled`` is true, a two-stage pipeline runs:
     ``reranker_top_n`` candidates are fetched from each route and merged,
@@ -187,17 +208,28 @@ def hybrid_search(
     reranker = get_default_reranker()
     # Fetch a wider candidate pool when reranking; otherwise top_k end-to-end.
     fetch_k = settings.reranker_top_n if reranker is not None else top_k
+    if weights_override is not None:
+        chosen = weights_override
+    elif settings.hybrid_intent_routing_enabled:
+        intent = classify_intent(query)
+        chosen = weights_for_intent(intent, settings)
+    else:
+        chosen = IntentWeights(
+            text=settings.hybrid_weight_text,
+            text_to_image=settings.hybrid_weight_text_to_image,
+            image_to_image=settings.hybrid_weight_image_to_image,
+        )
     groups: list[list[SearchHit]] = [
         qdrant_text_search(query, top_k=fetch_k),
         qdrant_text_to_image_search(query, top_k=fetch_k),
     ]
-    weights = [settings.hybrid_weight_text, settings.hybrid_weight_text_to_image]
+    weights = [chosen.text, chosen.text_to_image]
     # Image-to-image is only consulted when an ``image_path`` is supplied
     # *and* its weight is positive — calling it just to multiply by 0
     # wastes a Qdrant round-trip.
-    if image_path and settings.hybrid_weight_image_to_image > 0:
+    if image_path and chosen.image_to_image > 0:
         groups.append(qdrant_image_to_image_search(image_path, top_k=fetch_k))
-        weights.append(settings.hybrid_weight_image_to_image)
+        weights.append(chosen.image_to_image)
     effective_min = settings.min_score if min_score is None else min_score
     merged = merge_hits(groups, weights, top_k=fetch_k, min_score=effective_min)
     if reranker is not None:
