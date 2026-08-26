@@ -11,11 +11,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
-from mm_asset_rag.evaluation_v2 import _expand, _match, _title_of, load_cases, run_eval_v2
+from mm_asset_rag.evaluation_v2 import (
+    _expand,
+    _match,
+    _title_of,
+    load_cases,
+    run_eval_v2,
+    run_image_to_image_eval_v2,
+    run_text_to_image_eval_v2,
+)
+from mm_asset_rag.search_service import SearchCommand, SearchMode
 
 
 def test_title_of_strips_hash() -> None:
@@ -198,6 +207,66 @@ def test_run_eval_v2_wraps_text_to_text() -> None:
         out = run_eval_v2(top_k=7, cases_path="cases.json")
     stub.assert_called_once_with(top_k=7, cases_path="cases.json")
     assert out == []
+
+
+def test_run_eval_v2_passes_hybrid_commands_to_injected_search() -> None:
+    commands: list[SearchCommand] = []
+
+    run_eval_v2(
+        top_k=7,
+        search_fn=lambda command: commands.append(command) or [],
+        cases_path=None,
+    )
+
+    assert commands
+    assert all(command.mode is SearchMode.HYBRID for command in commands)
+    assert all(command.top_k == 7 for command in commands)
+
+
+def test_run_eval_v2_defaults_to_search_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = Mock()
+    backend.execute.return_value = []
+    monkeypatch.setattr("mm_asset_rag.evaluation_v2.get_search_service", lambda: backend)
+
+    run_eval_v2()
+
+    assert backend.execute.call_args_list[0].args[0] == SearchCommand(
+        query="CLIP 模型",
+        mode=SearchMode.HYBRID,
+        top_k=5,
+    )
+
+
+def test_v2_image_eval_runners_pass_typed_search_commands(tmp_path: Path) -> None:
+    image_path = tmp_path / "query.png"
+    image_path.write_bytes(b"fake image")
+    cases_path = tmp_path / "cases.json"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "version": "v2",
+                "groups": {
+                    "text_to_image": [{"query": "a diagram", "expected_asset_ids": []}],
+                    "image_to_image": [{"image_path": str(image_path), "expected_asset_ids": []}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    commands: list[SearchCommand] = []
+
+    def search(command: SearchCommand) -> list:
+        commands.append(command)
+        return []
+
+    run_text_to_image_eval_v2(search_fn=search, cases_path=cases_path)
+    run_image_to_image_eval_v2(search_fn=search, cases_path=cases_path)
+
+    assert [command.mode for command in commands] == [
+        SearchMode.TEXT_TO_IMAGE,
+        SearchMode.IMAGE_TO_IMAGE,
+    ]
+    assert commands[1].image_path == image_path
 
 
 @dataclass

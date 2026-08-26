@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock
 
 import pytest
 
 from mm_asset_rag.evaluation import (
     EvalResult,
+    aggregate_retrieval_scenarios,
     load_cases,
     run_eval,
     strip_trailing_hash,
     write_eval_report,
 )
 from mm_asset_rag.schema import SearchHit
+from mm_asset_rag.search_service import SearchCommand, SearchMode
 
 # asset_id returned by the fake retriever for each query substring.
 # Keyed on a unique phrase that appears in the bundled default case set.
@@ -32,9 +34,9 @@ _QUERY_TO_ASSET = {
 }
 
 
-def _fake_hybrid(query: str, **kwargs):
+def _fake_hybrid(command):
     """Return a single ``SearchHit`` keyed on the test's query → asset map."""
-    q = query.lower()
+    q = command.query.lower()
     asset_id = next(
         (aid for needle, aid in _QUERY_TO_ASSET.items() if needle.lower() in q),
         "other",
@@ -65,21 +67,58 @@ def test_eval_cases_count() -> None:
     assert _default_case_count() == 8
 
 
+def test_negative_cases_do_not_lower_positive_retrieval_hit_rate() -> None:
+    positive_hit = EvalResult(
+        query="positive",
+        expected_asset_ids=["expected"],
+        actual_asset_ids=["expected"],
+        hit=True,
+        rank=1,
+        group="en",
+    )
+    negative_case = EvalResult(
+        query="negative",
+        expected_asset_ids=[],
+        actual_asset_ids=[],
+        hit=False,
+        rank=None,
+        group="negative",
+    )
+
+    metrics = aggregate_retrieval_scenarios([positive_hit, negative_case])
+
+    assert metrics["positive"]["total"] == 1
+    assert metrics["positive"]["hit_rate"] == 1.0
+    assert metrics["negative"]["false_retrieval_rate"] == 0.0
+
+
+def test_run_eval_defaults_to_search_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = Mock()
+    backend.execute.return_value = []
+    monkeypatch.setattr("mm_asset_rag.evaluation.get_search_service", lambda: backend)
+
+    run_eval()
+
+    assert backend.execute.call_args_list[0].args[0] == SearchCommand(
+        query="retrieval augmented generation RAG",
+        mode=SearchMode.HYBRID,
+        top_k=5,
+    )
+
+
 def test_run_eval_hits_expected_assets() -> None:
     # Skip bare→full expansion so the expected ids stay as the bare
     # titles from the case file; the prefix-tolerant _match handles the
     # test's mock asset_id suffix transparently.
-    with patch("mm_asset_rag.evaluation.hybrid_search", side_effect=_fake_hybrid):
-        results = run_eval()
+    results = run_eval(search_fn=_fake_hybrid)
     assert len(results) == _default_case_count()
     misses = [r for r in results if not r.hit]
     assert not misses, misses
 
 
 def test_run_eval_misses_when_assets_wrong() -> None:
-    with patch(
-        "mm_asset_rag.evaluation.hybrid_search",
-        return_value=[
+    results = run_eval(
+        search_fn=lambda command: [
             SearchHit(
                 route="text",
                 score=0.9,
@@ -88,9 +127,8 @@ def test_run_eval_misses_when_assets_wrong() -> None:
                 source_type="pdf",
                 source_path="x.pdf",
             )
-        ],
-    ):
-        results = run_eval()
+        ]
+    )
     assert not any(result.hit for result in results)
     # Every miss should record rank=None and the actual asset_id of "unrelated".
     for r in results:
@@ -99,8 +137,7 @@ def test_run_eval_misses_when_assets_wrong() -> None:
 
 
 def test_run_eval_records_rank_and_group() -> None:
-    with patch("mm_asset_rag.evaluation.hybrid_search", side_effect=_fake_hybrid):
-        results = run_eval()
+    results = run_eval(search_fn=_fake_hybrid)
     en = [r for r in results if r.group == "en"]
     zh = [r for r in results if r.group == "zh"]
     assert en, "expected en queries"
@@ -130,8 +167,7 @@ def test_run_eval_respects_cases_path(tmp_path: Path) -> None:
         ),
         encoding="utf-8",
     )
-    with patch("mm_asset_rag.evaluation.hybrid_search", side_effect=_fake_hybrid):
-        results = run_eval(cases_path=custom)
+    results = run_eval(cases_path=custom, search_fn=_fake_hybrid)
     assert len(results) == 2
     assert all(r.group == "en" for r in results)
 

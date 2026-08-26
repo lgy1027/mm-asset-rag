@@ -13,8 +13,8 @@ from urllib.parse import urlparse
 import requests
 
 from .paths import safe_parsed_image_path
-from .retrieval import hybrid_search
 from .schema import SearchHit
+from .search_service import SearchCommand, SearchMode, SearchService, get_search_service
 from .settings import get_settings
 
 log = logging.getLogger(__name__)
@@ -282,9 +282,12 @@ def answer_question(
     question: str,
     top_k: int = 5,
     hits: list[SearchHit] | None = None,
+    *,
+    search_service: SearchService | None = None,
 ) -> dict[str, object]:
     if hits is None:
-        hits = hybrid_search(question, top_k=top_k)
+        service = search_service or get_search_service()
+        hits = service.execute(SearchCommand(query=question, mode=SearchMode.HYBRID, top_k=top_k))
     return llm_answer(question, hits)
 
 
@@ -363,5 +366,14 @@ def stream_answer_chunks(question: str, hits: list[SearchHit]) -> Iterator[str]:
         yield buffer
 
 
-def answer_json(question: str, top_k: int = 5) -> str:
-    return json.dumps(answer_question(question, top_k=top_k), ensure_ascii=False, indent=2)
+def answer_json(
+    question: str,
+    top_k: int = 5,
+    *,
+    search_service: SearchService | None = None,
+) -> str:
+    return json.dumps(
+        answer_question(question, top_k=top_k, search_service=search_service),
+        ensure_ascii=False,
+        indent=2,
+    )

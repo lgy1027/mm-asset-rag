@@ -37,6 +37,8 @@ from pathlib import Path
 
 from .metrics import _is_relevant, aggregate_metrics
 from .paths import get_asset_index_path, get_eval_report
+from .schema import SearchHit
+from .search_service import SearchCommand, SearchMode, get_search_service
 
 
 def _default_cases_path(version: str) -> Path:
@@ -125,6 +127,49 @@ class V2Result:
     def __post_init__(self) -> None:
         if self.actual_titles is None:
             self.actual_titles = []
+
+
+def aggregate_retrieval_scenarios(results: list[V2Result]) -> dict[str, dict[str, object]]:
+    """Separate positive retrieval quality from negative rejection behavior."""
+
+    positive = [result for result in results if result.expected_asset_ids]
+    negative = [result for result in results if not result.expected_asset_ids]
+
+    def metric_rows(items: list[V2Result]) -> list[dict[str, object]]:
+        return [
+            {
+                "actual_ids": (
+                    [
+                        (asset_id, title) if title else asset_id
+                        for asset_id, title in zip_longest(
+                            result.actual_asset_ids, result.actual_titles, fillvalue=""
+                        )
+                    ]
+                    if result.actual_titles
+                    else list(result.actual_asset_ids)
+                ),
+                "expected_ids": _normalize_id_list(result.expected_asset_ids),
+            }
+            for result in items
+        ]
+
+    empty_result_count = sum(1 for result in negative if not result.actual_asset_ids)
+    false_retrieval_count = sum(1 for result in negative if result.actual_asset_ids)
+    return {
+        "positive": {
+            "total": len(positive),
+            "hit_count": sum(1 for result in positive if result.hit),
+            "hit_rate": sum(1 for result in positive if result.hit) / max(len(positive), 1),
+            "metrics": aggregate_metrics(metric_rows(positive)) if positive else {},
+        },
+        "negative": {
+            "total": len(negative),
+            "empty_result_count": empty_result_count,
+            "empty_result_rate": empty_result_count / max(len(negative), 1),
+            "false_retrieval_count": false_retrieval_count,
+            "false_retrieval_rate": false_retrieval_count / max(len(negative), 1),
+        },
+    }
 
 
 def _load_full_ids() -> set[str]:
@@ -238,7 +283,12 @@ def _match(actual: list[str | tuple[str, str]], expected: list[str]) -> int | No
     return None
 
 
-def run_eval_v2(top_k: int = 5, *, cases_path: str | Path | None = None) -> list[V2Result]:
+def run_eval_v2(
+    top_k: int = 5,
+    *,
+    cases_path: str | Path | None = None,
+    search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
+) -> list[V2Result]:
     """Run the v2 text→text regression set (CLI / API entry point).
 
     Thin alias for :func:`run_text_to_text_eval_v2` so the CLI ``--v2``
@@ -250,30 +300,36 @@ def run_eval_v2(top_k: int = 5, *, cases_path: str | Path | None = None) -> list
     ``cases_path`` overrides the case file for this run (default:
     ``Settings.eval_cases_path`` → the bundled ``v2_cases.json``).
 
+    ``search_fn`` is the command-level dependency-injection seam used by
+    tests; production defaults to :meth:`SearchService.execute`.
+
     The text→image / image→image groups have their own runners; this
     convenience only covers the text→text set because that is what v1's
     ``run_eval`` covers and what the default ``mmrag eval`` output
     compares against.
     """
-    return run_text_to_text_eval_v2(top_k=top_k, cases_path=cases_path)
+    if search_fn is None:
+        return run_text_to_text_eval_v2(top_k=top_k, cases_path=cases_path)
+    return run_text_to_text_eval_v2(
+        top_k=top_k,
+        cases_path=cases_path,
+        search_fn=search_fn,
+    )
 
 
 def run_text_to_text_eval_v2(
     top_k: int = 5,
     *,
-    search_fn: Callable[[str, int], list] | None = None,
+    search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
     full_ids: set[str] | None = None,
     cases_path: str | Path | None = None,
 ) -> list[V2Result]:
     """Run all v2 text→text cases against the live hybrid index.
 
-    ``search_fn`` defaults to ``retrieval.hybrid_search`` (production
-    path). Tests pass a stub that returns canned ``SearchHit`` lists
-    so the eval can run offline against a mock corpus — this is the
-    ``auto-eval`` integration used by CI. The stub signature is
-    ``(query: str, top_k: int) -> list[SearchHit]``; the query
-    preprocessor / RRF / min_score are bypassed because the test
-    ships its own pre-computed results.
+    ``search_fn`` defaults to :meth:`SearchService.execute`. Tests pass a
+    stub that returns canned ``SearchHit`` lists so the eval can run offline
+    against a mock corpus. The stub signature is
+    ``(SearchCommand) -> list[SearchHit]``.
 
     ``full_ids`` is the set of known asset_ids used by ``_expand`` to
     resolve bare expected ids. Tests inject a synthetic set so the
@@ -284,16 +340,20 @@ def run_text_to_text_eval_v2(
     text→text groups are iterated; image groups belong to the other
     runners. A group absent from the file is skipped.
     """
-    from .retrieval import hybrid_search
-
-    search = search_fn or hybrid_search
+    search = search_fn or get_search_service().execute
     ids = full_ids if full_ids is not None else _load_full_ids()
 
     groups = load_cases(cases_path, version="v2")
     out: list[V2Result] = []
     for group in ("zh_on_en", "en_on_en", "zh_on_zh", "negative"):
         for case in groups.get(group, ()):
-            hits = search(str(case["query"]), top_k=top_k)
+            hits = search(
+                SearchCommand(
+                    query=str(case["query"]),
+                    mode=SearchMode.HYBRID,
+                    top_k=top_k,
+                )
+            )
             # Carry (asset_id, title) pairs for _match so it can hit on either.
             # The asset_id is a filename stem (e.g. clip_b14b418e) which never
             # matches a paper-title expected id; with AUTO_META on, hit.title is
@@ -321,25 +381,28 @@ def run_text_to_text_eval_v2(
 def run_text_to_image_eval_v2(
     top_k: int = 5,
     *,
-    search_fn: Callable[[str, int], list] | None = None,
+    search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
     full_ids: set[str] | None = None,
     cases_path: str | Path | None = None,
 ) -> list[V2Result]:
     """Run the v2 text→image cases against the Qdrant image collection.
 
-    ``search_fn`` is the dependency-injection hook for tests; default
-    is the live ``qdrant_text_to_image_search`` call. See
-    :func:`run_text_to_text_eval_v2` for the same pattern.
+    ``search_fn`` is the command-level dependency-injection hook for tests;
+    production defaults to :meth:`SearchService.execute`.
     """
-    from .backends.qdrant_backend import qdrant_text_to_image_search
-
-    search = search_fn or qdrant_text_to_image_search
+    search = search_fn or get_search_service().execute
     ids = full_ids if full_ids is not None else _load_full_ids()
 
     cases = load_cases(cases_path, version="v2").get("text_to_image", [])
     out: list[V2Result] = []
     for case in cases:
-        hits = search(str(case["query"]), top_k)
+        hits = search(
+            SearchCommand(
+                query=str(case["query"]),
+                mode=SearchMode.TEXT_TO_IMAGE,
+                top_k=top_k,
+            )
+        )
         actual = [hit.asset_id for hit in hits]
         expected: list[str] = []
         for item in case["expected_asset_ids"]:
@@ -359,11 +422,13 @@ def run_text_to_image_eval_v2(
 
 
 def run_image_to_image_eval_v2(
-    top_k: int = 5, *, cases_path: str | Path | None = None
+    top_k: int = 5,
+    *,
+    search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
+    cases_path: str | Path | None = None,
 ) -> list[V2Result]:
     """Run the v2 image→image cases."""
-    from .backends.qdrant_backend import qdrant_image_to_image_search
-
+    search = search_fn or get_search_service().execute
     full_ids = _load_full_ids()
     out: list[V2Result] = []
     for case in load_cases(cases_path, version="v2").get("image_to_image", []):
@@ -380,7 +445,14 @@ def run_image_to_image_eval_v2(
                 )
             )
             continue
-        hits = qdrant_image_to_image_search(image_path, top_k=top_k)
+        hits = search(
+            SearchCommand(
+                query=str(image_path.name),
+                mode=SearchMode.IMAGE_TO_IMAGE,
+                image_path=image_path,
+                top_k=top_k,
+            )
+        )
         actual = [hit.asset_id for hit in hits]
         expected: list[str] = []
         for item in case["expected_asset_ids"]:
@@ -453,6 +525,9 @@ def write_eval_report_v2(results_by_group: dict[str, list[V2Result]], path=None)
 
     payload = {
         "version": "v2",
+        "scenarios": aggregate_retrieval_scenarios(
+            [result for results in results_by_group.values() for result in results]
+        ),
         "per_group": {
             g: {
                 "total": len(rs),

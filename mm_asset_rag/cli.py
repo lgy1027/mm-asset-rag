@@ -17,6 +17,7 @@ from .answer import answer_json
 from .config import load_env
 from .evaluation import run_eval, write_eval_report
 from .paths import get_documents_jsonl
+from .search_service import get_search_service
 from .service import ParseOptions, dispatch_search, get_service
 from .upload_pipeline import UserEdits, get_pipeline
 
@@ -219,7 +220,13 @@ def command_eval(args: argparse.Namespace) -> None:
 
 
 def command_answer(args: argparse.Namespace) -> None:
-    safe_print(answer_json(args.question, top_k=args.top_k))
+    safe_print(
+        answer_json(
+            args.question,
+            top_k=args.top_k,
+            search_service=get_search_service(),
+        )
+    )
 
 
 def command_retry(args: argparse.Namespace) -> None:

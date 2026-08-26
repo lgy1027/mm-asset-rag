@@ -48,6 +48,7 @@ from .paths import (
     get_preview_cache_dir,
     safe_parsed_image_path,
 )
+from .search_service import get_search_service
 from .service import (
     ParseOptions,
     dispatch_search,
@@ -565,7 +566,12 @@ async def answer(
     request: AnswerRequest,
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
-    return await asyncio.to_thread(answer_question, request.question, top_k=request.top_k)
+    return await asyncio.to_thread(
+        answer_question,
+        request.question,
+        top_k=request.top_k,
+        search_service=get_search_service(),
+    )
 
 
 @app.post("/eval")

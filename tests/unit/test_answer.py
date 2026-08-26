@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from mm_asset_rag.answer import fallback_answer, format_sources
+from unittest.mock import Mock
+
+from mm_asset_rag.answer import answer_question, fallback_answer, format_sources
 from mm_asset_rag.schema import SearchHit
+from mm_asset_rag.search_service import SearchCommand, SearchMode
 
 
 def _hit(asset_id: str, evidence: str = "some text") -> SearchHit:
@@ -42,24 +45,38 @@ def test_fallback_answer_skips_empty_evidence() -> None:
     assert result["answer"].count("\n\n") >= 1
 
 
+def test_answer_question_uses_search_service_when_hits_are_missing() -> None:
+    backend = Mock()
+    backend.execute.return_value = [_hit("a")]
+
+    answer_question("question", search_service=backend)
+
+    backend.execute.assert_called_once_with(
+        SearchCommand(query="question", mode=SearchMode.HYBRID, top_k=5)
+    )
+
+
 def test_answer_json_returns_valid_json(monkeypatch) -> None:
     import json
+    from types import SimpleNamespace
 
     from mm_asset_rag.answer import answer_json
 
     monkeypatch.setattr(
-        "mm_asset_rag.answer.hybrid_search",
-        lambda query, top_k=5, image_path=None: [
-            SearchHit(
-                route="text",
-                score=0.9,
-                asset_id="a",
-                title="a",
-                source_type="pdf",
-                source_path="a.pdf",
-                evidence="evidence",
-            )
-        ],
+        "mm_asset_rag.answer.get_search_service",
+        lambda: SimpleNamespace(
+            execute=lambda command: [
+                SearchHit(
+                    route="text",
+                    score=0.9,
+                    asset_id="a",
+                    title="a",
+                    source_type="pdf",
+                    source_path="a.pdf",
+                    evidence="evidence",
+                )
+            ]
+        ),
     )
     payload = answer_json("any question?")
     parsed = json.loads(payload)

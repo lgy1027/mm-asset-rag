@@ -204,6 +204,21 @@ def test_answer_endpoint_returns_fallback(client: TestClient) -> None:
     assert response.json()["answer"] == "no LLM configured"
 
 
+def test_answer_endpoint_supplies_the_search_service(client: TestClient) -> None:
+    service = object()
+    with (
+        patch("mm_asset_rag.api.get_search_service", return_value=service),
+        patch(
+            "mm_asset_rag.api.answer_question",
+            return_value={"question": "q", "answer": "ok", "sources": []},
+        ) as answer_question,
+    ):
+        response = client.post("/answer", json={"question": "q", "top_k": 3})
+
+    assert response.status_code == 200
+    assert answer_question.call_args.kwargs["search_service"] is service
+
+
 def test_eval_endpoint_runs_cases(client: TestClient) -> None:
     with patch("mm_asset_rag.api.run_eval", return_value=[]):
         response = client.post("/eval", json={})

@@ -33,6 +33,7 @@ so there is no circular dependency.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from itertools import zip_longest
 from pathlib import Path
@@ -42,6 +43,7 @@ from pathlib import Path
 from .evaluation_v2 import (
     _match,
     _normalize_id_list,
+    aggregate_retrieval_scenarios,
     strip_trailing_hash,
 )
 from .evaluation_v2 import (
@@ -49,7 +51,8 @@ from .evaluation_v2 import (
 )
 from .metrics import aggregate_metrics
 from .paths import get_asset_index_path, get_eval_report
-from .retrieval import hybrid_search
+from .schema import SearchHit
+from .search_service import SearchCommand, SearchMode, get_search_service
 
 
 def load_cases(path: str | Path | None = None) -> dict[str, list[dict]]:
@@ -115,7 +118,12 @@ class EvalResult:
             self.actual_titles = []
 
 
-def run_eval(top_k: int = 5, *, cases_path: str | Path | None = None) -> list[EvalResult]:
+def run_eval(
+    top_k: int = 5,
+    *,
+    cases_path: str | Path | None = None,
+    search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
+) -> list[EvalResult]:
     """Run the full text→text regression set against the live index.
 
     Returns a list of :class:`EvalResult` — one per case, in declared
@@ -126,13 +134,24 @@ def run_eval(top_k: int = 5, *, cases_path: str | Path | None = None) -> list[Ev
 
     ``cases_path`` overrides the case file for this run (default:
     ``Settings.eval_cases_path`` → the bundled ``v1_cases.json``).
+
+    ``search_fn`` is the command-level dependency-injection seam.  It
+    defaults to :meth:`SearchService.execute`, while tests can supply a
+    deterministic ``SearchCommand -> SearchHit`` callable.
     """
+    search = search_fn or get_search_service().execute
     bare_to_all_fulls = _load_bare_to_all_fulls()
     groups = load_cases(cases_path)
     results: list[EvalResult] = []
     for group in ("en", "zh", "zh_doc", "legacy"):
         for case in groups.get(group, ()):
-            hits = hybrid_search(str(case["query"]), top_k=top_k)
+            hits = search(
+                SearchCommand(
+                    query=str(case["query"]),
+                    mode=SearchMode.HYBRID,
+                    top_k=top_k,
+                )
+            )
             # Resolve expected ids to the set of full ids the index
             # actually returns. Accepts both bare titles and full
             # ``<title>_<hash>`` ids, and expands to all hash variants
@@ -229,6 +248,7 @@ def write_eval_report(results: list[EvalResult], path=None) -> None:
         "hit_rate": (sum(1 for r in results if r.hit) / max(len(results), 1)),
         "per_query": per_query,
         "metrics": {g: _agg(rs) for g, rs in by_group.items()},
+        "scenarios": aggregate_retrieval_scenarios(results),
     }
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

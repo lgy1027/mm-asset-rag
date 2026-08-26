@@ -65,6 +65,30 @@ def test_cli_answer_subcommand() -> None:
     assert args.top_k == 3
 
 
+def test_cli_answer_supplies_the_search_service(monkeypatch: pytest.MonkeyPatch) -> None:
+    import mm_asset_rag.cli as cli_mod
+
+    service = object()
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(cli_mod, "get_search_service", lambda: service)
+    monkeypatch.setattr(
+        cli_mod,
+        "answer_json",
+        lambda question, top_k, *, search_service: (
+            calls.update(
+                question=question,
+                top_k=top_k,
+                search_service=search_service,
+            )
+            or "{}"
+        ),
+    )
+
+    cli_mod.command_answer(build_parser().parse_args(["answer", "why?", "--top-k", "3"]))
+
+    assert calls == {"question": "why?", "top_k": 3, "search_service": service}
+
+
 def test_cli_eval_subcommand() -> None:
     parser = build_parser()
     args = parser.parse_args(["eval", "--top-k", "10"])
