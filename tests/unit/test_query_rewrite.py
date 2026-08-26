@@ -325,7 +325,9 @@ def test_text_search_with_rewrite_disabled_passes_through(monkeypatch) -> None:
 
     out = qr.text_search_with_rewrite("q", top_k=3)
     assert [h.asset_id for h in out] == ["a"]
-    assert calls == ["q"], "rewrite off should hit backend.search_text exactly once with the original"
+    assert calls == ["q"], (
+        "rewrite off should hit backend.search_text exactly once with the original"
+    )
 
 
 def test_text_search_with_rewrite_enabled_fans_out_per_variant(monkeypatch) -> None:
@@ -384,7 +386,11 @@ def test_text_search_with_rewrite_never_touches_hybrid(monkeypatch) -> None:
 
     monkeypatch.setattr("mm_asset_rag.registry.get_backend", lambda name: _Backend())
     # Trip-wire: if ``hybrid_search`` is called, the test fails loudly.
-    monkeypatch.setattr(qr_mod, "hybrid_search", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("hybrid_search must not be called")))
+    monkeypatch.setattr(
+        qr_mod,
+        "hybrid_search",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("hybrid_search must not be called")),
+    )
     monkeypatch.setenv("QUERY_REWRITE_ENABLED", "true")
     get_settings.cache_clear()
 
@@ -404,13 +410,13 @@ def test_dispatch_search_text_uses_text_rewrite_wrapper(monkeypatch) -> None:
     for ``mode=hybrid`` (see
     :func:`test_dispatch_search_hybrid_uses_rewrite_when_enabled`).
     """
-    from mm_asset_rag import service as service_mod
+    from mm_asset_rag import search_service as service_mod
 
     text_calls: list[tuple] = []
     hybrid_calls: list[tuple] = []
 
-    def _fake_text(query, *, top_k=5):
-        text_calls.append((query, top_k))
+    def _fake_text(query, *, top_k=5, min_score=None):
+        text_calls.append((query, top_k, min_score))
         return []
 
     def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
@@ -444,7 +450,7 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
     even when ``query_rewrite_enabled=True`` — the rewrite only helps the text side."""
     from pathlib import Path
 
-    from mm_asset_rag import service as service_mod
+    from mm_asset_rag import search_service as service_mod
 
     rewrite_calls: list[tuple] = []
 
@@ -456,14 +462,14 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
     # for the image-to-image path — the test is about routing, not
     # about file existence checks (those have their own suite).
     monkeypatch.setattr(
-        service_mod, "_resolve_sandboxed_image_path", lambda p: Path("/fake/img.png") if p else None
+        service_mod, "resolve_sandboxed_image_path", lambda p: Path("/fake/img.png") if p else None
     )
     monkeypatch.setattr(service_mod, "hybrid_search_with_rewrite", _fake_rewrite)
     monkeypatch.setenv("QUERY_REWRITE_ENABLED", "true")
     get_settings.cache_clear()
 
     # text-to-image should go through the backend, not the rewrite wrapper.
-    with patch("mm_asset_rag.service.get_backend") as get_backend:
+    with patch("mm_asset_rag.search_service.get_backend") as get_backend:
         backend = get_backend.return_value
         backend.search_text_to_image.return_value = []
         dispatch_search(query="q", mode="text-to-image", image_path=None, top_k=5)
@@ -471,7 +477,7 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
     assert rewrite_calls == [], "text-to-image must not invoke the rewrite wrapper"
 
     # image-to-image (with sandboxed path stubbed) — rewrite is also skipped here.
-    with patch("mm_asset_rag.service.get_backend") as get_backend:
+    with patch("mm_asset_rag.search_service.get_backend") as get_backend:
         backend = get_backend.return_value
         backend.search_image.return_value = []
         dispatch_search(query="q", mode="image-to-image", image_path="img.png", top_k=5)
@@ -482,7 +488,7 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
 def test_dispatch_search_hybrid_uses_rewrite_when_enabled(monkeypatch) -> None:
     """``mode=hybrid`` (the default for many endpoints) also funnels
     through ``hybrid_search_with_rewrite`` when enabled."""
-    from mm_asset_rag import service as service_mod
+    from mm_asset_rag import search_service as service_mod
 
     rewrite_calls: list[tuple] = []
 
@@ -504,7 +510,7 @@ def test_dispatch_search_hybrid_uses_rewrite_when_enabled(monkeypatch) -> None:
 def test_multi_query_dedupes_image_to_image(monkeypatch) -> None:
     """``multi_query_search`` calls ``backend.search_image`` exactly once
     even when N variants are fanned out — i2i is invariant to text
-    variants and would otherwise be N× wasted CLIP encode + Qdrant
+    variants and would otherwise be Nx wasted CLIP encode + Qdrant
     round-trip."""
     from mm_asset_rag import registry
 

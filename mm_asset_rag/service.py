@@ -42,12 +42,22 @@ from .paths import (
     get_documents_jsonl,
     get_parsed_dir,
 )
-from .query_rewrite import hybrid_search_with_rewrite, text_search_with_rewrite
 from .registry import get_backend, get_parser
+from .search_service import (
+    SearchCommand,
+    coerce_search_mode,
+    get_search_service,
+    resolve_sandboxed_image_path,
+)
 from .settings import Settings, get_settings
 from .sniff import sniff
 
 # ─── Helpers shared by api.py and cli.py ──────────────────────────────────
+
+
+def _resolve_sandboxed_image_path(image_path: str | Path | None) -> Path | None:
+    """Compatibility alias for the image-path resolver now owned by SearchService."""
+    return resolve_sandboxed_image_path(image_path)
 
 
 def coerce_bool(form_val: str | bool | None, default: bool) -> bool:
@@ -66,42 +76,6 @@ def coerce_bool(form_val: str | bool | None, default: bool) -> bool:
     return str(form_val).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-IMAGE_PATH_USES = {"image-to-image", "hybrid"}
-
-
-def _resolve_sandboxed_image_path(image_path: str | Path | None) -> Path | None:
-    """Resolve ``image_path`` to an absolute path strictly inside ``assets_dir``.
-
-    ``image-to-image`` / ``hybrid`` search delegates to the CLIP encoder
-    which feeds the file through ``PIL.Image.open``. PIL's decoders have
-    a long history of format-parsing RCEs (PSD, GIF, SGI, …) and the
-    ``open()`` call also happily reads any local file the process can
-    see — including ``/etc/passwd`` if the path is absolute. We refuse
-    anything that resolves outside ``assets_dir`` and any symlink target
-    that escapes it (``resolve(strict=False)`` then ``is_relative_to``
-    catches the symlink case). Returning ``None`` when ``image_path`` is
-    empty preserves the existing "no image" semantics for hybrid.
-    """
-    if not image_path:
-        return None
-    assets_dir = get_assets_dir().resolve()
-    raw = Path(image_path)
-    # Reject absolute paths up front — the user-visible API is
-    # relative-path-only and any ``/etc/passwd``-style attempt should
-    # fail *before* we hit the filesystem.
-    if raw.is_absolute():
-        raise ValueError("image_path must be relative to assets/")
-    try:
-        resolved = (assets_dir / raw).resolve()
-    except OSError as exc:
-        raise ValueError(f"image_path cannot be resolved: {exc}") from exc
-    if not resolved.is_relative_to(assets_dir):
-        raise ValueError("image_path resolves outside assets/")
-    if not resolved.is_file():
-        raise ValueError(f"image_path not found or not a regular file: {raw}")
-    return resolved
-
-
 def dispatch_search(
     *,
     query: str,
@@ -109,59 +83,15 @@ def dispatch_search(
     image_path: str | Path | None,
     top_k: int,
 ) -> list:
-    """Dispatch a search request to the right backend call.
-
-    Single source of truth for ``mode`` routing — used by ``/search``,
-    ``/chat`` (one-call helper) and the ``mmrag search`` CLI so they all
-    handle the four modes (``text``, ``text-to-image``, ``image-to-image``,
-    ``hybrid``) the same way. When ``mode`` consumes ``image_path`` the
-    path is sandboxed to ``assets_dir`` so the CLIP encoder cannot be
-    steered at an arbitrary local file.
-
-    Raises:
-        ValueError: ``mode`` is not one of the four recognised routes —
-            we refuse to silently fall through to ``hybrid`` because a
-            client typo (``mode="typo"``) would otherwise get a hybrid
-            result and assume it was what they asked for.
-
-    For ``text`` mode the call goes through
-    :func:`mm_asset_rag.query_rewrite.text_search_with_rewrite` so a
-    configured ``query_rewrite_enabled`` runs the LLM-driven expansion
-    + multi-query RRF path *on the text route only* (dense + BM25-en +
-    BM25-zh inside Qdrant). This preserves the historical
-    ``mode="text"`` = text-only contract — image routes are not pulled
-    in. With the master switch off the wrapper is a pure pass-through
-    to ``backend.search_text``.
-
-    For ``hybrid`` mode the call goes through
-    :func:`mm_asset_rag.query_rewrite.hybrid_search_with_rewrite` so
-    the same rewrite + multi-query expansion is applied across all
-    three routes (text / text-to-image / image-to-image).
-
-    The image routes (``text-to-image`` / ``image-to-image``) bypass
-    the rewrite wrapper entirely — the rewrite only helps the text
-    channels, the CLIP cosine match is invariant to the user's exact
-    wording.
-    """
-    backend = get_backend("qdrant")
-    if mode not in {"text", "text-to-image", "image-to-image", "hybrid"}:
-        raise ValueError(
-            f"unknown mode {mode!r}; expected one of "
-            "'text', 'text-to-image', 'image-to-image', 'hybrid'"
+    """Adapt the legacy primitive arguments into one typed search command."""
+    return get_search_service().execute(
+        SearchCommand(
+            query=query,
+            mode=coerce_search_mode(mode),
+            image_path=image_path,
+            top_k=top_k,
         )
-    sandboxed_image = _resolve_sandboxed_image_path(image_path) if mode in IMAGE_PATH_USES else None
-    if mode == "text":
-        return text_search_with_rewrite(query, top_k=top_k)
-    if mode == "text-to-image":
-        return backend.search_text_to_image(query=query, top_k=top_k)
-    if mode == "image-to-image":
-        if sandboxed_image is None:
-            raise ValueError("image_path required for image-to-image")
-        return backend.search_image(image_path=sandboxed_image, top_k=top_k)
-    # hybrid (default) — funnel through the rewrite wrapper so the
-    # master switch in Settings.query_rewrite_enabled takes effect here
-    # without each caller (api.py / cli.py) having to opt in.
-    return hybrid_search_with_rewrite(query, image_path=sandboxed_image, top_k=top_k)
+    )
 
 
 # ─── Enums ──────────────────────────────────────────────────────────────
