@@ -37,6 +37,7 @@ from typing import Any
 
 import requests
 
+from . import provider_security
 from .settings import get_settings
 
 log = logging.getLogger(__name__)
@@ -122,12 +123,8 @@ def _vlm_chat_json(
     if creds is None:
         raise RuntimeError("VLM is not configured (missing base_url/api_key/model)")
     base_url, api_key, model = creds
-    try:
-        from .answer import _warn_insecure_base_url
-
-        _warn_insecure_base_url(base_url)
-    except Exception:  # pragma: no cover - never block ingestion
-        pass
+    with contextlib.suppress(Exception):
+        provider_security.warn_insecure_base_url(base_url)
 
     prompt = prompt_override or DEFAULT_IMAGE_PROMPT
     user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt + "\n" + text}]

@@ -24,10 +24,12 @@ returning the pre-rerank merged hits. A programming bug (``TypeError`` /
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from threading import Lock
 
+from .. import provider_security
 from ..schema import SearchHit
 from ..settings import get_settings
 
@@ -394,14 +396,9 @@ class HttpRerankApiReranker(Reranker):
             raise ValueError(f"unknown rerank wire form {form!r}")
         # Reuse the project's insecure-URL guard so a plain-HTTP non-loopback
         # ``reranker_api_base`` warns once about Bearer key in cleartext — same
-        # pattern as auto_meta / contextual / image_caption. Deferred import
-        # to avoid an import cycle through ``answer``.
-        try:
-            from ..answer import _warn_insecure_base_url
-
-            _warn_insecure_base_url(api_base)
-        except Exception:  # pragma: no cover — never let the warning block rerank
-            pass
+        # pattern as auto_meta / contextual / image_caption.
+        with contextlib.suppress(Exception):
+            provider_security.warn_insecure_base_url(api_base)
         import requests
 
         # Provider-specific wire shape. Both end at ``results[].{index,

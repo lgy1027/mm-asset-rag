@@ -648,6 +648,15 @@ def test_iter_sync_in_thread_streams_incrementally() -> None:
     assert rest == ["b"]
 
 
+def test_stream_bridge_is_bounded() -> None:
+    import asyncio
+
+    from mm_asset_rag.api_streaming import _iter_sync_in_thread
+
+    bridge = asyncio.run(_iter_sync_in_thread(lambda: iter(["a"])))
+    assert bridge.maxsize == 64
+
+
 def test_iter_sync_in_thread_stop_signals_producer() -> None:
     """Setting ``bridge.stop`` lets the producer exit between yields.
 

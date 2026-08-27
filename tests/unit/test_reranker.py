@@ -12,7 +12,7 @@ Covers the three contracts ``hybrid_search`` depends on:
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -421,6 +421,27 @@ def _fake_nested_response(rows):
     resp.json.return_value = {"output": {"results": rows}, "request_id": "x"}
     resp.raise_for_status.return_value = None
     return resp
+
+
+def test_reranker_uses_shared_provider_security(monkeypatch):
+    from mm_asset_rag import provider_security
+
+    warn = Mock()
+    monkeypatch.setattr(provider_security, "warn_insecure_base_url", warn)
+    reranker = HttpRerankApiReranker()
+    monkeypatch.setattr(
+        reranker,
+        "_config",
+        lambda: ("https://example.test/v1/rerank", "model", "flat", "key", 1.0),
+    )
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *args, **kwargs: _fake_response([{"index": 0, "relevance_score": 0.5}]),
+    )
+
+    reranker._score_text_pairs("q", ["doc"])
+
+    warn.assert_called_once()
 
 
 def test_http_rerank_reorders_results_by_index(tmp_home, monkeypatch):
@@ -948,12 +969,12 @@ def test_http_reranker_warns_insecure_base_url(tmp_home, monkeypatch, caplog):
     monkeypatch.setenv("RERANKER_API_BASE", "http://insecure.example.test/v1/rerank")
     monkeypatch.setenv("RERANKER_API_KEY", "sk-test")
     reset_reranker()
-    from mm_asset_rag.answer import _warned_insecure_base_urls
+    from mm_asset_rag.provider_security import _warned_insecure_base_urls
 
     _warned_insecure_base_urls.clear()  # warn fresh this run (set is process-global)
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mm_asset_rag.answer")
+    caplog.set_level(logging.WARNING, logger="mm_asset_rag.provider_security")
     reranker = HttpRerankApiReranker()
     with patch(
         "requests.post", return_value=_fake_response([{"index": 0, "relevance_score": 0.5}])
@@ -971,12 +992,12 @@ def test_http_reranker_loopback_base_not_warned(tmp_home, monkeypatch, caplog):
     monkeypatch.setenv("RERANKER_API_BASE", "http://localhost:8080/v1/rerank")
     monkeypatch.setenv("RERANKER_API_KEY", "sk-test")
     reset_reranker()
-    from mm_asset_rag.answer import _warned_insecure_base_urls
+    from mm_asset_rag.provider_security import _warned_insecure_base_urls
 
     _warned_insecure_base_urls.clear()
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mm_asset_rag.answer")
+    caplog.set_level(logging.WARNING, logger="mm_asset_rag.provider_security")
     reranker = HttpRerankApiReranker()
     with patch(
         "requests.post", return_value=_fake_response([{"index": 0, "relevance_score": 0.5}])

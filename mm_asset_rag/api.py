@@ -18,9 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import queue
-import re
-import threading
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
@@ -30,14 +27,28 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field, field_validator, model_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
 
 from .__init__ import __version__
 from .answer import answer_question, stream_answer_chunks
+from .api_models import (
+    AnswerRequest,
+    ChatRequest,
+    EvalRequest,
+    SearchRequest,
+    UploadConfirmRequest,
+    _RouteRequest,
+)
+from .api_models import UploadEdit as UploadEdit
+from .api_security import _resolve_trusted_hosts, require_token
+from .api_streaming import (
+    _STREAM_DONE,
+    _iter_sync_in_thread,
+    _safe_stream_error,
+)
+from .api_streaming import _STREAM_ERR_MAX_CHARS as _STREAM_ERR_MAX_CHARS
 from .backends.qdrant_backend import (
     get_qdrant_client,
 )
@@ -89,70 +100,7 @@ app = FastAPI(
 # (/answer, /chat … — they spend provider quota) require a bearer / X-API-Key
 # token; unset = zero-config loopback. Read endpoints stay open.
 
-_DEFAULT_TRUSTED_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
-
-
-def _resolve_trusted_hosts() -> list[str]:
-    raw = get_settings().mmrag_trusted_hosts
-    if raw is None or raw.strip() == "":
-        return _DEFAULT_TRUSTED_HOSTS
-    hosts = [h.strip() for h in raw.split(",") if h.strip()]
-    return hosts or _DEFAULT_TRUSTED_HOSTS
-
-
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=_resolve_trusted_hosts())
-
-
-# Both header schemes resolve to the same token; either is accepted so the
-# client can use whichever its HTTP library makes ergonomic. ``auto_error``
-# is False so the dependency (not Starlette) controls the 401 — that lets an
-# unset token keep the endpoint open (zero-config) rather than always 403.
-_TOKEN_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
-_BEARER_HEADER = APIKeyHeader(name="Authorization", auto_error=False, scheme_name="bearer")
-
-
-def _extract_bearer(value: str | None) -> str | None:
-    """Pull the token out of an ``Authorization: Bearer <t>`` header."""
-    if not value:
-        return None
-    parts = value.split(None, 1)
-    if len(parts) == 2 and parts[0].lower() == "bearer":
-        return parts[1].strip()
-    return None
-
-
-def require_token(
-    x_api_key: str | None = Depends(_TOKEN_HEADER),
-    authorization: str | None = Depends(_BEARER_HEADER),
-) -> None:
-    """Dependency: reject the request unless it carries the configured token.
-
-    When ``MMRAG_API_TOKEN`` is unset the dependency is a no-op — the
-    loopback default stays zero-config. When set, a request missing the
-    token (or carrying the wrong one) gets 401. Constant-time comparison
-    avoids a timing oracle on the token.
-    """
-    expected = get_settings().mmrag_api_token
-    # An empty / whitespace token is treated as "unset" (no auth) — a
-    # misconfigured ``MMRAG_API_TOKEN=`` must not silently read as "enabled
-    # with empty token" (which would let any request through via
-    # compare_digest("", "")).
-    if not expected or not expected.strip():
-        return  # auth disabled — zero-config loopback default
-    provided = x_api_key or _extract_bearer(authorization)
-    if not provided or not _const_time_eq(provided, expected):
-        raise HTTPException(
-            status_code=401,
-            detail="missing or invalid API token (set Authorization: Bearer <token> or X-API-Key)",
-            headers={"WWW-Authenticate": 'Bearer realm="mmrag"'},
-        )
-
-
-def _const_time_eq(a: str, b: str) -> bool:
-    """Constant-time string compare to avoid a token timing oracle."""
-    import hmac
-
-    return hmac.compare_digest(a.encode(), b.encode())
 
 
 # ─── Request body size limit ─────────────────────────────────────────────
@@ -233,42 +181,6 @@ from .service import TaskRecord  # noqa: E402, F401
 WEB_DIR = Path(__file__).resolve().parent / "web"
 
 
-# ─── Request / response models ───────────────────────────────────────────
-
-
-def _validate_image_path(value: str | None) -> str | None:
-    """Reject absolute paths / ``..`` traversal on user-supplied ``image_path``.
-
-    ``dispatch_search`` re-resolves the path against ``assets_dir``, but
-    bouncing clearly bad input at the API boundary gives the client a
-    proper 422 instead of a 500 once the filesystem call fails.
-    """
-    if value is None:
-        return value
-    if not value.strip():
-        return value
-    raw = Path(value)
-    if raw.is_absolute() or ".." in raw.parts:
-        raise ValueError("image_path must be a relative path inside assets/")
-    return value
-
-
-def _validate_cases_path(value: str | None) -> str | None:
-    """Lightweight request-time guard: reject absolute / ``..`` / non-.json
-    ``cases_path`` with 422 before the handler runs. Full resolution +
-    existence check is :func:`mm_asset_rag.paths.resolve_cases_path` (shared
-    with the CLI) — this only bounces clearly-bad shapes early."""
-    if value is None:
-        return value
-    raw = Path(value).expanduser()
-    if raw.is_absolute() or ".." in raw.parts:
-        raise ValueError("cases_path must be a relative path inside eval_cases/")
-    suffix = raw.suffix.lower()
-    if suffix and suffix != ".json":
-        raise ValueError("cases_path must point at a .json file")
-    return value
-
-
 def _resolve_cases_path(value: str | None) -> str | Path | None:
     """Resolve a validated ``cases_path`` to an on-disk path inside
     ``eval_cases/`` or the repo ``examples/`` dir. ``None`` passes through
@@ -284,162 +196,6 @@ def _resolve_cases_path(value: str | None) -> str | Path | None:
     except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return None if resolved is None else str(resolved)
-
-
-class _RouteRequest(BaseModel):
-    """Shared fields for ``SearchRequest`` and ``ChatRequest``.
-
-    Both endpoints expose the same routing surface: ``mode``, an
-    optional ``image_path``, and a ``top_k``. Pulling them onto a base
-    keeps the validator in one place so a change (e.g. adding a new
-    mode) lands in both endpoints instead of drift-creeping.
-    """
-
-    mode: str = Field(default="hybrid", pattern="^(text|text-to-image|image-to-image|hybrid)$")
-    image_path: str | None = Field(default=None, max_length=1024)
-    top_k: int = Field(default=5, ge=1, le=200)
-
-    @field_validator("image_path")
-    @classmethod
-    def _check_image_path(cls, v: str | None) -> str | None:
-        return _validate_image_path(v)
-
-
-class SearchRequest(_RouteRequest):
-    query: str = Field(..., min_length=1, max_length=2000)
-
-
-class AnswerRequest(BaseModel):
-    question: str = Field(..., min_length=1, max_length=2000)
-    top_k: int = Field(default=5, ge=1, le=200)
-
-
-class EvalRequest(BaseModel):
-    top_k: int = Field(default=5, ge=1, le=200)
-    v2: bool = Field(
-        default=False,
-        description=(
-            "Run the v2 regression set (multi-dimensional, Chinese-primary) "
-            "instead of v1. Default is v1."
-        ),
-    )
-    answer_quality: bool = Field(
-        default=False,
-        description=(
-            "Run the answer-quality eval (coverage + citation + LLM-judge "
-            "faithfulness) instead of v1 / v2 retrieval. Writes "
-            "eval_report_answer.json. Text→text cases only in v0; image-"
-            "route cases raise ValueError. Faithfulness is skipped when "
-            "no LLM creds are configured."
-        ),
-    )
-    cases_path: str | None = Field(
-        default=None,
-        description=(
-            "Optional relative path to a case JSON inside eval_cases/ "
-            "(or examples/), overriding the default "
-            "(Settings.EVAL_CASES_PATH → the bundled sample). Same "
-            "schema as ``mmrag eval --cases``."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _v2_xor_answer_quality(self) -> EvalRequest:
-        # Mutex at the Pydantic layer → FastAPI returns 422 with a clean
-        # message instead of letting both branches race for top_k +
-        # cases_path and write conflicting reports.
-        if self.v2 and self.answer_quality:
-            raise ValueError("v2 and answer_quality are mutually exclusive")
-        return self
-
-    @field_validator("cases_path")
-    @classmethod
-    def _check_cases_path(cls, v: str | None) -> str | None:
-        return _validate_cases_path(v)
-
-
-class ChatRequest(_RouteRequest):
-    question: str = Field(..., min_length=1, max_length=2000)
-
-
-class UploadEdit(BaseModel):
-    preview_id: str
-    title: str | None = None
-    tags: list[str] | str | None = None
-    description: str | None = None
-    rejected: bool = False
-
-
-# How much of an exception's string we surface in a streamed ``error``
-# event. Streaming endpoints (``/chat/stream``, ``/tasks/{id}/stream``)
-# send ``{"event": "error", "message": str(exc)}`` to the client; a raw
-# ``str(exc)`` from ``requests`` / the OpenAI SDK commonly embeds the full
-# request URL (and thus the ``OPENAI_BASE_URL`` / ``VLM_BASE_URL`` host,
-# occasionally an inlined userinfo ``https://user:pass@host/...``) and a
-# slice of the upstream response body. We strip URLs and cap the length so
-# the error stays actionable without leaking provider topology or creds.
-_STREAM_ERR_MAX_CHARS = 240
-_URL_RE = re.compile(r"https?://[^\s\"'<>]+")
-# ``requests.exceptions.ConnectionError`` / ``ReadTimeout`` render as e.g.
-# ``HTTPSConnectionPool(host='api.openai.com', port=443): Read timed out.``
-# — the host appears quoted with no ``http(s)://`` prefix, so ``_URL_RE``
-# alone misses it. Strip both the ``host='...'`` form and bare ``host:port``.
-_HOST_QUOTED_RE = re.compile(r"\bhost='([^']+)'")
-_HOSTPORT_RE = re.compile(r"\b([a-z0-9][a-z0-9.-]*):(\d{2,5})\b")
-
-
-def _provider_hosts() -> set[str]:
-    """Hosts parsed from the configured LLM/VLM base URLs.
-
-    Used to scrub bare host mentions (``Connection to api.openai.com timed
-    out``) that the URL/host:port regexes miss. Reading settings here is
-    safe: ``_safe_stream_error`` is only called from streaming endpoints,
-    not at import time.
-    """
-    from urllib.parse import urlparse
-
-    hosts: set[str] = set()
-    try:
-        s = get_settings()
-        for base in (s.openai_base_url, s.vlm_base_url, s.embedding_base_url):
-            if base:
-                h = urlparse(base).hostname
-                if h:
-                    hosts.add(h)
-    except Exception:
-        pass
-    return hosts
-
-
-def _safe_stream_error(exc: BaseException) -> str:
-    """Render ``exc`` for a streamed error event without leaking URLs/hosts.
-
-    Strips any ``http(s)://...`` substring (provider base URLs, inlined
-    userinfo) and the ``host='...'`` / ``host:port`` forms that
-    ``requests``' connection errors use, takes the first line, and caps the
-    length. Non-ASCII is preserved (Chinese error text), but control
-    characters are dropped.
-
-    Additionally substitutes the configured LLM/VLM provider hosts (parsed
-    from ``OPENAI_BASE_URL`` / ``VLM_BASE_URL``) wherever they appear —
-    ``requests``' ``ConnectionError`` renders the host bare (``Connection
-    to api.openai.com timed out``) with no URL prefix, so the regexes above
-    miss it. Matching the exact configured host avoids the false-positive
-    risk of a generic bare-host regex.
-    """
-    msg = str(exc)
-    msg = _URL_RE.sub("<url>", msg)
-    msg = _HOST_QUOTED_RE.sub("host=<host>", msg)
-    msg = _HOSTPORT_RE.sub("<host>:<port>", msg)
-    for host in _provider_hosts():
-        if host:
-            msg = msg.replace(host, "<host>")
-    first_line = msg.splitlines()[0] if msg else ""
-    # Strip control chars except tab/newline (already single-line).
-    first_line = "".join(c for c in first_line if c >= " " or c == "\t")
-    if len(first_line) > _STREAM_ERR_MAX_CHARS:
-        first_line = first_line[:_STREAM_ERR_MAX_CHARS] + "…"
-    return first_line or f"{type(exc).__name__}: <no message>"
 
 
 def _main_text(request: _RouteRequest) -> str:
@@ -472,11 +228,6 @@ def _run_search(request: _RouteRequest) -> list[object]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-class UploadConfirmRequest(BaseModel):
-    cache_id: str
-    edits: list[UploadEdit] = Field(default_factory=list)
 
 
 # ─── Endpoints ──────────────────────────────────────────────────────────
@@ -619,80 +370,6 @@ async def chat(
         "answer": answer,
         "sources": [h.__dict__ for h in hits],
     }
-
-
-# Sentinel pushed onto the bridge queue to signal "no more items" (either the
-# sync generator finished or the worker thread exited, normally or via error).
-_STREAM_DONE: object = object()
-
-
-async def _iter_sync_in_thread(factory, *args, **kwargs) -> asyncio.Queue:
-    """Bridge a *sync* generator into the event loop as an ``async`` queue.
-
-    ``factory(*args, **kwargs)`` returns a fresh sync generator (called inside
-    the worker thread so any blocking setup — e.g. the OpenAI SDK's first
-    HTTP read — runs off the loop). Each yielded item is pushed onto a
-    ``queue.Queue``; the consumer awaits ``queue.get`` via ``to_thread`` so it
-    stays responsive to client disconnects (``asyncio.CancelledError``).
-
-    This is the fix for the previous "buffer-all" ``chat_stream``: it ran
-    ``list(stream_answer_chunks(...))`` in one ``to_thread`` call, so the
-    client saw its first token only after the *entire* LLM response finished
-    — defeating the NDJSON streaming contract and burning LLM tokens after a
-    mid-stream client disconnect (the sync ``list(...)`` couldn't be cancelled).
-
-    Returns the queue; the caller iterates it until it sees ``_STREAM_DONE``.
-    On cancellation the caller drops the queue and the orphaned worker exits
-    on its next ``put``. The queue is **bounded** (maxsize 64): a slow client
-    (or one that stopped reading) can't let a fast LLM stream buffer an
-    unbounded response in memory. When the queue is full the worker waits
-    up to 0.5s per put, re-checking ``stop`` so a client disconnect still
-    unblocks it promptly rather than blocking forever. The worker is a
-    daemon thread, so a runaway producer that ignores ``stop`` is reaped
-    at process exit rather than pinning the loop forever.
-    """
-    out: queue.Queue = queue.Queue(maxsize=64)
-    stop = threading.Event()
-
-    def _put_terminal(item) -> None:
-        """Put the sentinel / error without ever blocking.
-
-        On a client disconnect the consumer stops draining, so the queue
-        may be full. A blocking ``put`` here would hang the daemon thread
-        forever (and pin the 64-item buffer until process exit). Drop
-        silently instead — nobody is listening anymore.
-        """
-        with suppress(queue.Full):
-            out.put_nowait(item)
-
-    def _worker():
-        try:
-            for item in factory(*args, **kwargs):
-                if stop.is_set():
-                    return
-                # Bounded put: if the consumer fell behind, wait but keep
-                # checking stop so a client disconnect unblocks us.
-                while not stop.is_set():
-                    try:
-                        out.put(item, timeout=0.5)
-                        break
-                    except queue.Full:
-                        continue
-                else:
-                    return  # stop was set during the wait
-        except BaseException as exc:  # surface producer errors to the consumer
-            _put_terminal(exc)
-        finally:
-            _put_terminal(_STREAM_DONE)
-
-    t = threading.Thread(target=_worker, daemon=True, name="chat-stream-producer")
-    t.start()
-
-    # Give the caller a handle to signal cancellation. Stashed on the queue
-    # object so the gen() closure below can reach it without a closure var.
-    out.stop = stop  # type: ignore[attr-defined]
-    out.thread = t  # type: ignore[attr-defined]
-    return out
 
 
 @app.post("/chat/stream")

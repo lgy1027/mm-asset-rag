@@ -34,10 +34,12 @@ behavior. Nothing here raises.
 
 from __future__ import annotations
 
+import contextlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from . import provider_security
 from .paths import get_parsed_dir
 from .settings import get_settings
 
@@ -155,12 +157,8 @@ def _caption_one(asset_id: str, image_rel_path: str) -> str:
     base_url, api_key, model = s.vlm_creds
     if not base_url or not api_key or not model:
         return ""
-    try:
-        from .answer import _warn_insecure_base_url
-
-        _warn_insecure_base_url(base_url)
-    except Exception:  # pragma: no cover - never block captioning
-        pass
+    with contextlib.suppress(Exception):
+        provider_security.warn_insecure_base_url(base_url)
     try:
         image_base64 = base64.b64encode(abs_path.read_bytes()).decode("ascii")
         suffix = abs_path.suffix.lower().replace(".", "") or "png"
