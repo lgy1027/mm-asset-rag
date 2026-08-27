@@ -75,9 +75,7 @@ def test_ensure_image_registered_swallows_unavailable(monkeypatch, capsys) -> No
     def _raise_unavailable() -> None:
         raise ImageEmbeddingUnavailable("[clip] not installed")
 
-    monkeypatch.setattr(
-        "mm_asset_rag.embedders.build_default_image_embedder", _raise_unavailable
-    )
+    monkeypatch.setattr("mm_asset_rag.embedders.build_default_image_embedder", _raise_unavailable)
 
     _ensure_image_registered()
     captured = capsys.readouterr()

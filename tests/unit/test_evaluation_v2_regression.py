@@ -39,6 +39,7 @@ from mm_asset_rag.evaluation_v2 import (
     run_text_to_text_eval_v2,
 )
 from mm_asset_rag.schema import SearchHit
+from mm_asset_rag.search_service import SearchCommand
 
 # Mock asset_ids spanning the bundled default v2 case set (zh_on_en +
 # en_on_en + negative) plus a distractor. Each expected bare title has a
@@ -75,9 +76,9 @@ GOLDEN_QUERIES: dict[str, list[str]] = {
 }
 
 
-def _stub_search_fn(query: str, top_k: int) -> list[SearchHit]:
-    """Return canned results for the golden queries, or empty otherwise."""
-    actuals = GOLDEN_QUERIES.get(query, [])
+def _stub_search_fn(command: SearchCommand) -> list[SearchHit]:
+    """Return canned results for a transport-neutral search command."""
+    actuals = GOLDEN_QUERIES.get(command.query, [])
     return [
         SearchHit(
             route="mock_text",
@@ -88,7 +89,7 @@ def _stub_search_fn(query: str, top_k: int) -> list[SearchHit]:
             source_path="",
             evidence="",
         )
-        for i, aid in enumerate(actuals[:top_k])
+        for i, aid in enumerate(actuals[: command.top_k])
     ]
 
 
@@ -182,8 +183,8 @@ def test_text_to_image_runner_absent_group_returns_empty() -> None:
     the contract ``mmrag eval --v2`` relies on by default.
     """
 
-    def _t2i_stub(query: str, top_k: int) -> list[SearchHit]:
-        return _stub_search_fn(query, top_k)
+    def _t2i_stub(command: SearchCommand) -> list[SearchHit]:
+        return _stub_search_fn(command)
 
     results = run_text_to_image_eval_v2(top_k=5, search_fn=_t2i_stub, full_ids=MOCK_FULL_IDS)
     assert results == []
