@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from mm_asset_rag.protocols import Embedder, Parser
@@ -86,6 +89,57 @@ def test_registry_compound_key():
     reg.register(("b", "1"), "z")
     assert len(reg) == 3
     assert reg.get(("a", "1")) == "x"
+
+
+def _run_fresh_python(script: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_search_service_default_bootstraps_backend_in_fresh_interpreter() -> None:
+    result = _run_fresh_python(
+        """
+from mm_asset_rag import registry
+from mm_asset_rag.protocols import SearchBackend
+from mm_asset_rag.search_service import SearchService
+
+assert registry.backends.keys() == []
+service = SearchService()
+assert service._backend.name == "qdrant"
+assert isinstance(service._backend, SearchBackend)
+"""
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_hybrid_search_default_bootstraps_backend_in_fresh_interpreter() -> None:
+    result = _run_fresh_python(
+        """
+from mm_asset_rag import registry, retrieval
+
+assert registry.backends.keys() == []
+original_get = registry.backends.get
+
+def offline_get(name):
+    backend = original_get(name)
+    assert backend.name == "qdrant"
+    backend.search_text = lambda *, query, top_k: []
+    backend.search_text_to_image = lambda *, query, top_k: []
+    backend.search_image = lambda *, image_path, top_k: []
+    return backend
+
+registry.backends.get = offline_get
+retrieval.get_default_reranker = lambda: None
+assert retrieval.hybrid_search("probe", top_k=1) == []
+"""
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 # ─── Protocol structural typing ─────────────────────────────────────────

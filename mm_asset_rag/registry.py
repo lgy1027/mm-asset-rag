@@ -89,4 +89,8 @@ def get_embedder(modality: str, name: str) -> Embedder:
 
 
 def get_backend(name: str) -> VectorBackend:
+    if name not in backends:
+        from .backends import register_builtin_backends
+
+        register_builtin_backends()
     return backends.get(name)

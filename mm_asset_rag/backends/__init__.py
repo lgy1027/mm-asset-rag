@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+from ..registry import backends as backend_registry
 from ..registry import register_backend
 from .qdrant import QdrantBackend
 
-register_backend(QdrantBackend())
 
-__all__ = ["QdrantBackend"]
+def register_builtin_backends() -> None:
+    """Ensure the built-in adapters are present in the backend registry."""
+    if "qdrant" not in backend_registry:
+        register_backend(QdrantBackend())
+
+
+register_builtin_backends()
+
+__all__ = ["QdrantBackend", "register_builtin_backends"]
