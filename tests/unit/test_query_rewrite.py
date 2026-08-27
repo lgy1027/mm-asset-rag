@@ -415,11 +415,11 @@ def test_dispatch_search_text_uses_text_rewrite_wrapper(monkeypatch) -> None:
     text_calls: list[tuple] = []
     hybrid_calls: list[tuple] = []
 
-    def _fake_text(query, *, top_k=5, min_score=None):
+    def _fake_text(query, *, top_k=5, min_score=None, backend=None):
         text_calls.append((query, top_k, min_score))
         return []
 
-    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None, backend=None):
         hybrid_calls.append((query, image_path, top_k, min_score))
         return []
 
@@ -454,7 +454,7 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
 
     rewrite_calls: list[tuple] = []
 
-    def _fake_rewrite(query, *, image_path=None, top_k=5, min_score=None):
+    def _fake_rewrite(query, *, image_path=None, top_k=5, min_score=None, backend=None):
         rewrite_calls.append((query, image_path, top_k, min_score))
         return []
 
@@ -492,7 +492,7 @@ def test_dispatch_search_hybrid_uses_rewrite_when_enabled(monkeypatch) -> None:
 
     rewrite_calls: list[tuple] = []
 
-    def _fake_rewrite(query, *, image_path=None, top_k=5, min_score=None):
+    def _fake_rewrite(query, *, image_path=None, top_k=5, min_score=None, backend=None):
         rewrite_calls.append((query, image_path, top_k, min_score))
         return []
 

@@ -11,12 +11,19 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from mm_asset_rag.backends import qdrant_backend
+from mm_asset_rag.backends.qdrant import client as qdrant_client
+from mm_asset_rag.backends.qdrant import collections as qdrant_collections
+from mm_asset_rag.backends.qdrant import indexing as qdrant_indexing
+from mm_asset_rag.backends.qdrant import search as qdrant_search
 from mm_asset_rag.backends.qdrant_backend import (
     _bm25_okapi_scores,
     _filter_by_relevance,
     _select_top_chunks_per_pdf,
     _tokenize_for_bm25,
 )
+from mm_asset_rag.protocols import IndexBackend, SearchBackend
+from mm_asset_rag.registry import get_backend
 from mm_asset_rag.schema import ParsedDocument
 
 
@@ -25,6 +32,19 @@ def _doc(text: str, asset_id: str, title: str | None = None) -> ParsedDocument:
         text=text,
         metadata={"asset_id": asset_id, "asset_title": title or asset_id},
     )
+
+
+def test_registered_qdrant_backend_implements_search_and_index_ports() -> None:
+    backend = get_backend("qdrant")
+
+    assert isinstance(backend, SearchBackend)
+    assert isinstance(backend, IndexBackend)
+
+
+def test_legacy_qdrant_text_search_reexports_adapter_implementation(monkeypatch) -> None:
+    monkeypatch.setattr(qdrant_search, "text_search", lambda query, top_k=5: ["hit"])
+
+    assert qdrant_backend.qdrant_text_search("needle") == ["hit"]
 
 
 # ─── _tokenize_for_bm25 ─────────────────────────────────────────────────
@@ -234,17 +254,16 @@ def test_qdrant_text_search_filter_excludes_image_keeps_pdf_and_document(monkeyp
         captured["filter"] = kwargs.get("text_filter")
         return []
 
-    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _fake_hybrid)
+    monkeypatch.setattr(qdrant_search, "_hybrid_text_query", _fake_hybrid)
+    monkeypatch.setattr(qdrant_search, "get_qdrant_client", MagicMock)
     # Stub the embedder + bm25 helpers so no network / model is touched.
-    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_embed_bm25", lambda texts: [{"indices": [], "values": []}])
     monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+        qdrant_search, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
     )
-    monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
-    )
-    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
-    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
     qdrant_backend.qdrant_text_search("query", top_k=5, include_image_sources=False)
 
@@ -267,16 +286,15 @@ def test_qdrant_text_search_no_filter_when_include_image_sources(monkeypatch) ->
         captured["filter"] = kwargs.get("text_filter")
         return []
 
-    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _fake_hybrid)
-    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_hybrid_text_query", _fake_hybrid)
+    monkeypatch.setattr(qdrant_search, "get_qdrant_client", MagicMock)
+    monkeypatch.setattr(qdrant_search, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_embed_bm25", lambda texts: [{"indices": [], "values": []}])
     monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+        qdrant_search, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
     )
-    monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
-    )
-    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
-    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
     qdrant_backend.qdrant_text_search("query", top_k=5, include_image_sources=True)
     assert captured["filter"] is None
@@ -297,7 +315,7 @@ def test_get_qdrant_client_returns_singleton(tmp_path, monkeypatch) -> None:
 
     # Redirect indexes_dir so the test uses a private storage location.
     monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant_backend.get_indexes_dir",
+        "mm_asset_rag.backends.qdrant.client.get_indexes_dir",
         lambda: tmp_path / "indexes",
     )
     qdrant_backend.reset_qdrant_client_cache()
@@ -315,7 +333,7 @@ def test_get_qdrant_client_resets_after_reset(tmp_path, monkeypatch) -> None:
     from mm_asset_rag.backends import qdrant_backend
 
     monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant_backend.get_indexes_dir",
+        "mm_asset_rag.backends.qdrant.client.get_indexes_dir",
         lambda: tmp_path / "indexes",
     )
     qdrant_backend.reset_qdrant_client_cache()
@@ -446,16 +464,15 @@ def test_qdrant_text_search_degrades_when_collection_missing(monkeypatch) -> Non
     def _raise_not_found(*args, **kwargs):
         raise ValueError("Collection `multimodal_text_2560d` not found")
 
-    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _raise_not_found)
-    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_hybrid_text_query", _raise_not_found)
+    monkeypatch.setattr(qdrant_search, "get_qdrant_client", MagicMock)
+    monkeypatch.setattr(qdrant_search, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_embed_bm25", lambda texts: [{"indices": [], "values": []}])
     monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+        qdrant_search, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
     )
-    monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
-    )
-    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
-    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
     assert qdrant_backend.qdrant_text_search("query", top_k=5) == []
 
@@ -467,16 +484,15 @@ def test_qdrant_text_search_re_raises_non_missing_value_error(monkeypatch) -> No
     def _raise_other(*args, **kwargs):
         raise ValueError("totally unrelated error")
 
-    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _raise_other)
-    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_hybrid_text_query", _raise_other)
+    monkeypatch.setattr(qdrant_search, "get_qdrant_client", MagicMock)
+    monkeypatch.setattr(qdrant_search, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_embed_bm25", lambda texts: [{"indices": [], "values": []}])
     monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+        qdrant_search, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
     )
-    monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
-    )
-    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
-    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
     with pytest.raises(ValueError, match="unrelated"):
         qdrant_backend.qdrant_text_search("query", top_k=5)
@@ -498,16 +514,15 @@ def test_qdrant_text_search_degrades_on_remote_404(monkeypatch) -> None:
             status_code=404, reason_phrase="Not Found", content=b"", headers={}
         )
 
-    monkeypatch.setattr(qdrant_backend, "_hybrid_text_query", _raise_remote_404)
-    monkeypatch.setattr(qdrant_backend, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_hybrid_text_query", _raise_remote_404)
+    monkeypatch.setattr(qdrant_search, "get_qdrant_client", MagicMock)
+    monkeypatch.setattr(qdrant_search, "get_default_text_embedder", lambda: _NoSparseEmbedder())
+    monkeypatch.setattr(qdrant_search, "_embed_bm25", lambda texts: [{"indices": [], "values": []}])
     monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25", lambda texts: [{"indices": [], "values": []}]
+        qdrant_search, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
     )
-    monkeypatch.setattr(
-        qdrant_backend, "_embed_bm25_zh_query", lambda q: {"indices": [], "values": []}
-    )
-    monkeypatch.setattr(qdrant_backend, "_embedder_sparse_capability", lambda e: False)
-    monkeypatch.setattr(qdrant_backend, "_embedder_colbert_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
+    monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
     assert qdrant_backend.qdrant_text_search("query", top_k=5) == []
 
@@ -521,14 +536,14 @@ def test_qdrant_image_to_image_search_degrades_when_collection_missing(
     fake_qdrant_client.query_points.side_effect = ValueError(
         "Collection `multimodal_image_512d` not found"
     )
-    monkeypatch.setattr(qdrant_backend, "get_qdrant_client", lambda: fake_qdrant_client)
-    monkeypatch.setattr(qdrant_backend, "image_collection", lambda dim: "multimodal_image_512d")
+    monkeypatch.setattr(qdrant_search, "get_qdrant_client", lambda: fake_qdrant_client)
+    monkeypatch.setattr(qdrant_search, "image_collection", lambda dim: "multimodal_image_512d")
 
     class _Provider:
         def embed_image(self, path):
             return [0.1, 0.2, 0.3]
 
-    monkeypatch.setattr(qdrant_backend, "get_default_image_embedder", lambda: _Provider())
+    monkeypatch.setattr(qdrant_search, "get_default_image_embedder", lambda: _Provider())
 
     assert qdrant_backend.qdrant_image_to_image_search(Path("any.png"), top_k=5) == []
 
@@ -539,15 +554,13 @@ def test_qdrant_image_to_image_search_returns_empty_when_query_image_unencodable
     """image→image 查询图无法编码时直接返回 [],不打 qdrant。"""
     from mm_asset_rag.backends import qdrant_backend
 
-    monkeypatch.setattr(qdrant_backend, "get_qdrant_client", lambda: fake_qdrant_client)
+    monkeypatch.setattr(qdrant_search, "get_qdrant_client", lambda: fake_qdrant_client)
 
     class _UnencodableProvider:
         def embed_image(self, path):
             return None  # ImageEmbedderProtocol 契约:无法编码 → None
 
-    monkeypatch.setattr(
-        qdrant_backend, "get_default_image_embedder", lambda: _UnencodableProvider()
-    )
+    monkeypatch.setattr(qdrant_search, "get_default_image_embedder", lambda: _UnencodableProvider())
 
     assert qdrant_backend.qdrant_image_to_image_search(Path("bad.png"), top_k=5) == []
     # 没去 qdrant 查
@@ -602,18 +615,18 @@ def test_invalidate_bm25_zh_idf_cache_clears_cache() -> None:
     from mm_asset_rag.backends import qdrant_backend
 
     # Seed the cache with a sentinel (mtime, table) pair; the function drops it.
-    qdrant_backend._BM25_ZH_IDF_CACHE = (1234567890, {"sentinel": 1.0})
+    qdrant_indexing._BM25_ZH_IDF_CACHE = (1234567890, {"sentinel": 1.0})
     qdrant_backend.invalidate_bm25_zh_idf_cache()
-    assert qdrant_backend._BM25_ZH_IDF_CACHE is None
+    assert qdrant_indexing._BM25_ZH_IDF_CACHE is None
 
 
 def test_invalidate_bm25_zh_idf_cache_idempotent_on_none() -> None:
     """Invalidating when the cache is already None is a no-op."""
     from mm_asset_rag.backends import qdrant_backend
 
-    qdrant_backend._BM25_ZH_IDF_CACHE = None
+    qdrant_indexing._BM25_ZH_IDF_CACHE = None
     qdrant_backend.invalidate_bm25_zh_idf_cache()
-    assert qdrant_backend._BM25_ZH_IDF_CACHE is None
+    assert qdrant_indexing._BM25_ZH_IDF_CACHE is None
 
 
 def test_load_bm25_zh_idf_rereads_when_file_mtime_changes(tmp_path, monkeypatch) -> None:
@@ -625,15 +638,13 @@ def test_load_bm25_zh_idf_rereads_when_file_mtime_changes(tmp_path, monkeypatch)
     import os
     import time
 
-    from mm_asset_rag.backends import qdrant_backend
-
     idf_path = tmp_path / "bm25_zh_idf.json"
-    monkeypatch.setattr(qdrant_backend, "get_indexes_dir", lambda: tmp_path)
+    monkeypatch.setattr(qdrant_indexing, "get_indexes_dir", lambda: tmp_path)
 
     # v1 on disk.
     idf_path.write_text('{"v1": 1.0}', encoding="utf-8")
-    qdrant_backend._BM25_ZH_IDF_CACHE = None
-    assert qdrant_backend._load_bm25_zh_idf() == {"v1": 1.0}
+    qdrant_indexing._BM25_ZH_IDF_CACHE = None
+    assert qdrant_indexing._load_bm25_zh_idf() == {"v1": 1.0}
 
     # Ensure the next write gets a distinct mtime_ns (same-ns rewrite on a
     # fast disk would otherwise mask the change). Bump mtime explicitly.
@@ -641,18 +652,17 @@ def test_load_bm25_zh_idf_rereads_when_file_mtime_changes(tmp_path, monkeypatch)
     t = time.time() + 5
     os.utime(idf_path, (t, t))
     # No invalidate() call — the mtime change alone must force a re-read.
-    assert qdrant_backend._load_bm25_zh_idf() == {"v2": 2.0}
+    assert qdrant_indexing._load_bm25_zh_idf() == {"v2": 2.0}
 
 
 def test_load_bm25_zh_idf_returns_none_when_file_missing(tmp_path, monkeypatch) -> None:
     """A missing IDF file yields None and drops any stale cache rather than
     returning a stale table."""
-    from mm_asset_rag.backends import qdrant_backend
 
-    monkeypatch.setattr(qdrant_backend, "get_indexes_dir", lambda: tmp_path)
-    qdrant_backend._BM25_ZH_IDF_CACHE = (999, {"stale": 1.0})
-    assert qdrant_backend._load_bm25_zh_idf() is None
-    assert qdrant_backend._BM25_ZH_IDF_CACHE is None
+    monkeypatch.setattr(qdrant_indexing, "get_indexes_dir", lambda: tmp_path)
+    qdrant_indexing._BM25_ZH_IDF_CACHE = (999, {"stale": 1.0})
+    assert qdrant_indexing._load_bm25_zh_idf() is None
+    assert qdrant_indexing._BM25_ZH_IDF_CACHE is None
 
 
 # ─── get_qdrant_client local→remote switch closes local client ───────────
@@ -683,13 +693,13 @@ def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
     # Pretend we already cached a local client (simulating a prior
     # local-mode call) — populate the module globals directly.
     monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant_backend.get_indexes_dir",
+        "mm_asset_rag.backends.qdrant.client.get_indexes_dir",
         lambda: tmp_path / "indexes",
     )
     qdrant_backend.reset_qdrant_client_cache()
     fake_local = _FakeLocalClient()
-    qdrant_backend._QDRANT_CLIENT = fake_local
-    qdrant_backend._QDRANT_CLIENT_KEY = str(tmp_path / "indexes" / "qdrant")
+    qdrant_client._QDRANT_CLIENT = fake_local
+    qdrant_client._QDRANT_CLIENT_KEY = str(tmp_path / "indexes" / "qdrant")
 
     # Configure remote mode.
     monkeypatch.setenv("QDRANT_URL", "http://example:6333")
@@ -707,9 +717,7 @@ def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
         def close(self) -> None:  # pragma: no cover — never called here
             pass
 
-    import mm_asset_rag.backends.qdrant_backend as qb
-
-    monkeypatch.setattr(qb, "QdrantClient", _FakeRemoteClient)
+    monkeypatch.setattr(qdrant_client, "QdrantClient", _FakeRemoteClient)
 
     try:
         client = qdrant_backend.get_qdrant_client()
@@ -724,8 +732,8 @@ def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
     # A new remote client was constructed.
     assert constructed == ["http://example:6333"]
     # The module-level cache is cleared (local client no longer held).
-    assert qdrant_backend._QDRANT_CLIENT is None
-    assert qdrant_backend._QDRANT_CLIENT_KEY is None
+    assert qdrant_client._QDRANT_CLIENT is None
+    assert qdrant_client._QDRANT_CLIENT_KEY is None
     # Returned client is the freshly constructed remote one.
     assert isinstance(client, _FakeRemoteClient)
 
@@ -735,7 +743,7 @@ def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> N
     from mm_asset_rag.backends import qdrant_backend
 
     monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant_backend.get_indexes_dir",
+        "mm_asset_rag.backends.qdrant.client.get_indexes_dir",
         lambda: None,  # not used in remote branch
     )
     qdrant_backend.reset_qdrant_client_cache()
@@ -753,9 +761,7 @@ def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> N
         def close(self) -> None:  # pragma: no cover
             pass
 
-    import mm_asset_rag.backends.qdrant_backend as qb
-
-    monkeypatch.setattr(qb, "QdrantClient", _FakeRemoteClient)
+    monkeypatch.setattr(qdrant_client, "QdrantClient", _FakeRemoteClient)
     try:
         qdrant_backend.get_qdrant_client()
     finally:
@@ -764,7 +770,7 @@ def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> N
         get_settings.cache_clear()
 
     assert constructed == ["http://example:6333"]
-    assert qdrant_backend._QDRANT_CLIENT is None
+    assert qdrant_client._QDRANT_CLIENT is None
 
 
 # ─── delete_points_by_asset_id: dim-suffixed collection resolution ──────
@@ -801,7 +807,7 @@ def test_delete_points_resolves_dim_suffixed_collections(monkeypatch, tmp_home):
     client = _mock_client_with_collections(
         ["multimodal_text_1024d", "multimodal_image_768d", "other_coll"]
     )
-    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
 
     counts = qb.delete_points_by_asset_id("asset_x")
 
@@ -821,7 +827,7 @@ def test_delete_points_handles_no_matching_collection(monkeypatch, tmp_home):
     import mm_asset_rag.backends.qdrant_backend as qb
 
     client = _mock_client_with_collections(["unrelated_one", "unrelated_two"])
-    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
 
     counts = qb.delete_points_by_asset_id("asset_x")
 
@@ -840,7 +846,7 @@ def test_delete_points_respects_active_collection_override(monkeypatch, tmp_home
     monkeypatch.setenv("QDRANT_ACTIVE_IMAGE_COLLECTION", "my_pinned_image")
 
     client = _mock_client_with_collections(["multimodal_text_1024d"])  # real ones present
-    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
 
     qb.delete_points_by_asset_id("asset_x")
 
@@ -857,7 +863,7 @@ def test_delete_points_empty_asset_id_returns_zero(monkeypatch, tmp_home):
     import mm_asset_rag.backends.qdrant_backend as qb
 
     client = _mock_client_with_collections(["multimodal_text_1024d"])
-    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
 
     assert qb.delete_points_by_asset_id("") == {"text": 0, "image": 0}
     client.get_collections.assert_not_called()
@@ -871,7 +877,7 @@ def test_delete_points_continues_after_collection_failure(monkeypatch, tmp_home,
     client = _mock_client_with_collections(["multimodal_text_1024d", "multimodal_text_768d"])
     # First delete call raises, second succeeds.
     client.delete.side_effect = [RuntimeError("boom"), None]
-    monkeypatch.setattr(qb, "get_qdrant_client", lambda: client)
+    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
 
     counts = qb.delete_points_by_asset_id("asset_x")
 

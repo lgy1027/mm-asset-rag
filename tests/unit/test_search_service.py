@@ -32,13 +32,15 @@ def test_execute_forwards_per_call_min_score_to_text_and_hybrid_rewrite(monkeypa
     monkeypatch.setattr(
         search_service,
         "text_search_with_rewrite",
-        lambda query, *, top_k, min_score: calls.append(("text", query, top_k, min_score)) or [],
+        lambda query, *, top_k, min_score, backend: (
+            calls.append(("text", query, top_k, min_score, backend)) or []
+        ),
     )
     monkeypatch.setattr(
         search_service,
         "hybrid_search_with_rewrite",
-        lambda query, *, image_path, top_k, min_score: (
-            calls.append(("hybrid", query, image_path, top_k, min_score)) or []
+        lambda query, *, image_path, top_k, min_score, backend: (
+            calls.append(("hybrid", query, image_path, top_k, min_score, backend)) or []
         ),
     )
     search = SearchService(backend=backend)
@@ -49,8 +51,8 @@ def test_execute_forwards_per_call_min_score_to_text_and_hybrid_rewrite(monkeypa
     )
     assert search.execute(SearchCommand(query="needle", top_k=2, min_score=0.02)) == []
     assert calls == [
-        ("text", "needle", 3, 0.01),
-        ("hybrid", "needle", None, 2, 0.02),
+        ("text", "needle", 3, 0.01, backend),
+        ("hybrid", "needle", None, 2, 0.02, backend),
     ]
 
 

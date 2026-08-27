@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 
 from .paths import get_assets_dir
+from .protocols import SearchBackend
 from .query_rewrite import hybrid_search_with_rewrite, text_search_with_rewrite
 from .registry import get_backend
 from .schema import SearchHit
@@ -69,7 +70,7 @@ def coerce_search_mode(mode: str | SearchMode) -> SearchMode:
 class SearchService:
     """Execute typed retrieval commands through the active search backend."""
 
-    def __init__(self, backend: object | None = None) -> None:
+    def __init__(self, backend: SearchBackend | None = None) -> None:
         self._backend = backend if backend is not None else get_backend("qdrant")
 
     def execute(self, command: SearchCommand) -> list[SearchHit]:
@@ -84,6 +85,7 @@ class SearchService:
                 command.query,
                 top_k=command.top_k,
                 min_score=command.min_score,
+                backend=self._backend,
             )
         if mode is SearchMode.TEXT_TO_IMAGE:
             return self._backend.search_text_to_image(query=command.query, top_k=command.top_k)
@@ -96,6 +98,7 @@ class SearchService:
             image_path=image_path,
             top_k=command.top_k,
             min_score=command.min_score,
+            backend=self._backend,
         )
 
 

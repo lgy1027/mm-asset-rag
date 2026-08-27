@@ -7,6 +7,8 @@ plumbing end-to-end without a live embedder or backend.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from mm_asset_rag import retrieval
@@ -133,7 +135,10 @@ def test_parse_intent_weights_rejects_negative(caplog) -> None:
         # CSV shape
         assert _parse_intent_weights_json("-0.5,0.2,0.15") is None
         # JSON shape
-        assert _parse_intent_weights_json('{"text":-1,"text_to_image":0.2,"image_to_image":0.15}') is None
+        assert (
+            _parse_intent_weights_json('{"text":-1,"text_to_image":0.2,"image_to_image":0.15}')
+            is None
+        )
     # And the warning was logged at least once.
     assert any("must be non-negative" in rec.message for rec in caplog.records)
 
@@ -219,18 +224,12 @@ def test_weights_for_intent_no_settings() -> None:
 @pytest.fixture
 def _stub_qdrant(monkeypatch):
     """Pin the three Qdrant backends to empty / canned hits for hybrid_search tests."""
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_search",
-        lambda query, top_k=5, **_: [_make_hit("a", "qdrant_text", 1.0)],
+    backend = SimpleNamespace(
+        search_text=lambda *, query, top_k: [_make_hit("a", "qdrant_text", 1.0)],
+        search_text_to_image=lambda *, query, top_k: [_make_hit("b", "qdrant_text_to_image", 1.0)],
+        search_image=lambda *, image_path, top_k: [_make_hit("c", "qdrant_image_to_image", 1.0)],
     )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
-        lambda query, top_k=5, **_: [_make_hit("b", "qdrant_text_to_image", 1.0)],
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_image_to_image_search",
-        lambda path, top_k=5: [_make_hit("c", "qdrant_image_to_image", 1.0)],
-    )
+    monkeypatch.setattr("mm_asset_rag.registry.get_backend", lambda name: backend)
 
 
 def test_hybrid_search_picks_weights_per_intent(monkeypatch, fixed_vector, _stub_qdrant) -> None:
@@ -296,22 +295,17 @@ def test_hybrid_search_image_to_image_weight_uses_intent(monkeypatch, fixed_vect
     settings = retrieval.get_settings()
     monkeypatch.setattr(settings, "reranker_enabled", False)
 
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_search",
-        lambda query, top_k=5, **_: [],
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
-        lambda query, top_k=5, **_: [],
-    )
-
     called = {"i2i": 0}
 
-    def _track(path, top_k=5):
+    def _track(*, image_path, top_k):
         called["i2i"] += 1
         return []
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.qdrant_image_to_image_search", _track)
+    backend = SimpleNamespace(
+        search_text=lambda *, query, top_k: [],
+        search_text_to_image=lambda *, query, top_k: [],
+        search_image=_track,
+    )
 
     # IntentWeights with image_to_image=0 — even with an image_path, the route
     # must NOT be called (mirrors the historical `weight<=0` skip behaviour).
@@ -319,7 +313,12 @@ def test_hybrid_search_image_to_image_weight_uses_intent(monkeypatch, fixed_vect
 
     from pathlib import Path
 
-    retrieval.hybrid_search("anything", image_path=Path("/tmp/none.png"), weights_override=override)
+    retrieval.hybrid_search(
+        "anything",
+        image_path=Path("/tmp/none.png"),
+        weights_override=override,
+        backend=backend,
+    )
     assert called["i2i"] == 0
 
 

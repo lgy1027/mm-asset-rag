@@ -11,6 +11,7 @@ Covers the three contracts ``hybrid_search`` depends on:
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -197,12 +198,13 @@ def test_hybrid_search_skips_rerank_when_disabled(tmp_home, monkeypatch):
     get_settings.cache_clear()
 
     fake_hits = [_hit("X", "doc", score=0.8)]
-    with (
-        patch("mm_asset_rag.retrieval.qdrant_text_search", return_value=fake_hits),
-        patch("mm_asset_rag.retrieval.qdrant_text_to_image_search", return_value=[]),
-        patch("mm_asset_rag.embedders.reranker.Reranker.rerank") as mock_rerank,
-    ):
-        out = hybrid_search("query", top_k=5)
+    backend = SimpleNamespace(
+        search_text=lambda *, query, top_k: fake_hits,
+        search_text_to_image=lambda *, query, top_k: [],
+        search_image=lambda *, image_path, top_k: [],
+    )
+    with patch("mm_asset_rag.embedders.reranker.Reranker.rerank") as mock_rerank:
+        out = hybrid_search("query", top_k=5, backend=backend)
     # merge_hits may add a "routes" key to metadata; compare by identity of
     # the surviving hit rather than full equality.
     assert len(out) == 1
@@ -223,9 +225,15 @@ def test_hybrid_search_reranks_when_enabled(tmp_home, monkeypatch):
     pool = [_hit(f"P{i}", f"doc {i}", score=0.5) for i in range(20)]
     captured_fetch_k = {}
 
-    def fake_text_search(query, top_k):
+    def fake_text_search(*, query, top_k):
         captured_fetch_k["value"] = top_k
         return pool
+
+    backend = SimpleNamespace(
+        search_text=fake_text_search,
+        search_text_to_image=lambda *, query, top_k: [],
+        search_image=lambda *, image_path, top_k: [],
+    )
 
     # The reranker's rerank picks the first 5 of its input (we just verify
     # the wiring: fetch_k=20, rerank was called, output sliced to 5).
@@ -235,11 +243,9 @@ def test_hybrid_search_reranks_when_enabled(tmp_home, monkeypatch):
 
     with (
         patch.object(Reranker, "_dep_available", return_value=True),
-        patch("mm_asset_rag.retrieval.qdrant_text_search", side_effect=fake_text_search),
-        patch("mm_asset_rag.retrieval.qdrant_text_to_image_search", return_value=[]),
         patch.object(Reranker, "_load", return_value=FakeCE()),
     ):
-        out = hybrid_search("query", top_k=5)
+        out = hybrid_search("query", top_k=5, backend=backend)
 
     # Fetched the wider candidate pool, not just top_k=5
     assert captured_fetch_k["value"] == 20

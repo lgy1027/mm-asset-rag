@@ -52,13 +52,16 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 
 from .retrieval import hybrid_search, merge_hits
 from .schema import SearchHit
 from .settings import Settings, get_settings
+
+if TYPE_CHECKING:
+    from .protocols import SearchBackend
 
 log = logging.getLogger(__name__)
 
@@ -320,7 +323,9 @@ def rewrite_query(
 # ─── Public: multi_query_search ────────────────────────────────────────
 
 
-def _search_one(args: tuple[str, Path | None, int, float | None]) -> list[SearchHit]:
+def _search_one(
+    args: tuple[str, Path | None, int, float | None, SearchBackend | None],
+) -> list[SearchHit]:
     """Worker for the thread pool: run ``hybrid_search`` for one variant.
 
     Module-level (not a lambda) so the worker is picklable across
@@ -328,8 +333,15 @@ def _search_one(args: tuple[str, Path | None, int, float | None]) -> list[Search
     be top-level named functions, not lambdas. Returns the raw hits
     (no top_k slicing here; the caller merges and re-slices).
     """
-    query, image_path, top_k, min_score = args
-    return hybrid_search(query, image_path=image_path, top_k=top_k, min_score=min_score)
+    query, image_path, top_k, min_score, backend = args
+    kwargs = {
+        "image_path": image_path,
+        "top_k": top_k,
+        "min_score": min_score,
+    }
+    if backend is not None:
+        kwargs["backend"] = backend
+    return hybrid_search(query, **kwargs)
 
 
 def multi_query_search(
@@ -339,6 +351,7 @@ def multi_query_search(
     image_path: Path | None = None,
     min_score: float | None = None,
     n_parallel: int = 4,
+    backend: SearchBackend | None = None,
 ) -> list[SearchHit]:
     """Run :func:`hybrid_search` for each variant, fuse via rank-based RRF.
 
@@ -359,8 +372,8 @@ def multi_query_search(
         image_path: Optional image query for the image-to-image route.
             When ``N > 1``, the image-to-image route is computed **once**
             (variants don't change CLIP cosine) and added as a single
-            group instead of being replicated N times — avoids N× CLIP
-            encode + N× Qdrant round-trip waste.
+            group instead of being replicated N times — avoids Nx CLIP
+            encode + Nx Qdrant round-trip waste.
         min_score: Forwarded to ``hybrid_search`` per variant and to the
             RRF merge. None lets each layer pick its own default
             (settings.min_score).
@@ -379,12 +392,14 @@ def multi_query_search(
         # Avoid the pool overhead for the trivial case — the
         # ``query_rewrite_enabled=False`` path lands here after
         # ``rewrite_query`` returns ``[query]``.
-        return hybrid_search(
-            queries[0],
-            image_path=image_path,
-            top_k=top_k,
-            min_score=min_score,
-        )
+        kwargs = {
+            "image_path": image_path,
+            "top_k": top_k,
+            "min_score": min_score,
+        }
+        if backend is not None:
+            kwargs["backend"] = backend
+        return hybrid_search(queries[0], **kwargs)
 
     # Cap pool size at the number of variants; threads beyond that
     # number just sit idle. Floor at 1 so a 0 / negative ``n_parallel``
@@ -394,16 +409,18 @@ def multi_query_search(
     # Image-to-image dedup: the CLIP cosine match is invariant to text
     # variants, so ``image_path`` produces the same i2i hits for every
     # variant. Run it once outside the pool and reuse as a single RRF
-    # group, otherwise we'd pay N× CLIP encode + N× Qdrant round-trip
+    # group, otherwise we'd pay Nx CLIP encode + Nx Qdrant round-trip
     # for nothing. Single-query path keeps i2i inline inside
     # ``hybrid_search`` so behaviour is byte-identical for that case.
     groups: list[list[SearchHit]] = []
     weights: list[float] = []
     if image_path is not None:
-        from .registry import get_backend
+        if backend is None:
+            from .registry import get_backend
 
+            backend = get_backend("qdrant")
         try:
-            i2i_hits = get_backend("qdrant").search_image(image_path=image_path, top_k=top_k)
+            i2i_hits = backend.search_image(image_path=image_path, top_k=top_k)
         except Exception as exc:
             log.warning("multi_query_search i2i fetch failed (%s): %s", type(exc).__name__, exc)
             i2i_hits = []
@@ -413,7 +430,7 @@ def multi_query_search(
 
     # Per-variant text search: skip the image side (``image_path=None``)
     # because we already pulled i2i once above.
-    args_list = [(q, None, top_k, min_score) for q in queries]
+    args_list = [(q, None, top_k, min_score, backend) for q in queries]
 
     # Use ``as_completed`` + per-future ``result()`` so a single variant's
     # exception (Qdrant 5xx, reranker load failure, timeout) is logged and
@@ -436,7 +453,9 @@ def multi_query_search(
             except Exception as exc:
                 log.warning(
                     "multi_query_search variant failed (query=%r, %s): %s",
-                    variant_q, type(exc).__name__, exc,
+                    variant_q,
+                    type(exc).__name__,
+                    exc,
                 )
                 variant_hits[idx] = []
 
@@ -461,6 +480,7 @@ def hybrid_search_with_rewrite(
     image_path: Path | None = None,
     top_k: int = 5,
     min_score: float | None = None,
+    backend: SearchBackend | None = None,
 ) -> list[SearchHit]:
     """Top-level wrapper combining rewrite + multi-query fusion.
 
@@ -478,28 +498,28 @@ def hybrid_search_with_rewrite(
     """
     settings = get_settings()
     queries = rewrite_query(query, settings=settings)
-    return multi_query_search(
-        queries,
-        top_k=top_k,
-        image_path=image_path,
-        min_score=min_score,
-        n_parallel=settings.query_rewrite_concurrency,
-    )
+    kwargs = {
+        "top_k": top_k,
+        "image_path": image_path,
+        "min_score": min_score,
+        "n_parallel": settings.query_rewrite_concurrency,
+    }
+    if backend is not None:
+        kwargs["backend"] = backend
+    return multi_query_search(queries, **kwargs)
 
 
 # ─── Public: text_search_with_rewrite ──────────────────────────────────
 
 
-def _text_search_one(args: tuple[str, int]) -> list[SearchHit]:
+def _text_search_one(args: tuple[str, int, SearchBackend]) -> list[SearchHit]:
     """Worker for the text-route thread pool — runs ``backend.search_text``.
 
     Module-level (not a lambda) so the worker is picklable across thread
     boundaries; mirrors :func:`_search_one` for the hybrid path.
     """
-    from .registry import get_backend
-
-    query, top_k = args
-    return get_backend("qdrant").search_text(query=query, top_k=top_k)
+    query, top_k, backend = args
+    return backend.search_text(query=query, top_k=top_k)
 
 
 def _multi_query_text(
@@ -508,6 +528,7 @@ def _multi_query_text(
     top_k: int,
     n_parallel: int = 4,
     min_score: float | None = None,
+    backend: SearchBackend | None = None,
 ) -> list[SearchHit]:
     """Run ``backend.search_text`` for each variant, fuse via rank-based RRF.
 
@@ -526,10 +547,12 @@ def _multi_query_text(
     """
     if not queries:
         return []
-    if len(queries) == 1:
+    if backend is None:
         from .registry import get_backend
 
-        return get_backend("qdrant").search_text(query=queries[0], top_k=top_k)
+        backend = get_backend("qdrant")
+    if len(queries) == 1:
+        return backend.search_text(query=queries[0], top_k=top_k)
 
     workers = max(1, min(int(n_parallel), len(queries)))
 
@@ -540,7 +563,7 @@ def _multi_query_text(
     # ``pool.map`` → ``as_completed`` migration.
     from concurrent.futures import as_completed
 
-    args_list = [(q, top_k) for q in queries]
+    args_list = [(q, top_k, backend) for q in queries]
     variant_hits: list[list[SearchHit] | None] = [None] * len(args_list)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="qr-text") as pool:
         future_to_idx = {pool.submit(_text_search_one, args): i for i, args in enumerate(args_list)}
@@ -552,7 +575,9 @@ def _multi_query_text(
             except Exception as exc:
                 log.warning(
                     "_multi_query_text variant failed (query=%r, %s): %s",
-                    variant_q, type(exc).__name__, exc,
+                    variant_q,
+                    type(exc).__name__,
+                    exc,
                 )
                 variant_hits[idx] = []
 
@@ -566,6 +591,7 @@ def text_search_with_rewrite(
     *,
     top_k: int = 5,
     min_score: float | None = None,
+    backend: SearchBackend | None = None,
 ) -> list[SearchHit]:
     """Single-route text wrapper for the rewrite path.
 
@@ -587,9 +613,11 @@ def text_search_with_rewrite(
     """
     settings = get_settings()
     queries = rewrite_query(query, settings=settings)
-    return _multi_query_text(
-        queries,
-        top_k=top_k,
-        n_parallel=settings.query_rewrite_concurrency,
-        min_score=min_score,
-    )
+    kwargs = {
+        "top_k": top_k,
+        "n_parallel": settings.query_rewrite_concurrency,
+        "min_score": min_score,
+    }
+    if backend is not None:
+        kwargs["backend"] = backend
+    return _multi_query_text(queries, **kwargs)

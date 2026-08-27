@@ -13,6 +13,10 @@ from __future__ import annotations
 import pytest
 from qdrant_client import models
 
+from mm_asset_rag.backends.qdrant import search as qdrant_search
+from mm_asset_rag.backends.qdrant_backend import RRF_K
+from mm_asset_rag.settings import Settings
+
 # Weighted RRF (``Rrf(weights=[...])``) was added in qdrant-client 1.17.
 # We pin to 1.16.2 for wire-format compatibility with Qdrant server
 # 1.16.x; the weighted-RRF tests below therefore skip on that line.
@@ -21,10 +25,6 @@ requires_rrf_weights = pytest.mark.skipif(
     not _qdrant_supports_rrf_weights,
     reason="qdrant-client 1.16.x has no Rrf.weights field (added in 1.17)",
 )
-
-from mm_asset_rag.backends import qdrant_backend
-from mm_asset_rag.backends.qdrant_backend import RRF_K
-from mm_asset_rag.settings import Settings
 
 
 class _StubClient:
@@ -64,10 +64,10 @@ def test_uniform_weights_use_fusion_query(monkeypatch) -> None:
     s.rrf_weight_dense = 1.0
     s.rrf_weight_bm25 = 1.0
     s.rrf_weight_bm25_zh = 1.0
-    monkeypatch.setattr(qdrant_backend, "get_settings", lambda: s)
+    monkeypatch.setattr(qdrant_search, "get_settings", lambda: s)
 
     client = _StubClient()
-    qdrant_backend._hybrid_text_query(client, "coll", [0.1, 0.2], _sv(), None, top_k=5)
+    qdrant_search._hybrid_text_query(client, "coll", [0.1, 0.2], _sv(), None, top_k=5)
     assert isinstance(client.last_kwargs["query"], models.FusionQuery)
 
 
@@ -84,10 +84,10 @@ def test_non_uniform_weights_use_rrf_query(monkeypatch) -> None:
     s.rrf_weight_dense = 1.5
     s.rrf_weight_bm25 = 1.0
     s.rrf_weight_bm25_zh = 1.0
-    monkeypatch.setattr(qdrant_backend, "get_settings", lambda: s)
+    monkeypatch.setattr(qdrant_search, "get_settings", lambda: s)
 
     client = _StubClient()
-    qdrant_backend._hybrid_text_query(client, "coll", [0.1, 0.2], _sv(), None, top_k=5)
+    qdrant_search._hybrid_text_query(client, "coll", [0.1, 0.2], _sv(), None, top_k=5)
     q = client.last_kwargs["query"]
     assert isinstance(q, models.RrfQuery)
     assert q.rrf.weights == [1.5, 1.0]
@@ -106,10 +106,10 @@ def test_weights_length_matches_prefetch_count(monkeypatch) -> None:
     s.rrf_weight_dense = 1.5  # non-uniform → forces RrfQuery path
     s.rrf_weight_bm25 = 1.0
     s.rrf_weight_bm25_zh = 2.0  # ignored: no zh prefetch in this call
-    monkeypatch.setattr(qdrant_backend, "get_settings", lambda: s)
+    monkeypatch.setattr(qdrant_search, "get_settings", lambda: s)
 
     client = _StubClient()
-    qdrant_backend._hybrid_text_query(client, "coll", [0.1, 0.2], _sv(), None, top_k=5)
+    qdrant_search._hybrid_text_query(client, "coll", [0.1, 0.2], _sv(), None, top_k=5)
     q = client.last_kwargs["query"]
     assert isinstance(q, models.RrfQuery)
     # Only dense + bm25_en prefetches exist → exactly 2 weights.
@@ -124,11 +124,11 @@ def test_weights_are_positional_to_prefetches(monkeypatch) -> None:
     s.rrf_weight_dense = 0.7
     s.rrf_weight_bm25 = 1.2
     s.rrf_weight_bm25_zh = 2.0
-    monkeypatch.setattr(qdrant_backend, "get_settings", lambda: s)
+    monkeypatch.setattr(qdrant_search, "get_settings", lambda: s)
 
     client = _StubClient()
     # Provide a Chinese sparse vector so all 3 prefetches participate.
-    qdrant_backend._hybrid_text_query(
+    qdrant_search._hybrid_text_query(
         client, "coll", [0.1, 0.2], _sv(), _sv(indices=(5, 6), values=(0.5, 0.5)), top_k=5
     )
     q = client.last_kwargs["query"]

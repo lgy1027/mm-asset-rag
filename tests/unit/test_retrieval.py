@@ -6,11 +6,14 @@ hits so the merge / RRF fusion logic can be exercised offline.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from mm_asset_rag import retrieval
-from mm_asset_rag.backends.qdrant_backend import RRF_K
 from mm_asset_rag.schema import SearchHit
+
+RRF_K = retrieval.RRF_K
 
 
 def _make_hit(asset_id: str, route: str, score: float, source_type: str = "pdf") -> SearchHit:
@@ -22,6 +25,19 @@ def _make_hit(asset_id: str, route: str, score: float, source_type: str = "pdf")
         source_type=source_type,
         source_path=f"{asset_id}.pdf",
         evidence=f"evidence-for-{asset_id}",
+    )
+
+
+def _search_backend(
+    *,
+    text_hits: list[SearchHit] | None = None,
+    text_to_image_hits: list[SearchHit] | None = None,
+    search_image=None,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        search_text=lambda *, query, top_k: list(text_hits or []),
+        search_text_to_image=lambda *, query, top_k: list(text_to_image_hits or []),
+        search_image=search_image or (lambda *, image_path, top_k: []),
     )
 
 
@@ -181,16 +197,11 @@ def test_hybrid_search_forwards_min_score(monkeypatch, fixed_vector) -> None:
     RRF scores are tiny (~0.0164 for rank 1). The default ``min_score=0.0``
     keeps everything; a floor above the top hit's RRF score drops all.
     """
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_search",
-        lambda query, top_k=5, **_: [
+    backend = _search_backend(
+        text_hits=[
             _make_hit("a", "qdrant_text", 1.0),
             _make_hit("b", "qdrant_text", 0.3),
         ],
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
-        lambda query, top_k=5, **_: [],
     )
     settings = retrieval.get_settings()
     monkeypatch.setattr(settings, "hybrid_weight_text", 0.8)
@@ -200,17 +211,17 @@ def test_hybrid_search_forwards_min_score(monkeypatch, fixed_vector) -> None:
 
     # Default 0.0 keeps both a (rank 1) and b (rank 2).
     monkeypatch.setattr(settings, "min_score", 0.0)
-    hits = retrieval.hybrid_search("anything")
+    hits = retrieval.hybrid_search("anything", backend=backend)
     assert {h.asset_id for h in hits} == {"a", "b"}
 
     # Floor above a's RRF score drops everything.
     a_score = 0.8 / (RRF_K + 1)
     monkeypatch.setattr(settings, "min_score", a_score + 0.001)
-    hits = retrieval.hybrid_search("anything")
+    hits = retrieval.hybrid_search("anything", backend=backend)
     assert hits == []
 
 
-def test_hybrid_search_uses_qdrant_backend(monkeypatch, fixed_vector) -> None:
+def test_hybrid_search_uses_search_backend_port(monkeypatch, fixed_vector) -> None:
     text_hits = [_make_hit("a", "qdrant_text", 0.9)]
     text_to_image_hits = [_make_hit("b", "qdrant_text_to_image", 0.7)]
 
@@ -218,20 +229,13 @@ def test_hybrid_search_uses_qdrant_backend(monkeypatch, fixed_vector) -> None:
     settings = retrieval.get_settings()
     monkeypatch.setattr(settings, "reranker_enabled", False)
 
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_search",
-        lambda query, top_k=5: text_hits,
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
-        lambda query, top_k=5: text_to_image_hits,
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_image_to_image_search",
-        lambda path, top_k=5: [],
+    backend = SimpleNamespace(
+        search_text=lambda *, query, top_k: text_hits,
+        search_text_to_image=lambda *, query, top_k: text_to_image_hits,
+        search_image=lambda *, image_path, top_k: [],
     )
 
-    hits = retrieval.hybrid_search("anything")
+    hits = retrieval.hybrid_search("anything", backend=backend)
     assert {hit.asset_id for hit in hits} == {"a", "b"}
 
 
@@ -243,13 +247,9 @@ def test_hybrid_search_uses_settings_weights(monkeypatch, fixed_vector) -> None:
     settings = retrieval.get_settings()
     monkeypatch.setattr(settings, "reranker_enabled", False)
 
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_search",
-        lambda query, top_k=5: text_hits,
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
-        lambda query, top_k=5: text_to_image_hits,
+    backend = _search_backend(
+        text_hits=text_hits,
+        text_to_image_hits=text_to_image_hits,
     )
 
     captured: dict[str, list[float]] = {}
@@ -268,7 +268,7 @@ def test_hybrid_search_uses_settings_weights(monkeypatch, fixed_vector) -> None:
     monkeypatch.setattr(settings, "hybrid_weight_text", 0.70)
     monkeypatch.setattr(settings, "hybrid_weight_text_to_image", 0.30)
 
-    retrieval.hybrid_search("anything")
+    retrieval.hybrid_search("anything", backend=backend)
 
     assert captured["weights"] == [0.70, 0.30]
 
@@ -281,22 +281,17 @@ def test_hybrid_search_skips_image_route_when_weight_zero(monkeypatch, fixed_vec
     settings = retrieval.get_settings()
     monkeypatch.setattr(settings, "reranker_enabled", False)
 
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_search",
-        lambda query, top_k=5: text_hits,
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
-        lambda query, top_k=5: text_to_image_hits,
-    )
-
     called = {"i2i": 0}
 
-    def _track(path, top_k=5):
+    def _track(*, image_path, top_k):
         called["i2i"] += 1
         return []
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.qdrant_image_to_image_search", _track)
+    backend = _search_backend(
+        text_hits=text_hits,
+        text_to_image_hits=text_to_image_hits,
+        search_image=_track,
+    )
 
     from pathlib import Path
 
@@ -304,7 +299,7 @@ def test_hybrid_search_skips_image_route_when_weight_zero(monkeypatch, fixed_vec
     # supplied, the route should be skipped to avoid wasted round-trips.
     monkeypatch.setattr(settings, "hybrid_weight_image_to_image", 0.0)
 
-    retrieval.hybrid_search("q", image_path=Path("/tmp/nonexistent.png"))
+    retrieval.hybrid_search("q", image_path=Path("/tmp/nonexistent.png"), backend=backend)
 
     assert called["i2i"] == 0
 
@@ -314,28 +309,23 @@ def test_hybrid_search_calls_image_route_when_weight_positive(monkeypatch, fixed
     settings = retrieval.get_settings()
     monkeypatch.setattr(settings, "reranker_enabled", False)
 
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_search",
-        lambda query, top_k=5: [_make_hit("a", "qdrant_text", 1.0)],
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
-        lambda query, top_k=5: [_make_hit("b", "qdrant_text_to_image", 1.0)],
-    )
-
     called = {"i2i": 0}
 
-    def _track(path, top_k=5):
+    def _track(*, image_path, top_k):
         called["i2i"] += 1
         return [_make_hit("c", "qdrant_image_to_image", 1.0)]
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.qdrant_image_to_image_search", _track)
+    backend = _search_backend(
+        text_hits=[_make_hit("a", "qdrant_text", 1.0)],
+        text_to_image_hits=[_make_hit("b", "qdrant_text_to_image", 1.0)],
+        search_image=_track,
+    )
 
     from pathlib import Path
 
     monkeypatch.setattr(settings, "hybrid_weight_image_to_image", 0.10)
 
-    retrieval.hybrid_search("q", image_path=Path("/tmp/nonexistent.png"))
+    retrieval.hybrid_search("q", image_path=Path("/tmp/nonexistent.png"), backend=backend)
 
     assert called["i2i"] == 1
 
@@ -346,24 +336,16 @@ def test_hybrid_search_default_image_to_image_weight_is_positive(monkeypatch, fi
     assert settings.hybrid_weight_image_to_image == 0.15
     monkeypatch.setattr(settings, "reranker_enabled", False)
 
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_search",
-        lambda query, top_k=5: [],
-    )
-    monkeypatch.setattr(
-        "mm_asset_rag.retrieval.qdrant_text_to_image_search",
-        lambda query, top_k=5: [],
-    )
     called = {"i2i": 0}
 
-    def _track(path, top_k=5):
+    def _track(*, image_path, top_k):
         called["i2i"] += 1
         return []
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.qdrant_image_to_image_search", _track)
+    backend = _search_backend(search_image=_track)
 
     from pathlib import Path
 
     # Use the default weight (don't monkeypatch it).
-    retrieval.hybrid_search("q", image_path=Path("/tmp/nonexistent.png"))
+    retrieval.hybrid_search("q", image_path=Path("/tmp/nonexistent.png"), backend=backend)
     assert called["i2i"] == 1

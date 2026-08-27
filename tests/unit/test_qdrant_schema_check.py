@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mm_asset_rag.backends import qdrant_backend as qb
+from mm_asset_rag.backends.qdrant import collections as qb
 from mm_asset_rag.settings import Settings
 
 

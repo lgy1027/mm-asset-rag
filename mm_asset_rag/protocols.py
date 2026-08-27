@@ -1,8 +1,8 @@
 """Pluggable extension points for ``mm-asset-rag``.
 
-Three Protocol classes describe the contract each backend / parser / embedder
-must satisfy. The runtime ``Registry`` (in ``registry.py``) provides a
-single source of truth for what implementations are available.
+Capability Protocols describe the contracts each backend / parser / embedder
+may satisfy. The runtime ``Registry`` (in ``registry.py``) provides a single
+source of truth for what implementations are available.
 
 Adding a new modality (e.g. audio) is a three-line change in this codebase:
 
@@ -115,7 +115,58 @@ class ImageEmbedderProtocol(Protocol):
     def embed_image_batch(self, paths: list[Path]) -> list[list[float] | None]: ...
 
 
-# ─── VectorBackend ───────────────────────────────────────────────────────
+# ─── Backend capabilities ────────────────────────────────────────────────
+
+
+@runtime_checkable
+class SearchBackend(Protocol):
+    """Backend capability required by the retrieval application service."""
+
+    name: str
+
+    def search_text(self, *, query: str, top_k: int) -> list[object]: ...
+
+    def search_text_to_image(self, *, query: str, top_k: int) -> list[object]: ...
+
+    def search_image(self, *, image_path: Path, top_k: int) -> list[object]: ...
+
+
+@runtime_checkable
+class IndexBackend(Protocol):
+    """Backend capability required by ingest and collection lifecycle workflows."""
+
+    name: str
+
+    def ensure_collection(
+        self,
+        *,
+        name: str,
+        dim: int,
+        sparse: bool = False,
+    ) -> None: ...
+
+    def drop_collection(self, name: str) -> None: ...
+
+    def upsert(
+        self,
+        *,
+        collection: str,
+        points: list[object],
+        wait: bool = True,
+    ) -> int: ...
+
+    def retrieve_existing_ids(self, *, collection: str, ids: list[str]) -> set[str]: ...
+
+    def upsert_text(
+        self, *, progress_cb: object | None = None, force_recreate: bool = False
+    ) -> tuple[int, str]: ...
+
+    def upsert_image(
+        self, *, progress_cb: object | None = None, force_recreate: bool = False
+    ) -> tuple[int, str]: ...
+
+
+# ─── Legacy aggregate backend port ──────────────────────────────────────
 
 
 @runtime_checkable

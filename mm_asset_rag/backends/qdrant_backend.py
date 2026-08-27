@@ -1,1186 +1,69 @@
-"""Qdrant-backed vector store for text and image embeddings.
+"""Compatibility facade for the responsibility-split Qdrant adapter.
 
-The text collection carries three vectors per payload: **dense** (configurable
-text embedder — OpenAI-compatible endpoint, bge-m3 via ollama, etc.),
-**bm25** (``fastembed`` / ``Qdrant/bm25``, English tokens), and **bm25_zh**
-(``mm_asset_rag.bm25_zh``, jieba + Okapi, Chinese tokens). All three are
-RRF-fused in one ``query_points`` call. The active collection name is
-dim-suffixed (``multimodal_text_1024d`` …) so a schema-mismatch check fires
-when the embedder changes. The image collection carries CLIP vectors.
-
-We talk to ``qdrant-client`` directly rather than
-``llama-index-vector-stores-qdrant``: that integration only handles text
-nodes and image vectors aren't first-class in its ``VectorStore``
-abstraction, while our hybrid retrieval crosses both collections.
+New code should import :mod:`mm_asset_rag.backends.qdrant` or depend on the
+backend capability ports. Legacy public imports remain available here.
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
-import math
-import os
-import re
-import subprocess
-import threading
-import uuid
-from collections import Counter, defaultdict
-from functools import lru_cache
 from pathlib import Path
 
-from fastembed import SparseTextEmbedding
-from qdrant_client import QdrantClient, models
-from qdrant_client.http.exceptions import UnexpectedResponse
+from ..retrieval import RRF_K
+from .qdrant import client, collections, indexing, search
 
-from ..document_store import read_documents
-from ..embedders import (
-    CnClipImageUnavailable,
-    ImageEmbeddingUnavailable,
-    get_default_image_embedder,
-    get_default_text_embedder,
-)
-from ..paths import get_assets_dir, get_indexes_dir
-from ..schema import SearchHit
-from ..settings import get_settings
+QdrantLockHeldError = client.QdrantLockHeldError
 
-
-class QdrantLockHeldError(RuntimeError):
-    """Raised when Qdrant local storage is already open by another live process.
-
-    qdrant-client's local mode uses a process-local file lock at
-    ``<indexes>/qdrant/.lock`` and refuses to open the same storage from a
-    second process. The previous version of ``_clean_stale_lock``
-    silently deleted the lock in all cases, which caused ``mmrag reindex``
-    to hang when the API server (``uvicorn``) was still running.
-    """
-
-
-TEXT_COLLECTION_BASE = get_settings().qdrant_text_collection
-IMAGE_COLLECTION_BASE = get_settings().qdrant_image_collection
-
-# Hybrid search tuning
-BM25_MODEL_NAME = get_settings().qdrant_bm25_model
-DENSE_VECTOR_NAME = "dense"
-SPARSE_VECTOR_NAME = "bm25"
-HYBRID_PREFETCH_LIMIT = get_settings().qdrant_hybrid_prefetch_limit
-# RRF constant: matches Qdrant's server default. Exposed so deployers
-# can tune it via env if the corpus skews toward very long ranked
-# lists (smaller k biases toward the top of each channel; larger k
-# smooths across the long tail).
-RRF_K = 60
-
-# Optional sparse / ColBERT vector field names. These are only added
-# to the text collection when the active embedder supports them (see
-# ``_embedder_sparse_capability`` / ``_embedder_colbert_capability``).
-# The OpenAI-compatible ``TextEmbedder`` never supports them, so the
-# default configuration keeps the dense + bm25 + bm25_zh schema.
-EMBED_SPARSE_VECTOR_NAME = "embed_sparse"
-EMBED_COLBERT_VECTOR_NAME = "embed_colbert"
-
-
-# Module-level cache for the active collection names. Replaces
-# ``os.environ["QDRANT_ACTIVE_TEXT_COLLECTION"]`` side effects which
-# raced across threads and leaked into child processes.
-_ACTIVE_TEXT_COLLECTION: str | None = None
-_ACTIVE_IMAGE_COLLECTION: str | None = None
-
-# Process-wide shared QdrantClient (local-file mode only). See
-# ``get_qdrant_client`` for the rationale. Tests can call
-# ``reset_qdrant_client_cache()`` to drop the cached instance between
-# cases.
-_QDRANT_CLIENT: QdrantClient | None = None
-_QDRANT_CLIENT_KEY: str | None = None
-_QDRANT_CLIENT_LOCK = threading.Lock()
+TEXT_COLLECTION_BASE = collections.TEXT_COLLECTION_BASE
+IMAGE_COLLECTION_BASE = collections.IMAGE_COLLECTION_BASE
+DENSE_VECTOR_NAME = collections.DENSE_VECTOR_NAME
+SPARSE_VECTOR_NAME = collections.SPARSE_VECTOR_NAME
+EMBED_SPARSE_VECTOR_NAME = collections.EMBED_SPARSE_VECTOR_NAME
+EMBED_COLBERT_VECTOR_NAME = collections.EMBED_COLBERT_VECTOR_NAME
+BM25_MODEL_NAME = indexing.BM25_MODEL_NAME
+HYBRID_PREFETCH_LIMIT = search.HYBRID_PREFETCH_LIMIT
 
 
 def reset_qdrant_client_cache() -> None:
-    """Drop the cached local QdrantClient. Test-only helper."""
-    global _QDRANT_CLIENT, _QDRANT_CLIENT_KEY
-    with _QDRANT_CLIENT_LOCK:
-        if _QDRANT_CLIENT is not None:
-            with contextlib.suppress(Exception):
-                _QDRANT_CLIENT.close()
-        _QDRANT_CLIENT = None
-        _QDRANT_CLIENT_KEY = None
+    client.reset_qdrant_client_cache()
 
 
-@lru_cache(maxsize=1)
-def _bm25_embedder() -> SparseTextEmbedding:
-    """Lazily load the BM25 sparse encoder (cached for the process lifetime).
-
-    The first call downloads the ~10MB model from HuggingFace; subsequent
-    calls hit the local cache. Thread-safe via a lock because fastembed's
-    internal state isn't safe to share across concurrent first-time loads.
-    """
-    cache_dir = get_settings().qdrant_bm25_cache_dir
-    if cache_dir:
-        return SparseTextEmbedding(model_name=BM25_MODEL_NAME, cache_dir=cache_dir)
-    return SparseTextEmbedding(model_name=BM25_MODEL_NAME)
-
-
-_BM25_LOCK = threading.Lock()
-
-
-def _embed_bm25(texts: list[str]) -> list[models.SparseVector]:
-    """Encode texts into BM25 sparse vectors for Qdrant sparse payload."""
-    with _BM25_LOCK:
-        embedder = _bm25_embedder()
-        result = list(embedder.embed(texts))
-    return [
-        models.SparseVector(indices=enc.indices.tolist(), values=enc.values.tolist())
-        for enc in result
-    ]
-
-
-# ─── Chinese BM25 query-side ─────────────────────────────────────────────
-# The indexing side (``build_qdrant_text_index``) writes the per-corpus
-# IDF table to ``$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json`` once per
-# rebuild. The query side caches it in-process so we don't re-read the
-# file on every ``mmrag search``.
-#
-# The cache is versioned by the IDF file's ``stat`` mtime so it stays
-# correct across *process* boundaries: a long-lived API server keeps the
-# cached table even after a separate ``mmrag reindex`` CLI rewrites the
-# file on disk, but the next ``_load_bm25_zh_idf`` call sees the new
-# mtime and re-reads. (An in-process ``invalidate`` flag alone can't
-# reach another process.) The file ``stat()`` and ``read_text()`` run
-# outside the lock (so concurrent loads don't serialise on disk IO);
-# the cache hit check and the cache store are each under the lock. The
-# read+store pair isn't atomic, but it can't let stale data get "stuck"
-# the way the pre-mtime flag-only cache could: every load re-checks
-# mtime, so a rewrite mid-load just means the *next* load re-reads.
-
-_BM25_ZH_IDF_CACHE: tuple[int, dict] | None = None  # (mtime_ns, table)
-_BM25_ZH_IDF_LOCK = threading.Lock()
+def get_qdrant_client():
+    return client.get_qdrant_client()
 
 
 def invalidate_bm25_zh_idf_cache() -> None:
-    """Drop the in-process Chinese BM25 IDF cache.
-
-    ``build_qdrant_text_index`` persists the per-corpus IDF table to
-    ``$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json`` once per rebuild and
-    calls this so the same process's next query re-reads the file. For a
-    reindex from a *separate* CLI process, the on-disk mtime changes and
-    ``_load_bm25_zh_idf`` re-reads on its own — no cross-process signal
-    is needed (an in-process flag can't reach another process anyway).
-    """
-    global _BM25_ZH_IDF_CACHE
-    with _BM25_ZH_IDF_LOCK:
-        _BM25_ZH_IDF_CACHE = None
-
-
-def _load_bm25_zh_idf() -> dict | None:
-    """Load the persisted Chinese BM25 IDF table (cached in-process).
-
-    The cache is keyed by the file's ``stat().st_mtime_ns`` so it
-    auto-invalidates when the file is rewritten — by this process's own
-    reindex (``invalidate_bm25_zh_idf_cache`` then mtime change) or by a
-    separate CLI process (mtime change alone, no in-process call). The
-    file ``stat()`` and ``read_text()`` run *outside* the lock (so two
-    concurrent loads don't serialise on disk IO), but the cache hit
-    check + the cache store are each under the lock. That isn't a fully
-    atomic read-store pair, but it's safe: if a reindex rewrites the
-    file mid-load, either the load read the old bytes (mtime still old,
-    cache stores old mtime — and the *next* load sees the new mtime and
-    re-reads) or the new bytes (mtime new, cache stores new). The stale
-    data can't get "stuck" the way the pre-mtime flag-only cache could,
-    because every load re-checks mtime.
-    """
-    global _BM25_ZH_IDF_CACHE
-    idf_path = get_indexes_dir() / "bm25_zh_idf.json"
-    try:
-        mtime_ns = idf_path.stat().st_mtime_ns
-    except OSError:
-        # Missing file: drop any stale cache and signal "no IDF".
-        with _BM25_ZH_IDF_LOCK:
-            _BM25_ZH_IDF_CACHE = None
-        return None
-    with _BM25_ZH_IDF_LOCK:
-        cached = _BM25_ZH_IDF_CACHE
-        if cached is not None and cached[0] == mtime_ns:
-            return cached[1]
-    try:
-        data = json.loads(idf_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        # Don't poison the cache with unparseable data; let the next
-        # well-formed write refresh it.
-        return None
-    with _BM25_ZH_IDF_LOCK:
-        _BM25_ZH_IDF_CACHE = (mtime_ns, data)
-    return data
-
-
-def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
-    """Encode ``query`` as a Chinese BM25 sparse vector, or ``None`` if disabled / no IDF."""
-    settings = get_settings()
-    if not settings.bm25_zh_enabled:
-        return None
-    idf = _load_bm25_zh_idf()
-    if not idf:
-        return None
-    from .. import bm25_zh as _bm25_zh_mod
-
-    tokens = _bm25_zh_mod.tokenize_zh(query)
-    return _bm25_zh_mod.bm25_zh_encode_query(tokens, idf)
-
-
-# ─── Embedder sparse / ColBERT capability probes ──────────────────────────
-# The active text embedder may optionally expose ``embed_text_sparse``
-# and ``embed_text_colbert`` (only the SentenceTransformerTextEmbedder
-# with bge-m3 does). We probe with ``getattr`` so the OpenAI-compatible
-# ``TextEmbedder`` — which does not implement these — returns ``None``
-# and the collection schema stays dense + bm25 + bm25_zh (zero schema
-# change, no reindex required). Settings flags
-# ``embedding_sparse_enabled`` / ``embedding_colbert_enabled`` can
-# force-enable / force-disable; ``auto`` (default) follows the probe.
-
-
-def _embedder_sparse_capability(embedder) -> bool:
-    """True iff the embedder should contribute a sparse prefetch channel."""
-    settings = get_settings()
-    flag = settings.embedding_sparse_enabled
-    if flag == "false":
-        return False
-    if flag == "true":
-        return hasattr(embedder, "embed_text_sparse")
-    # auto: probe the method and confirm it returns a non-None on a
-    # tiny probe — the method existing is not enough (bge-m3 embedder
-    # only supports sparse when its model is actually bge-m3). We call
-    # it once with a probe string; a None result means "not supported
-    # in this configuration".
-    fn = getattr(embedder, "embed_text_sparse", None)
-    if fn is None:
-        return False
-    try:
-        return fn("probe") is not None
-    except Exception:
-        return False
-
-
-def _embedder_colbert_capability(embedder) -> bool:
-    """True iff the embedder should contribute a ColBERT prefetch channel."""
-    settings = get_settings()
-    flag = settings.embedding_colbert_enabled
-    if flag == "false":
-        return False
-    if flag == "true":
-        return hasattr(embedder, "embed_text_colbert")
-    fn = getattr(embedder, "embed_text_colbert", None)
-    if fn is None:
-        return False
-    try:
-        return fn("probe") is not None
-    except Exception:
-        return False
-
-
-# ─── Per-asset chunk selector ─────────────────────────────────────────────
-# Independent BM25 Okapi implementation used only by
-# ``_select_top_chunks_per_pdf`` to keep the largest PDFs from dominating
-# the dense top-k. Not a drop-in for ``Qdrant/bm25``: the tokenizer is
-# intentionally simpler (Latin-script word splits + lowercase) because
-# we only score chunks against an asset's own title, not against an
-# arbitrary user query. Keeping it local avoids adding ``rank_bm25`` /
-# ``bm25s`` as dependencies.
-
-
-def _tokenize_for_bm25(text: str) -> list[str]:
-    """Lowercase alphanumeric tokenizer for the chunk selector.
-
-    Splits on runs of non-alphanumeric characters and lowercases each
-    token. Empty input returns an empty list.
-    """
-    return [tok.lower() for tok in re.findall(r"[A-Za-z0-9]+", text or "")]
-
-
-def _bm25_okapi_scores(
-    query_tokens: list[str],
-    docs_tokens: list[list[str]],
-    k1: float = 1.5,
-    b: float = 0.75,
-) -> list[float]:
-    """Return BM25 Okapi scores of one query against many short docs.
-
-    Pure function: same shape as ``rank_bm25.BM25Okapi.get_scores`` for
-    the small per-asset document sets we care about. ``k1`` and ``b``
-    follow the Robertson-Walker defaults.
-    """
-    n = len(docs_tokens)
-    if n == 0:
-        return []
-    avgdl = sum(len(d) for d in docs_tokens) / n
-    df: Counter[str] = Counter()
-    for d in docs_tokens:
-        for term in set(d):
-            df[term] += 1
-    out: list[float] = []
-    for d in docs_tokens:
-        dl = max(len(d), 1)
-        tf: Counter[str] = Counter(d)
-        score = 0.0
-        for q in query_tokens:
-            fq = df.get(q, 0)
-            if fq == 0:
-                continue
-            idf = math.log(1 + (n - fq + 0.5) / (fq + 0.5))
-            f = tf.get(q, 0)
-            score += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * dl / avgdl))
-        out.append(score)
-    return out
-
-
-def _select_top_chunks_per_pdf(
-    documents: list,
-    max_per_pdf: int,
-) -> list:
-    """Cap each asset at ``max_per_pdf`` chunks by BM25 Okapi score.
-
-    The query is the asset's ``asset_title`` (``asset_id`` rewritten
-    with spaces as fallback). Documents whose count is below the cap
-    are passed through untouched. Input is not mutated; a new list is
-    returned.
-
-    Why: dense embeddings skew toward the largest PDFs on the bundled
-    sample set (``clip`` contributes 48 chunks, ``flamingo`` 54,
-    ``gpt3`` 75) and crowd smaller, more relevant assets out of the
-    dense top-k. Capping per-asset chunk count gives every asset equal
-    say in the dense ranking at retrieval time.
-    """
-    if max_per_pdf is None or max_per_pdf <= 0 or not documents:
-        return list(documents)
-
-    by_asset: dict[str, list] = defaultdict(list)
-    for d in documents:
-        by_asset[d.metadata.get("asset_id", "")].append(d)
-
-    keep: list = []
-    for asset_id, group in by_asset.items():
-        if len(group) <= max_per_pdf:
-            keep.extend(group)
-            continue
-        sample = group[0]
-        title = sample.metadata.get("asset_title") or asset_id.replace("_", " ")
-        query_tokens = _tokenize_for_bm25(title)
-        if not query_tokens:
-            # Title is empty / punctuation-only — fall back to first N
-            # by document order so we still cap deterministically.
-            keep.extend(group[:max_per_pdf])
-            continue
-        docs_tokens = [_tokenize_for_bm25(d.text or "") for d in group]
-        scores = _bm25_okapi_scores(query_tokens, docs_tokens)
-        # Tie-break on original index so the order is stable when many
-        # chunks share a score (typical for short snippets).
-        ranked = sorted(range(len(group)), key=lambda i: (-scores[i], i))
-        for i in ranked[:max_per_pdf]:
-            keep.append(group[i])
-    return keep
+    indexing.invalidate_bm25_zh_idf_cache()
 
 
 def text_collection(vector_size: int | None = None) -> str:
-    """Resolve the active text collection name.
-
-    Without ``vector_size`` returns whatever was last set via
-    ``text_collection(2560)`` (the ``qdrant_active_text_collection``
-    setting, if set, otherwise the base name). With ``vector_size``,
-    sets the active collection to ``f"{base}_{vector_size}d"`` and
-    returns it.
-
-    The "active collection" is cached in module state instead of
-    ``os.environ`` so concurrent threads don't race on a process-wide
-    variable, and tests can reset it without touching the real
-    environment.
-    """
-    global _ACTIVE_TEXT_COLLECTION
-    if vector_size is None:
-        if _ACTIVE_TEXT_COLLECTION is not None:
-            return _ACTIVE_TEXT_COLLECTION
-        return get_settings().qdrant_active_text_collection or TEXT_COLLECTION_BASE
-    name = f"{TEXT_COLLECTION_BASE}_{vector_size}d"
-    _ACTIVE_TEXT_COLLECTION = name
-    return name
+    return collections.text_collection(vector_size)
 
 
 def image_collection(vector_size: int | None = None) -> str:
-    """Same contract as :func:`text_collection`, for the image collection."""
-    global _ACTIVE_IMAGE_COLLECTION
-    if vector_size is None:
-        if _ACTIVE_IMAGE_COLLECTION is not None:
-            return _ACTIVE_IMAGE_COLLECTION
-        return get_settings().qdrant_active_image_collection or IMAGE_COLLECTION_BASE
-    name = f"{IMAGE_COLLECTION_BASE}_{vector_size}d"
-    _ACTIVE_IMAGE_COLLECTION = name
-    return name
-
-
-def get_qdrant_client() -> QdrantClient:
-    """Return a process-wide shared ``QdrantClient`` instance.
-
-    Qdrant's local-file mode writes ``<storage>/.lock`` on open and
-    refuses a second open from another instance. Without this cache
-    each concurrent worker thread would instantiate its own client
-    and they would race on the lock (or fail with
-    ``Storage folder already accessed``). The cache is keyed by the
-    storage location so the same path always returns the same client
-    but switching to ``QDRANT_URL`` (server mode) does not share state
-    with a stale local client.
-    """
-    global _QDRANT_CLIENT, _QDRANT_CLIENT_KEY
-    settings = get_settings()
-    if settings.qdrant_url:
-        # Remote mode: each call returns its own client. Qdrant
-        # server handles concurrency; the in-process cache would
-        # just hold a connection alive longer than necessary.
-        # If we previously cached a *local* client (deployer flipped
-        # ``QDRANT_URL`` on at runtime), close it so its local-file
-        # ``.lock`` and the underlying storage fd are released —
-        # otherwise the lock stays held for the rest of the process
-        # even though we no longer use that client.
-        with _QDRANT_CLIENT_LOCK:
-            if _QDRANT_CLIENT is not None:
-                with contextlib.suppress(Exception):
-                    _QDRANT_CLIENT.close()
-                _QDRANT_CLIENT = None
-                _QDRANT_CLIENT_KEY = None
-        return QdrantClient(
-            url=settings.qdrant_url,
-            api_key=settings.qdrant_api_key,
-            # httpx's default is 5s; a busy Qdrant server can take
-            # 7s+ to clean up a non-empty collection (drain the
-            # optimizer, drop snapshots, release segments) and a
-            # ``client.delete_collection`` that times out client-side
-            # leaves the collection live on the server while the
-            # caller raises — so the next reindex step fails to
-            # recreate it. 30s is well above observed cleanup time
-            # without making healthy calls hang.
-            timeout=30,
-        )
-
-    qdrant_path = get_indexes_dir() / "qdrant"
-    key = str(qdrant_path)
-    with _QDRANT_CLIENT_LOCK:
-        if key != _QDRANT_CLIENT_KEY or _QDRANT_CLIENT is None:
-            qdrant_path.mkdir(parents=True, exist_ok=True)
-            _clean_stale_lock(qdrant_path)
-            _QDRANT_CLIENT = QdrantClient(path=key)
-            _QDRANT_CLIENT_KEY = key
-        return _QDRANT_CLIENT
-
-
-def _clean_stale_lock(qdrant_path: Path) -> None:
-    """Remove a stale ``.lock`` from a previous crashed session, but only
-    when the lock is *not* held by a live process.
-
-    qdrant-client's local mode writes ``.lock`` on open and removes it on
-    ``close()``. If the process is killed before close() runs (SIGKILL, OOM,
-    abrupt interpreter exit), the .lock is left behind and the next startup
-    fails with ``Storage folder X is already accessed by another instance of
-    Qdrant client``.
-
-    If the lock is held by a *live* process (e.g. an ``uvicorn`` API server
-    is still running), we refuse to remove it — qdrant-client in the second
-    process would otherwise hang on the lock. Instead we raise
-    :class:`QdrantLockHeldError` so the caller (e.g. ``mmrag reindex``) can
-    surface a clear "stop the API server first" message.
-
-    If the holder process **cannot be determined** (``lsof`` missing, timed
-    out, or returned non-zero), we also raise rather than guess — silently
-    unlinking a lock held by a live process would let two processes write
-    the same local storage and corrupt the index. Resolve by stopping other
-    processes, switching to ``QDRANT_URL`` (server mode), or removing the
-    lock by hand once certain no process holds it.
-
-    Safe for single-process use; switch to ``QDRANT_URL`` (server mode) for
-    concurrent access.
-    """
-    lock = qdrant_path / ".lock"
-    if not lock.exists():
-        return
-    state, holder_pid = _probe_lock_holder(lock)
-    if state == "unknown":
-        # lsof could not answer (missing / timed out / errored). Deleting the
-        # lock here would be unsafe: another live process (e.g. an API server)
-        # may be holding it, and blindly unlinking would let a second process
-        # open the same local storage concurrently and corrupt the index.
-        # Surface the uncertainty and let the user resolve it (stop other
-        # processes, switch to QDRANT_URL, or remove the lock manually once
-        # certain nothing holds it).
-        raise QdrantLockHeldError(
-            f"Qdrant local storage at {qdrant_path} has a .lock but the holder "
-            f"process could not be determined (lsof missing or failed). Stop "
-            f"any process that may hold it (or set QDRANT_URL to use server "
-            f"mode), then retry. To override, remove {lock} manually once you "
-            f"are certain no process is using it."
-        )
-    if state == "held" and holder_pid is not None and _pid_alive(holder_pid):
-        raise QdrantLockHeldError(
-            f"Qdrant local storage at {qdrant_path} is already open by "
-            f"process {holder_pid} (probably the API server / another CLI). "
-            f"Stop that process first, or set QDRANT_URL to use Qdrant server mode."
-        )
-    # state == "free" (lsof confirmed no holder), or "held" but the holder
-    # PID is no longer alive — both are safe to unlink.
-    try:
-        lock.unlink()
-        print(f"[qdrant] removed stale .lock from previous session: {lock.name}")
-    except OSError as exc:
-        print(f"[qdrant] warning: could not unlink {lock}: {exc}")
-
-
-def _probe_lock_holder(lock: Path) -> tuple[str, int | None]:
-    """Probe who holds ``lock``.
-
-    Returns one of three explicit states so the caller never has to guess
-    what a ``None`` pid means:
-
-    * ``("held", pid)``    — lsof named a live holder; ``pid`` is its PID.
-    * ``("free", None)``   — lsof ran to completion but found no process
-      holding the lock, i.e. this is a genuinely stale lock from a crashed
-      session; safe to unlink.
-    * ``("unknown", None)``— lsof is missing, timed out, or errored before
-      it could answer; the holder cannot be determined, so the caller must
-      **not** unlink (a live process may still hold it).
-
-    The distinction between ``"free"`` and ``"unknown"`` rests on lsof's
-    exit code: ``returncode == 0`` or a "no match" non-zero exit (1 on both
-    Linux and macOS when nothing holds the file) means lsof answered. Only
-    the ``FileNotFoundError`` / timeout / other ``OSError`` paths are
-    ``"unknown"``.
-    """
-    try:
-        result = subprocess.run(
-            ["lsof", "-F", "p", str(lock)],
-            capture_output=True,
-            text=True,
-            timeout=2,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
-        return ("unknown", None)
-    # lsof exits 0 when it lists open files, and non-zero (commonly 1) when
-    # nothing matches the path. Both mean lsof *ran* and answered — a
-    # returncode != 0 with no "p" line is "free", not "unknown".
-    for line in result.stdout.splitlines():
-        if line.startswith("p"):
-            try:
-                return ("held", int(line[1:]))
-            except ValueError:
-                continue
-    return ("free", None)
-
-
-def _lock_holder_pid(lock: Path) -> int | None:
-    """Return the PID holding ``lock``, or None if it can't be determined.
-
-    Thin compatibility shim over :func:`_probe_lock_holder`. Returns the
-    holder PID for ``"held"``, and ``None`` for both ``"free"`` and
-    ``"unknown"`` — callers that need to distinguish those two (e.g.
-    :func:`_clean_stale_lock`) should use :func:`_probe_lock_holder`
-    instead, since deleting on ``"unknown"`` is unsafe.
-    """
-    state, pid = _probe_lock_holder(lock)
-    if state == "held":
-        return pid
-    return None
-
-
-def _pid_alive(pid: int) -> bool:
-    """Return True if a process with this PID is running on this system."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
-
-
-def _create_collection(
-    client: QdrantClient,
-    name: str,
-    *,
-    vector_size: int,
-    sparse: bool = False,
-    recreate: bool = False,
-    embed_sparse: bool = False,
-    embed_colbert: bool = False,
-    colbert_dim: int | None = None,
-) -> None:
-    """Create (or recreate) a Qdrant collection with the standard config.
-
-    - ``recreate=True`` drops the collection first; used by the explicit
-      ``mmrag reindex`` command for a full rebuild.
-    - ``recreate=False`` (the default) is a no-op if the collection
-      already exists; used by the incremental ``build_qdrant_*_index`` path.
-    - ``sparse=True`` adds the BM25 sparse vector config (text collection).
-      When ``bm25_zh_enabled`` is set on :class:`Settings`, a second
-      Chinese sparse vector (``bm25_zh``) is added so Chinese docs and
-      queries get token-level recall via a jieba-based Okapi BM25.
-    - ``embed_sparse=True`` adds an extra sparse vector field
-      (``embed_sparse``) populated from the embedder's native sparse
-      output (bge-m3). Only when the embedder supports it; the
-      OpenAI-compatible ``TextEmbedder`` never sets this so the
-      default schema is unchanged.
-    - ``embed_colbert=True`` adds a multi-vector field
-      (``embed_colbert``) for late-interaction retrieval. ``colbert_dim``
-      is the per-token vector dim (required when ``embed_colbert`` is
-      true). Again only when the embedder supports it.
-    """
-    if recreate:
-        if client.collection_exists(name):
-            client.delete_collection(name)
-    elif client.collection_exists(name):
-        # Schema check: the existing collection must carry every sparse
-        # and multi-vector the current Settings expect. Catches the
-        # silent-skip-after-upgrade footgun where adding a new field
-        # (e.g. ``bm25_zh`` / ``embed_sparse`` / ``embed_colbert``)
-        # would otherwise leave the old collection in place while the
-        # indexer tries to write richer points.
-        if sparse:
-            info = client.get_collection(name)
-            existing_sparse = set((info.config.params.sparse_vectors or {}).keys())
-            existing_multi = set((info.config.params.vectors or {}).keys())
-            settings = get_settings()
-            expected_sparse: set[str] = {SPARSE_VECTOR_NAME}
-            if settings.bm25_zh_enabled:
-                expected_sparse.add(settings.bm25_zh_vector_name)
-            if embed_sparse:
-                expected_sparse.add(EMBED_SPARSE_VECTOR_NAME)
-            expected_multi: set[str] = {DENSE_VECTOR_NAME}
-            if embed_colbert:
-                expected_multi.add(EMBED_COLBERT_VECTOR_NAME)
-            missing_sparse = sorted(expected_sparse - existing_sparse)
-            unexpected_sparse = sorted(existing_sparse - expected_sparse)
-            missing_multi = sorted(expected_multi - existing_multi)
-            unexpected_multi = sorted(existing_multi - expected_multi)
-            if missing_sparse or unexpected_sparse or missing_multi or unexpected_multi:
-                raise RuntimeError(
-                    f"Qdrant collection '{name}' schema mismatch.\n"
-                    f"  expected sparse vectors: {sorted(expected_sparse)}\n"
-                    f"  actual sparse vectors:   {sorted(existing_sparse)}\n"
-                    f"  missing sparse:   {missing_sparse or '(none)'}\n"
-                    f"  unexpected sparse: {unexpected_sparse or '(none)'}\n"
-                    f"  expected vectors: {sorted(expected_multi)}\n"
-                    f"  actual vectors:   {sorted(existing_multi)}\n"
-                    f"  missing vectors:   {missing_multi or '(none)'}\n"
-                    f"  unexpected vectors: {unexpected_multi or '(none)'}\n"
-                    f"Run `mmrag reindex` to rebuild the collection with the "
-                    f"current Settings (it is drop+rebuild by default)."
-                )
-        return
-
-    if sparse:
-        sparse_config: dict[str, models.SparseVectorParams] = {
-            SPARSE_VECTOR_NAME: models.SparseVectorParams(),
-        }
-        settings = get_settings()
-        if settings.bm25_zh_enabled:
-            sparse_config[settings.bm25_zh_vector_name] = models.SparseVectorParams()
-        if embed_sparse:
-            sparse_config[EMBED_SPARSE_VECTOR_NAME] = models.SparseVectorParams()
-        vectors_config: dict[str, models.VectorParams] = {
-            DENSE_VECTOR_NAME: models.VectorParams(
-                size=vector_size, distance=models.Distance.COSINE
-            ),
-        }
-        if embed_colbert and colbert_dim:
-            vectors_config[EMBED_COLBERT_VECTOR_NAME] = models.VectorParams(
-                size=colbert_dim,
-                distance=models.Distance.COSINE,
-                multivector_config=models.MultiVectorConfig(
-                    comparator=models.MultiVectorComparator.MAX_SIM
-                ),
-            )
-        client.create_collection(
-            collection_name=name,
-            vectors_config=vectors_config,
-            sparse_vectors_config=sparse_config,
-        )
-    else:
-        client.create_collection(
-            collection_name=name,
-            vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
-        )
+    return collections.image_collection(vector_size)
 
 
 def stable_point_id(value: str) -> str:
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
+    return indexing.stable_point_id(value)
 
 
 def build_qdrant_text_index(
     batch_size: int | None = None,
     force_recreate: bool = False,
     progress_cb=None,
-) -> tuple[int, str]:
-    """Incrementally upsert text + BM25 sparse vectors.
-
-    Each point id is ``uuid5("text:{asset_id}:{page}:{idx}")`` so re-running
-    the index over the same ``documents.jsonl`` is a no-op for documents that
-    are already indexed — only newly added documents are embedded and written.
-
-    Args:
-        batch_size: override ``QDRANT_UPSERT_BATCH_SIZE`` (default 16).
-        force_recreate: drop the collection first (full rebuild). Use only
-            from the explicit ``reindex`` command.
-        progress_cb: optional ``callable(done: int, total: int, phase: str)``
-            invoked from the worker thread for finer-grained status reporting.
-    """
-    documents = read_documents()
-    if not documents:
-        return 0, "qdrant:text:empty"
-
-    # Optional per-asset chunk cap (see ``_select_top_chunks_per_pdf``).
-    # ``None`` keeps the previous behaviour of indexing every chunk.
-    max_chunks_per_pdf = get_settings().max_chunks_per_pdf
-    if max_chunks_per_pdf:
-        documents = _select_top_chunks_per_pdf(documents, max_chunks_per_pdf)
-
-    # Chinese BM25: tokenise the whole corpus once, persist the IDF table
-    # so the query-side ``_embed_bm25_zh_query`` can reuse it without
-    # re-scanning documents.jsonl. The per-doc sparse vectors below are
-    # indexed as ``bm25_zh`` alongside the English fastembed BM25 and the
-    # dense vector; ``_hybrid_text_query`` prefetches all three.
-    settings = get_settings()
-    bm25_zh_vectors: list[models.SparseVector] | None = None
-    if settings.bm25_zh_enabled:
-        from .. import bm25_zh as _bm25_zh_mod
-
-        bm25_zh_vectors, bm25_zh_idf = _bm25_zh_mod.build_bm25_zh_index(
-            documents,
-            k1=settings.bm25_zh_k1,
-            b=settings.bm25_zh_b,
-        )
-        idf_path = get_indexes_dir() / "bm25_zh_idf.json"
-        idf_path.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic replace: write to a temp file then ``os.replace`` onto
-        # the target so a concurrent query (or a crash mid-write) can
-        # never observe a half-written IDF file. ``os.replace`` is
-        # atomic on POSIX and Windows; readers either see the old
-        # table or the new one, never a truncated one. The temp name
-        # carries pid + thread id so two concurrent builds don't clobber
-        # each other's temp file (which would let one ``os.replace`` a
-        # half-written file from the other).
-        tmp_path = idf_path.with_name(f".{idf_path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        tmp_path.write_text(
-            json.dumps(bm25_zh_idf, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        os.replace(tmp_path, idf_path)
-        # The just-written file invalidates any in-process cache from
-        # an earlier build (server mode: same process, reindex via
-        # separate path). Drop the cache so the next query re-reads.
-        invalidate_bm25_zh_idf_cache()
-
-    batch_size = batch_size or max(1, get_settings().qdrant_upsert_batch_size)
-    embedder = get_default_text_embedder()
-
-    # Probe the embedder's optional sparse / ColBERT capabilities. The
-    # OpenAI-compatible ``TextEmbedder`` returns False for both so the
-    # collection schema and the per-point vectors stay identical to
-    # the pre-capability path. ``SentenceTransformerTextEmbedder`` with
-    # bge-m3 enables them; the schema-mismatch check in
-    # ``_create_collection`` then prompts a ``mmrag reindex`` when the
-    # deployer switches embedder.
-    use_embed_sparse = _embedder_sparse_capability(embedder)
-    use_embed_colbert = _embedder_colbert_capability(embedder)
-    colbert_dim: int | None = None
-    if use_embed_colbert:
-        probe_colbert = embedder.embed_text_colbert("probe")  # type: ignore[attr-defined]
-        if probe_colbert and probe_colbert[0]:
-            colbert_dim = len(probe_colbert[0])
-        else:  # pragma: no cover — probe should have succeeded in _capability
-            use_embed_colbert = False
-
-    # One embedding call up front to learn the vector size (= collection name).
-    # On a warm cache this doc may already be in qdrant; we still need it.
-    first_vector = embedder.embed(documents[0].text)
-    client = get_qdrant_client()
-    collection_name = text_collection(len(first_vector))
-
-    if force_recreate:
-        _create_collection(
-            client,
-            collection_name,
-            vector_size=len(first_vector),
-            sparse=True,
-            recreate=True,
-            embed_sparse=use_embed_sparse,
-            embed_colbert=use_embed_colbert,
-            colbert_dim=colbert_dim,
-        )
-    _create_collection(
-        client,
-        collection_name,
-        vector_size=len(first_vector),
-        sparse=True,
-        embed_sparse=use_embed_sparse,
-        embed_colbert=use_embed_colbert,
-        colbert_dim=colbert_dim,
+):
+    return indexing.build_text_index(
+        batch_size=batch_size,
+        force_recreate=force_recreate,
+        progress_cb=progress_cb,
     )
 
-    inserted = 0
-    skipped = 0
-    pending: list[models.PointStruct] = []
 
-    def _flush() -> None:
-        nonlocal inserted
-        if not pending:
-            return
-        client.upsert(collection_name=collection_name, points=pending, wait=True)
-        inserted += len(pending)
-        pending.clear()
-
-    if progress_cb:
-        progress_cb(0, len(documents), "indexing")
-
-    for offset in range(0, len(documents), batch_size):
-        batch = documents[offset : offset + batch_size]
-        doc_keys = [
-            f"text:{doc.metadata.get('asset_id', '')}:{doc.metadata.get('page')}:{offset + i}"
-            for i, doc in enumerate(batch)
-        ]
-        point_ids = [stable_point_id(key) for key in doc_keys]
-
-        if force_recreate:
-            existing_set: set[str] = set()
-        else:
-            existing = client.retrieve(
-                collection_name=collection_name,
-                ids=point_ids,
-                with_payload=False,
-                with_vectors=False,
-            )
-            existing_set = {str(p.id) for p in existing}
-
-        to_do = [i for i, pid in enumerate(point_ids) if pid not in existing_set]
-        skipped += len(batch) - len(to_do)
-        if not to_do:
-            if progress_cb:
-                progress_cb(offset + len(batch), len(documents), "skipping cached")
-            continue
-
-        # Contextual Retrieval: prepend the LLM-generated context (stored in
-        # ``metadata["context"]`` at parse time) to the embedding/BM25 input
-        # so dense + sparse channels see the disambiguating preamble. The
-        # payload ``text`` below stays the raw chunk body so evidence / answer
-        # generation isn't polluted by the preamble. No ``context`` key →
-        # identical to the pre-contextual behavior.
-        texts = []
-        for i in to_do:
-            ctx = batch[i].metadata.get("context")
-            if ctx:
-                texts.append(f"{ctx}\n\n{batch[i].text}")
-            else:
-                texts.append(batch[i].text)
-
-        # Reuse the probe embedding when offset==0 and doc 0 is in to_do —
-        # but only when doc 0 carries no contextual preamble. With context,
-        # texts[0] is "{ctx}\n\n{text}" while the probe embedded the bare
-        # text; reusing it would give the first chunk a context-less dense
-        # vector whose sparse sibling carries the context.
-        dense_vectors: list[list[float]] = []
-        start = 0
-        if offset == 0 and 0 in to_do and not batch[0].metadata.get("context"):
-            dense_vectors.append(first_vector)
-            start = 1
-        if start < len(texts):
-            dense_vectors.extend(embedder.embed_batch(texts[start:]))
-
-        sparse_vectors = _embed_bm25(texts)
-
-        # Optional embedder-native sparse vectors (bge-m3). One call per
-        # text; ``embed_text_sparse`` returns a dict with indices/values
-        # or None when not supported (gated by ``use_embed_sparse`` so
-        # we don't call a missing method on the OpenAI embedder).
-        embed_sparse_vectors: list[dict | None] = []
-        if use_embed_sparse:
-            for t in texts:
-                sv = embedder.embed_text_sparse(t)  # type: ignore[attr-defined]
-                embed_sparse_vectors.append(sv)
-        # Optional ColBERT multi-vectors (bge-m3). Each text becomes a
-        # list of token vectors.
-        embed_colbert_vectors: list[list[list[float]] | None] = []
-        if use_embed_colbert:
-            for t in texts:
-                cv = embedder.embed_text_colbert(t)  # type: ignore[attr-defined]
-                embed_colbert_vectors.append(cv)
-
-        for j, i in enumerate(to_do):
-            payload = {**batch[i].metadata, "text": batch[i].text, "doc_key": doc_keys[i]}
-            vector_dict: dict[str, object] = {
-                DENSE_VECTOR_NAME: dense_vectors[j],
-                SPARSE_VECTOR_NAME: sparse_vectors[j],
-            }
-            if bm25_zh_vectors is not None:
-                vector_dict[settings.bm25_zh_vector_name] = bm25_zh_vectors[offset + i]
-            if use_embed_sparse:
-                sv = embed_sparse_vectors[j]
-                if sv is not None:
-                    vector_dict[EMBED_SPARSE_VECTOR_NAME] = models.SparseVector(
-                        indices=sv["indices"], values=sv["values"]
-                    )
-            if use_embed_colbert:
-                cv = embed_colbert_vectors[j]
-                if cv is not None:
-                    vector_dict[EMBED_COLBERT_VECTOR_NAME] = cv
-            pending.append(
-                models.PointStruct(
-                    id=point_ids[i],
-                    vector=vector_dict,
-                    payload=payload,
-                )
-            )
-        _flush()
-        if progress_cb:
-            progress_cb(offset + len(batch), len(documents), f"indexed {inserted}")
-
-    return inserted, f"qdrant:{collection_name}:inserted={inserted}:skipped={skipped}"
-
-
-def build_qdrant_image_index(
-    force_recreate: bool = False,
-    progress_cb=None,
-) -> tuple[int, str]:
-    """Incrementally upsert image embeddings.
-
-    Same shape as ``build_qdrant_text_index``: existing points are skipped, only
-    new images are embedded and written. ``progress_cb(done, total, phase)``
-    fires from the worker thread for status reporting.
-    """
-    try:
-        provider = get_default_image_embedder()
-    except (ImageEmbeddingUnavailable, CnClipImageUnavailable) as exc:
-        return 0, f"skipped: {exc}"
-
-    documents = read_documents()
-    image_documents = [
-        document for document in documents if document.metadata.get("source_type") == "image"
-    ]
-    if not image_documents:
-        return 0, "qdrant:image:empty"
-
-    assets_dir = get_assets_dir()
-    # Probe dim with the first image that actually encodes. ``embed_image``
-    # returns ``None`` on un-readable / non-image files per the
-    # ``ImageEmbedderProtocol`` graceful-degrade contract; skip past those.
-    first_vector: list[float] | None = None
-    first_path: Path | None = None
-    for document in image_documents:
-        candidate_path = assets_dir / str(document.metadata["source_path"])
-        first_vector = provider.embed_image(candidate_path)
-        if first_vector is not None:
-            first_path = candidate_path
-            break
-    if first_vector is None or first_path is None:
-        return 0, "qdrant:image:no_valid_images"
-    client = get_qdrant_client()
-    collection_name = image_collection(len(first_vector))
-
-    if force_recreate:
-        _create_collection(client, collection_name, vector_size=len(first_vector), recreate=True)
-    _create_collection(client, collection_name, vector_size=len(first_vector))
-
-    # Bulk-load existing point ids (one scroll pass).
-    skipped = 0
-    existing_ids: set[str] = set()
-    if not force_recreate:
-        offset = None
-        while True:
-            pts, offset = client.scroll(
-                collection_name=collection_name,
-                limit=500,
-                offset=offset,
-                with_payload=False,
-                with_vectors=False,
-            )
-            existing_ids.update(str(p.id) for p in pts)
-            if offset is None:
-                break
-
-    # Two-pass build: first collect the (asset_id, path) pairs we still
-    # need to embed (skipping already-indexed ones), then call
-    # ``provider.embed_image_batch`` once for the whole batch. The
-    # per-image loop used to dominate ``mmrag reindex --image-only``
-    # runtime because each ``model.encode`` invocation re-pays the
-    # PIL decode + model setup cost.
-    todo_paths: list[Path] = []
-    todo_point_ids: list[str] = []
-    todo_docs: list = []
-    for document in image_documents:
-        point_id = stable_point_id(f"image:{document.metadata.get('asset_id')}")
-        if point_id in existing_ids:
-            skipped += 1
-            continue
-        try:
-            image_path = assets_dir / str(document.metadata["source_path"])
-        except (KeyError, TypeError):
-            print(f"image index skipped ({document.metadata.get('asset_id')}): missing source_path")
-            continue
-        todo_paths.append(image_path)
-        todo_point_ids.append(point_id)
-        todo_docs.append(document)
-
-    # Reuse the probe vector for the very first image so we don't
-    # re-embed what the dim probe already computed.
-    vectors: list[list[float]] = []
-    if first_vector is not None and todo_paths and todo_paths[0] == first_path:
-        vectors.append(first_vector)
-        batch_paths = todo_paths[1:]
-    else:
-        batch_paths = todo_paths
-    if batch_paths:
-        try:
-            vectors.extend(provider.embed_image_batch(batch_paths))
-        except Exception as exc:
-            print(f"image batch embed failed: {type(exc).__name__}: {exc}")
-            # Fall back: empty slots will be skipped in the build below.
-            vectors.extend([[] for _ in batch_paths])
-
-    points: list[models.PointStruct] = []
-    inserted = 0
-    if progress_cb:
-        progress_cb(0, len(image_documents), "indexing images")
-
-    for point_id, document, vector in zip(todo_point_ids, todo_docs, vectors):
-        if not vector:
-            print(f"image index skipped (empty vector): {document.metadata.get('asset_id')}")
-            continue
-        payload = {**document.metadata, "text": document.text}
-        points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))
-
-    if points:
-        client.upsert(collection_name=collection_name, points=points, wait=True)
-        inserted = len(points)
-
-    if progress_cb:
-        progress_cb(len(image_documents), len(image_documents), f"images indexed {inserted}")
-
-    return inserted, f"qdrant:{collection_name}:inserted={inserted}:skipped={skipped}"
-
-
-def _hybrid_text_query(
-    client: QdrantClient,
-    collection_name: str,
-    dense_vector: list[float],
-    sparse_vector_en: models.SparseVector,
-    sparse_vector_zh: models.SparseVector | None,
-    top_k: int,
-    text_filter: models.Filter | None = None,
-    embed_sparse_vector: dict | None = None,
-    embed_colbert_vector: list[list[float]] | None = None,
-) -> list:
-    """Issue a single hybrid query (dense + BM25(en) + BM25(zh) prefetched, fused via RRF).
-
-    Qdrant ranks each prefetch independently, then RRF combines the
-    ranked lists. Per-channel bias is applied via
-    ``models.RrfQuery(rrf=models.Rrf(weights=[...]))`` — the weights
-    array is positional, one entry per prefetch. The default
-    1.0/1.0/1.0 matches the previous uniform-fusion behaviour; raise
-    ``Settings.rrf_weight_bm25_zh`` to 1.5 to give Chinese-BM25 more
-    weight in the fused ranking.
-
-    When ``bm25_zh_enabled`` is on (and the caller passed a non-empty
-    sparse vector), the Chinese channel is included as a third
-    prefetch and the weight list grows to match.
-
-    When ``embed_sparse_vector`` / ``embed_colbert_vector`` are
-    provided (the embedder supports them — bge-m3), extra prefetches
-    for the ``embed_sparse`` sparse field and the ``embed_colbert``
-    multi-vector field are appended, and the RRF weights list grows
-    to keep the positional mapping intact. The OpenAI-compatible
-    embedder passes ``None`` for both so the prefetch list and
-    schema are unchanged from the pre-capability behaviour.
-
-    When ``text_filter`` is provided it is applied to every prefetch
-    channel — Qdrant's ``query_filter`` parameter is ignored by the
-    RRF-fused query path on qdrant-client 1.18, so the filter has to
-    live on each ``Prefetch`` to take effect. Used to keep
-    image-source placeholders out of text→text recall without
-    dropping them from the collection.
-
-    When all weights are 1.0 (the default), we fall back to
-    ``models.FusionQuery(fusion=models.Fusion.RRF)`` — equivalent to
-    uniform RRF — so the Qdrant server's RRF defaults (k=60) apply
-    without the explicit ``RrfQuery`` wrapper.
-    """
-    settings = get_settings()
-    prefetches = [
-        models.Prefetch(
-            query=dense_vector,
-            using=DENSE_VECTOR_NAME,
-            limit=HYBRID_PREFETCH_LIMIT,
-            filter=text_filter,
-        ),
-        models.Prefetch(
-            query=sparse_vector_en,
-            using=SPARSE_VECTOR_NAME,
-            limit=HYBRID_PREFETCH_LIMIT,
-            filter=text_filter,
-        ),
-    ]
-    include_zh = (
-        settings.bm25_zh_enabled
-        and sparse_vector_zh is not None
-        and len(sparse_vector_zh.indices) > 0
+def build_qdrant_image_index(force_recreate: bool = False, progress_cb=None):
+    return indexing.build_image_index(
+        force_recreate=force_recreate,
+        progress_cb=progress_cb,
     )
-    if include_zh:
-        prefetches.append(
-            models.Prefetch(
-                query=sparse_vector_zh,
-                using=settings.bm25_zh_vector_name,
-                limit=HYBRID_PREFETCH_LIMIT,
-                filter=text_filter,
-            )
-        )
-    include_embed_sparse = embed_sparse_vector is not None and bool(
-        embed_sparse_vector.get("indices")
-    )
-    if include_embed_sparse:
-        prefetches.append(
-            models.Prefetch(
-                query=models.SparseVector(
-                    indices=embed_sparse_vector["indices"],  # type: ignore[index]
-                    values=embed_sparse_vector["values"],  # type: ignore[index]
-                ),
-                using=EMBED_SPARSE_VECTOR_NAME,
-                limit=HYBRID_PREFETCH_LIMIT,
-                filter=text_filter,
-            )
-        )
-    include_embed_colbert = embed_colbert_vector is not None and len(embed_colbert_vector) > 0
-    if include_embed_colbert:
-        prefetches.append(
-            models.Prefetch(
-                query=embed_colbert_vector,
-                using=EMBED_COLBERT_VECTOR_NAME,
-                limit=HYBRID_PREFETCH_LIMIT,
-                filter=text_filter,
-            )
-        )
-    weights = [
-        settings.rrf_weight_dense,
-        settings.rrf_weight_bm25,
-    ]
-    if include_zh:
-        weights.append(settings.rrf_weight_bm25_zh)
-    if include_embed_sparse:
-        weights.append(1.0)
-    if include_embed_colbert:
-        weights.append(1.0)
-    # Use the weighted ``RrfQuery`` only when a channel actually
-    # diverges from the default — uniform-weight queries use the
-    # simpler ``FusionQuery`` so the server's defaults apply.
-    if all(abs(w - 1.0) < 1e-9 for w in weights):
-        fusion_query: models.FusionQuery | models.RrfQuery = models.FusionQuery(
-            fusion=models.Fusion.RRF
-        )
-    else:
-        fusion_query = models.RrfQuery(
-            rrf=models.Rrf(weights=weights, k=RRF_K),
-        )
-    return client.query_points(
-        collection_name=collection_name,
-        prefetch=prefetches,
-        query=fusion_query,
-        limit=top_k,
-        with_payload=True,
-    ).points
 
 
 def qdrant_text_search(
@@ -1188,259 +71,18 @@ def qdrant_text_search(
     top_k: int = 5,
     *,
     include_image_sources: bool = False,
-) -> list[SearchHit]:
-    """Hybrid text→text search.
-
-    By default, image-source documents are excluded from the result set
-    because they usually carry only a placeholder text chunk
-    ("图片标题: Picsum 1015") that pollutes text→text recall. Pass
-    ``include_image_sources=True`` to include them (e.g. for image-text
-    hybrid answers). The filter is applied as a Qdrant post-fusion
-    filter so it does not affect RRF rank computation.
-
-    When the query preprocessor is enabled (see
-    ``Settings.query_fuzzy`` / ``query_lowercase`` / ``query_expansion``),
-    the BM25 channels use the preprocessed form (lowercased, typo-corrected,
-    expanded) while the dense channel keeps the original query intact —
-    multilingual embeddings are case-aware.
-    """
-    from ..query_preprocess import preprocess
-
-    pre = preprocess(query)
-    embedder = get_default_text_embedder()
-    client = get_qdrant_client()
-    dense_query = embedder.embed(pre.dense_query)
-    sparse_query = _embed_bm25([pre.bm25_query])[0]
-    sparse_query_zh = _embed_bm25_zh_query(pre.bm25_query)
-
-    # Probe optional embedder-native sparse / ColBERT query vectors.
-    # The OpenAI-compatible embedder does not implement these methods
-    # (``getattr`` returns ``None``), so the default configuration
-    # keeps the dense + bm25 + bm25_zh prefetch list unchanged.
-    embed_sparse_query: dict | None = None
-    embed_colbert_query: list[list[float]] | None = None
-    if _embedder_sparse_capability(embedder):
-        fn_s = getattr(embedder, "embed_text_sparse", None)
-        if fn_s is not None:
-            try:
-                embed_sparse_query = fn_s(pre.dense_query)
-            except Exception:
-                embed_sparse_query = None
-    if _embedder_colbert_capability(embedder):
-        fn_c = getattr(embedder, "embed_text_colbert", None)
-        if fn_c is not None:
-            try:
-                embed_colbert_query = fn_c(pre.dense_query)
-            except Exception:
-                embed_colbert_query = None
-
-    text_filter: models.Filter | None = None
-    if not include_image_sources:
-        # Exclude image-source chunks only — they carry placeholder text
-        # ("图片标题: …") that pollutes text→text recall. The earlier
-        # ``must=[source_type == "pdf"]`` form silently dropped every
-        # non-PDF source_type (document, …), so a freshly uploaded docx
-        # was indexed but never returned by search. ``must_not`` keeps
-        # pdf + document and only filters out image.
-        text_filter = models.Filter(
-            must_not=[
-                models.FieldCondition(key="source_type", match=models.MatchValue(value="image"))
-            ]
-        )
-
-    # Determine the active collection name (Qdrant active-text env var wins).
-    try:
-        results = _hybrid_text_query(
-            client,
-            text_collection(len(dense_query)),
-            dense_query,
-            sparse_query,
-            sparse_query_zh,
-            top_k,
-            text_filter=text_filter,
-            embed_sparse_vector=embed_sparse_query,
-            embed_colbert_vector=embed_colbert_query,
-        )
-    except (ValueError, UnexpectedResponse) as exc:
-        # The text collection may not exist yet (e.g. a fresh install, or
-        # an instance that has only ingested images). Degrade to an empty
-        # result instead of crashing hybrid_search — mirrors the image
-        # routes' collection-missing handling.
-        if not _is_collection_missing(exc):
-            raise
-        return []
-    return [_point_to_hit("qdrant_text", point) for point in results]
+):
+    if include_image_sources:
+        return search.text_search(query, top_k=top_k, include_image_sources=True)
+    return search.text_search(query, top_k=top_k)
 
 
-def _filter_by_relevance(results, threshold: float) -> list:
-    """Drop Qdrant points whose cosine score is below ``threshold``.
-
-    Used by the image search routes to give them a relevance floor:
-    off-topic natural-language queries typically score below the floor
-    even for the closest image, so filtering returns an empty list
-    instead of ten random Picsum photos. ``threshold=0.0`` keeps every
-    result (i.e. the previous behaviour).
-    """
-    if threshold <= 0.0:
-        return list(results)
-    return [p for p in results if (p.score or 0.0) >= threshold]
+def qdrant_text_to_image_search(query: str, top_k: int = 5):
+    return search.text_to_image_search(query, top_k=top_k)
 
 
-def _is_collection_missing(exc: BaseException) -> bool:
-    """True iff ``exc`` is Qdrant's "collection not found" error.
-
-    A freshly installed instance (or one that has only ingested images /
-    only ingested text) has no matching collection yet; the search routes
-    must treat that as a clean empty result rather than crashing
-    ``hybrid_search``. Centralised here so all three routes degrade
-    symmetrically.
-
-    Two client modes raise different exception types for a missing
-    collection, both of which must be recognised:
-
-    * **local file mode** raises ``ValueError`` with ``"not found"`` in
-      the message.
-    * **remote server mode** (``QDRANT_URL``) raises
-      ``UnexpectedResponse`` (an ``ApiException`` subclass, *not* a
-      ``ValueError``) with HTTP 404. Before this handled the remote
-      case, a remote instance that had only ingested one modality crashed
-      ``hybrid_search`` instead of returning an empty route.
-    """
-    return (isinstance(exc, ValueError) and "not found" in str(exc)) or (
-        isinstance(exc, UnexpectedResponse) and getattr(exc, "status_code", None) == 404
-    )
-
-
-def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
-    try:
-        provider = get_default_image_embedder()
-    except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
-        return []
-    client = get_qdrant_client()
-    try:
-        query_vector = provider.embed_text(query)
-    except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
-        # ``embed_text`` itself can surface availability (e.g. cn_clip cache
-        # missing tokenizer files → features is a non-tensor object). Treat
-        # that the same as "no image embedder available at all" — the image
-        # route silently returns empty so text retrieval still works.
-        return []
-    # The image collection may not exist yet (e.g. user only ingested
-    # PDFs). Treat "no image index" as a clean empty result instead of
-    # crashing the hybrid_search call.
-    try:
-        results = client.query_points(
-            collection_name=image_collection(len(query_vector)),
-            query=query_vector,
-            limit=top_k,
-            with_payload=True,
-        ).points
-    except (ValueError, UnexpectedResponse) as exc:
-        if not _is_collection_missing(exc):
-            raise
-        return []
-    threshold = get_settings().image_relevance_threshold
-    results = _filter_by_relevance(results, threshold)
-    return [_point_to_hit("qdrant_text_to_image", point) for point in results]
-
-
-def qdrant_image_to_image_search(image_path: Path, top_k: int = 5) -> list[SearchHit]:
-    try:
-        provider = get_default_image_embedder()
-    except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
-        return []
-    client = get_qdrant_client()
-    query_vector = provider.embed_image(image_path)
-    # ``embed_image`` returns ``None`` if the file can't be opened / encoded.
-    # Treat that as an empty result — symmetric with the text→image route.
-    if query_vector is None:
-        return []
-    # The image collection may not exist yet (e.g. the user only ingested
-    # PDFs/documents). Degrade to an empty result instead of raising —
-    # symmetric with the text→image route and the text route.
-    try:
-        results = client.query_points(
-            collection_name=image_collection(len(query_vector)),
-            query=query_vector,
-            limit=top_k,
-            with_payload=True,
-        ).points
-    except (ValueError, UnexpectedResponse) as exc:
-        if not _is_collection_missing(exc):
-            raise
-        return []
-    threshold = get_settings().image_relevance_threshold
-    results = _filter_by_relevance(results, threshold)
-    return [_point_to_hit("qdrant_image_to_image", point) for point in results]
-
-
-def _point_to_hit(route: str, point) -> SearchHit:
-    payload = point.payload or {}
-    return _payload_to_hit(route, float(point.score or 0.0), payload)
-
-
-def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> SearchHit:
-    images = payload.get("images")
-    title = str(payload.get("asset_title") or payload.get("title") or "")
-    section = str(payload.get("section") or "")
-    body = str(payload.get("text", ""))
-    # Build a richer evidence snippet: "<title> [<section>] <body[:N]>".
-    # The previous 1000-char truncation dropped context the reranker
-    # cross-encoder needs to separate relevant hits from high-score
-    # false positives. 4000 chars keeps the body around a typical
-    # cross-encoder context window while bounding payload size.
-    prefix_parts = [p for p in (title, section) if p]
-    prefix = " | ".join(prefix_parts)
-    evidence = f"{prefix}\n\n{body[:4000]}" if prefix else body[:4000]
-    return SearchHit(
-        route=route,
-        score=score,
-        asset_id=str(payload.get("asset_id", "")),
-        title=title,
-        source_type=str(payload.get("source_type", "")),
-        source_path=str(payload.get("source_path", "")),
-        evidence=evidence,
-        metadata=dict(payload),
-        images=list(images) if isinstance(images, list) else [],
-    )
-
-
-def _existing_collections_for(client: QdrantClient, base: str) -> list[str]:
-    """Return the Qdrant collections that exist for a base name.
-
-    Matches the bare base name (``multimodal_text``) and any dim-suffixed
-    variant (``multimodal_text_1024d``) produced by
-    :func:`text_collection`/`image_collection` when a vector size is set.
-    Different embedders over time leave several ``_<dim>d`` collections, so
-    this returns a list — callers (delete, count) want to touch *all* of them
-    rather than whichever the process happens to have cached as active.
-
-    Resolving from the live server (not the ``_ACTIVE_*`` module cache) is what
-    makes ``delete_points_by_asset_id`` correct when run in a process that never
-    ingested (e.g. ``mmrag delete``): without it, ``text_collection()`` falls
-    back to the bare base name and ``client.delete`` raises "Collection not
-    found", silently leaving the points behind.
-
-    Returns an empty list on any error (server down, unexpected response) so
-    the caller can decide how to record it rather than raising mid-cleanup.
-    """
-    if not base:
-        return []
-    try:
-        names = [c.name for c in client.get_collections().collections]
-    except Exception as exc:  # pragma: no cover — server-down / network
-        print(f"[qdrant] get_collections failed for base={base!r}: {exc}")
-        return []
-    pattern = re.compile(rf"{re.escape(base)}_(\d+)d")
-    matched = [n for n in names if n == base or pattern.fullmatch(n)]
-    # De-duplicate while preserving order.
-    seen: set[str] = set()
-    out: list[str] = []
-    for n in matched:
-        if n not in seen:
-            seen.add(n)
-            out.append(n)
-    return out
+def qdrant_image_to_image_search(image_path: Path, top_k: int = 5):
+    return search.image_to_image_search(image_path, top_k=top_k)
 
 
 def delete_points_by_asset_id(
@@ -1448,52 +90,71 @@ def delete_points_by_asset_id(
     *,
     text: bool = True,
     image: bool = True,
-) -> dict[str, int]:
-    """Delete every Qdrant point whose payload carries ``asset_id``.
+):
+    return collections.delete_points_by_asset_id(asset_id, text=text, image=image)
 
-    Returns a small ``{"text": N, "image": M}`` map with the number of
-    collections that were actually scanned and deleted from. Failures are
-    logged but do not raise so the caller's overall ``delete_asset`` cleanup
-    can still complete.
 
-    Collections are resolved from the live Qdrant server (via
-    :func:`_existing_collections_for`), **not** from the module's active-cache.
-    This is the fix for ``text_collections_scanned: 0`` — a ``mmrag delete``
-    run in a process that never ingested would otherwise target the bare base
-    collection name (``multimodal_text``) which does not exist (the real name
-    is ``multimodal_text_<dim>d``), and the resulting "Collection not found"
-    was silently swallowed, leaving the points behind to pollute retrieval.
+# Private compatibility aliases retained for existing in-repository callers
+# and focused regression tests. New code should import their owning module.
+_clean_stale_lock = client._clean_stale_lock
+_probe_lock_holder = client._probe_lock_holder
+_lock_holder_pid = client._lock_holder_pid
+_pid_alive = client._pid_alive
+_create_collection = collections._create_collection
+_existing_collections_for = collections._existing_collections_for
+_bm25_embedder = indexing._bm25_embedder
+_embed_bm25 = indexing._embed_bm25
+_load_bm25_zh_idf = indexing._load_bm25_zh_idf
+_embed_bm25_zh_query = search._embed_bm25_zh_query
+_embedder_sparse_capability = indexing._embedder_sparse_capability
+_embedder_colbert_capability = indexing._embedder_colbert_capability
+_tokenize_for_bm25 = indexing._tokenize_for_bm25
+_bm25_okapi_scores = indexing._bm25_okapi_scores
+_select_top_chunks_per_pdf = indexing._select_top_chunks_per_pdf
+_hybrid_text_query = search._hybrid_text_query
+_filter_by_relevance = search._filter_by_relevance
+_is_collection_missing = search._is_collection_missing
+_point_to_hit = search._point_to_hit
+_payload_to_hit = search._payload_to_hit
 
-    When ``qdrant_active_text_collection`` / ``qdrant_active_image_collection``
-    is set (a user explicitly pinning a collection for migration), that single
-    name is used verbatim instead of listing — preserving the pin intent.
-    """
-    if not asset_id:
-        return {"text": 0, "image": 0}
-    selector = models.FilterSelector(
-        filter=models.Filter(
-            must=[models.FieldCondition(key="asset_id", match=models.MatchValue(value=asset_id))]
-        )
-    )
-    counts = {"text": 0, "image": 0}
-    client = get_qdrant_client()
-    settings = get_settings()
-    if text:
-        pinned = settings.qdrant_active_text_collection
-        cols = [pinned] if pinned else _existing_collections_for(client, TEXT_COLLECTION_BASE)
-        for col in cols:
-            try:
-                client.delete(collection_name=col, points_selector=selector)
-                counts["text"] += 1
-            except Exception as exc:
-                print(f"[qdrant] failed to delete text points for {asset_id} in {col}: {exc}")
-    if image:
-        pinned = settings.qdrant_active_image_collection
-        cols = [pinned] if pinned else _existing_collections_for(client, IMAGE_COLLECTION_BASE)
-        for col in cols:
-            try:
-                client.delete(collection_name=col, points_selector=selector)
-                counts["image"] += 1
-            except Exception as exc:
-                print(f"[qdrant] failed to delete image points for {asset_id} in {col}: {exc}")
-    return counts
+
+def __getattr__(name: str):
+    """Forward read-only compatibility access to relocated module state."""
+    owner = {
+        "_QDRANT_CLIENT": client,
+        "_QDRANT_CLIENT_KEY": client,
+        "_QDRANT_CLIENT_LOCK": client,
+        "_ACTIVE_TEXT_COLLECTION": collections,
+        "_ACTIVE_IMAGE_COLLECTION": collections,
+        "_BM25_ZH_IDF_CACHE": indexing,
+        "_BM25_ZH_IDF_LOCK": indexing,
+    }.get(name)
+    if owner is None:
+        raise AttributeError(name)
+    return getattr(owner, name)
+
+
+__all__ = [
+    "BM25_MODEL_NAME",
+    "DENSE_VECTOR_NAME",
+    "EMBED_COLBERT_VECTOR_NAME",
+    "EMBED_SPARSE_VECTOR_NAME",
+    "HYBRID_PREFETCH_LIMIT",
+    "IMAGE_COLLECTION_BASE",
+    "RRF_K",
+    "SPARSE_VECTOR_NAME",
+    "TEXT_COLLECTION_BASE",
+    "QdrantLockHeldError",
+    "build_qdrant_image_index",
+    "build_qdrant_text_index",
+    "delete_points_by_asset_id",
+    "get_qdrant_client",
+    "image_collection",
+    "invalidate_bm25_zh_idf_cache",
+    "qdrant_image_to_image_search",
+    "qdrant_text_search",
+    "qdrant_text_to_image_search",
+    "reset_qdrant_client_cache",
+    "stable_point_id",
+    "text_collection",
+]

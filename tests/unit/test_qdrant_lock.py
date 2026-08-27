@@ -115,7 +115,7 @@ def test_clean_stale_lock_raises_when_holder_unknown(tmp_path: Path, monkeypatch
     def _unknown_probe(_lock):
         return ("unknown", None)
 
-    monkeypatch.setattr("mm_asset_rag.backends.qdrant_backend._probe_lock_holder", _unknown_probe)
+    monkeypatch.setattr("mm_asset_rag.backends.qdrant.client._probe_lock_holder", _unknown_probe)
     with pytest.raises(QdrantLockHeldError) as excinfo:
         _clean_stale_lock(qdrant_path)
     assert "could not be determined" in str(excinfo.value)
@@ -133,7 +133,7 @@ def test_clean_stale_lock_removes_when_lsof_confirms_free(tmp_path: Path, monkey
     def _free_probe(_lock):
         return ("free", None)
 
-    monkeypatch.setattr("mm_asset_rag.backends.qdrant_backend._probe_lock_holder", _free_probe)
+    monkeypatch.setattr("mm_asset_rag.backends.qdrant.client._probe_lock_holder", _free_probe)
     _clean_stale_lock(qdrant_path)
     assert not lock.exists()
 

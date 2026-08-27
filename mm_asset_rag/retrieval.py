@@ -10,20 +10,15 @@ cosines live in 0.15-0.40, dense embeddings in 0.0-1.0, BM25 scores
 can be unbounded) — the historical ``score / max`` normalisation
 coupled the routes' scales and let one hot route silence the others.
 
-``RRF_K`` is imported from ``qdrant_backend`` so the cross-route
-fusion and the in-Qdrant prefetch fusion share the same constant.
+``RRF_K`` is backend-neutral retrieval policy. Adapters may import it when
+their native fusion needs to match the application-level rank fusion.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from .backends.qdrant_backend import (
-    RRF_K,
-    qdrant_image_to_image_search,
-    qdrant_text_search,
-    qdrant_text_to_image_search,
-)
 from .embedders import get_default_reranker
 from .query_intent import (
     IntentWeights,
@@ -32,6 +27,12 @@ from .query_intent import (
 )
 from .schema import SearchHit
 from .settings import get_settings
+
+if TYPE_CHECKING:
+    from .protocols import SearchBackend
+
+
+RRF_K = 60
 
 
 def _merge_routes(existing: list[str] | None, new_route: str) -> list[str]:
@@ -167,6 +168,7 @@ def hybrid_search(
     min_score: float | None = None,
     *,
     weights_override: IntentWeights | None = None,
+    backend: SearchBackend | None = None,
 ) -> list[SearchHit]:
     """Run a hybrid search across text + (optionally) image routes.
 
@@ -204,6 +206,11 @@ def hybrid_search(
     fails to load (missing dep / model), the search degrades to the
     single-stage path transparently.
     """
+    if backend is None:
+        from .registry import get_backend
+
+        backend = get_backend("qdrant")
+
     settings = get_settings()
     reranker = get_default_reranker()
     # Fetch a wider candidate pool when reranking; otherwise top_k end-to-end.
@@ -220,15 +227,15 @@ def hybrid_search(
             image_to_image=settings.hybrid_weight_image_to_image,
         )
     groups: list[list[SearchHit]] = [
-        qdrant_text_search(query, top_k=fetch_k),
-        qdrant_text_to_image_search(query, top_k=fetch_k),
+        backend.search_text(query=query, top_k=fetch_k),
+        backend.search_text_to_image(query=query, top_k=fetch_k),
     ]
     weights = [chosen.text, chosen.text_to_image]
     # Image-to-image is only consulted when an ``image_path`` is supplied
     # *and* its weight is positive — calling it just to multiply by 0
     # wastes a Qdrant round-trip.
     if image_path and chosen.image_to_image > 0:
-        groups.append(qdrant_image_to_image_search(image_path, top_k=fetch_k))
+        groups.append(backend.search_image(image_path=image_path, top_k=fetch_k))
         weights.append(chosen.image_to_image)
     effective_min = settings.min_score if min_score is None else min_score
     merged = merge_hits(groups, weights, top_k=fetch_k, min_score=effective_min)
