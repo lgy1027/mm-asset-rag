@@ -103,6 +103,11 @@ pip install -e ".[clip]"
 
 Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`. Leave `QDRANT_ACTIVE_*_COLLECTION` unset to use the auto suffix; set them only to pin a collection that does not match the current embedder's dim.
 
+The built-in `QdrantBackend` is registered as the implementation of the
+search and indexing backend ports. Application callers use `SearchService`
+and those ports, so Qdrant settings affect the active adapter without making
+API, CLI, answer, or evaluation code depend on Qdrant helper functions.
+
 ## Retrieval tuning
 
 | Variable | Default | Purpose |
@@ -292,6 +297,13 @@ The default (unset) loads the small generic sample shipped with the package (`mm
 The file's `version` field is checked (`v1` vs `v2`): loading a v2 file under `mmrag eval` (or vice versa) raises an error instead of silently scoring 0 cases.
 
 A larger internal baseline ships at `examples/eval_cases_chapter11_v{1,2}.json` (load with `--cases`) for reproducibility, but it references assets not in this repo — see `examples/eval_cases_README.md`. Without matching assets ingested, every case returns `hit: false`.
+
+Use non-empty `expected_asset_ids` for **positive** retrieval cases. Their
+hit-rate and rank-based metrics measure retrieval of expected evidence. Use
+an empty list for a **negative** rejection case: it is reported separately as
+empty-result rate and false-retrieval rate, and is not counted as a missed
+positive retrieval. Reported values apply only to the selected corpus and
+case set; they are not a retrieval-quality threshold.
 
 ## Answer-quality eval (LLM judge)
 

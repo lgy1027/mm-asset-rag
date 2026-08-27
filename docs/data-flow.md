@@ -52,6 +52,11 @@
 ## 四、检索:按模式走不同路
 
 ```
+API / CLI / answer / eval
+   │
+   └─ SearchCommand → SearchService.execute
+        │  (统一校验和路由; 依赖 SearchBackend port)
+        ▼
 query 预处理(小写/纠错/同义词,均可开关)
    │
    ├─ mode=text (文→文,默认)
@@ -67,6 +72,10 @@ query 预处理(小写/纠错/同义词,均可开关)
         text 路必跑 + 传了 image_path 才带 image-to-image 路
         → RRF 融合 → 重排
 ```
+
+当前注册的 `QdrantBackend` 是 `SearchBackend` / `IndexBackend` 的适配器：
+`SearchService` 不直接依赖 Qdrant 的具体搜索函数。`service.dispatch_search`
+只保留为 API / CLI 的兼容参数适配层，实际检索仍由 `SearchService` 执行。
 
 **RRF 融合**(`retrieval.merge_hits`):把各路原始分统一到 rank 空间
 `score = Σ weight/(RRF_K + rank)`,避免某路量纲(如 CLIP cosine)压死其他路。

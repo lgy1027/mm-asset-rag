@@ -11,7 +11,9 @@
                                          │  delegates
                                          ▼
                        ┌────────────────────────────────────────────┐
-                       │     Service (mm_asset_rag/service.py)      │
+                       │        Application services                │
+                       │ SearchService (search_service.py):         │
+                       │   - execute(SearchCommand)                 │
                        │  IngestService:                            │
                        │   - parse_assets / ingest_assets            │
                        │   - reindex (force-recreate)                │
@@ -45,26 +47,32 @@
 
 ## What each layer does
 
-- **`api.py` / `cli.py`** are thin entry points. Both use the upload-first
-  pipeline: files are sniffed, previewed, confirmed, then passed to the same
-  `IngestService` for parse / index / task-history work.
+- **`api.py` / `cli.py`** are thin entry points. Retrieval callers create a
+  `SearchCommand` and use `SearchService.execute`; uploads use the
+  upload-first pipeline, then pass confirmed assets to `IngestService` for
+  parse / index / task-history work.
+- **`search_service.SearchService`** is the transport-neutral retrieval
+  entry point for the API, CLI, answer generation, and evaluation. It owns
+  mode validation and routing, and depends on the `SearchBackend` port rather
+  than Qdrant search helpers.
 - **`upload_pipeline.UploadPipeline`** owns the two-stage upload flow:
   `/upload/preview` copies files into `.preview-cache`, calls `sniff.py` and
   optional VLM metadata extraction, then `/upload/confirm` moves confirmed
   files into `assets/pdfs` or `assets/images` and constructs `Asset` objects.
-- **`service.IngestService`** owns parse + index + task state. It uses
-  `Protocol`s from `protocols.py` to dispatch to the right parser /
-  embedder / backend via `registry.py`, and persists every state change to
-  `$MM_ASSET_RAG_HOME/tasks.db` so history survives restarts.
+- **`service.IngestService`** is the public facade for parse + index + task
+  lifecycle work. `IngestWorkflow` owns parse/enrich/document/index
+  sequencing, while `TaskStore` owns SQLite persistence; the facade keeps
+  threads, cancellation, retry, and streaming behind the API boundary.
 - **`parsers/`** turn raw files into `ParsedDocument` records. Today:
   PyMuPDF + PaddleOCR-VL (PDF); OCR + VLM caption (image). Each parser
   satisfies `Parser` Protocol and is registered at import time.
 - **`embedders/`** generate dense / sparse vectors. Today: OpenAI-
   compatible text embedder + CLIP image embedder. Each satisfies the
   `Embedder` Protocol.
-- **`backends/`** store vectors and run similarity search. Today: Qdrant
-  (local file or remote server). The `VectorBackend` Protocol is the
-  swap-in point for Milvus / Pinecone.
+- **`backends/`** store vectors and run similarity search. Today:
+  `QdrantBackend` is the Qdrant adapter (local file or remote server),
+  registered behind the `SearchBackend` and `IndexBackend` ports. Those ports
+  are the swap-in point for Milvus / Pinecone.
 - **`retrieval.hybrid_search`** is pure (no I/O); it normalizes per-route
   scores and weights them from `Settings` (defaults: text 0.80,
   text-to-image 0.20, image-to-image 0.15).
@@ -74,13 +82,15 @@
 
 ## Protocol + registry
 
-Three Protocols are declared in `protocols.py` and registered in `registry.py`:
+The runtime registry selects the adapters that satisfy the declared
+`protocols.py` capabilities:
 
 | Protocol          | Keyed by            | Where the registry is queried                            |
 | ----------------- | ------------------- | ------------------------------------------------------- |
 | `Parser`          | `(source_type, name)` | `parsers/__init__.py` registers `pymupdf` / `paddleocr_vl` (PDF), `docling` / `markitdown` (documents), `image` |
 | `Embedder`        | `(modality, name)`  | `embedders/__init__.py` registers the default text embedder |
-| `VectorBackend`   | `name`              | `backends/__init__.py` registers Qdrant                  |
+| `SearchBackend` / `IndexBackend` | `name` | `backends/__init__.py` registers the Qdrant adapter |
+| `VectorBackend`   | `name`              | Legacy aggregate port retained for compatible adapters   |
 
 Adding a new modality (audio, video) is a three-line change — see
 [CONTRIBUTING.md](../CONTRIBUTING.md#adding-a-new-modality-audio-video).
@@ -88,11 +98,12 @@ Adding a new modality (audio, video) is a three-line change — see
 ## Task persistence
 
 Background work runs on daemon `threading.Thread`s spawned by
-`IngestService._spawn()`. Every `_patch()` writes a JSON snapshot of
-the task to `$MM_ASSET_RAG_HOME/tasks.db`. On startup, the FastAPI
-`lifespan` calls `service.load_history()`, which rebuilds the in-memory
-task list and reclassifies any task that was still `running` when the
-previous process exited as `interrupted`.
+`IngestService._spawn()`. `TaskStore` persists every task snapshot to
+`$MM_ASSET_RAG_HOME/tasks.db`, while `IngestService` exposes the task
+lifecycle to HTTP and CLI callers. On startup, the FastAPI `lifespan` calls
+`service.load_history()`, which rebuilds the in-memory task list and
+reclassifies any task that was still `running` when the previous process
+exited as `interrupted`.
 
 ## Configuration
 
@@ -123,5 +134,6 @@ dropped that integration because:
 - Hybrid retrieval here crosses multiple collections, and image vectors
   are not first-class in LlamaIndex's `VectorStore` abstraction.
 
-We talk to `qdrant-client` directly and own the sparse + dense hybrid
-logic in `retrieval.hybrid_search`.
+`QdrantBackend` talks to `qdrant-client` directly; application services use
+its ports, while the project owns the sparse + dense hybrid logic in
+`retrieval.hybrid_search`.

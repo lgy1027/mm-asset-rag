@@ -84,7 +84,7 @@ Unsupported or over-limit files return a preview with `sniff.source_type="unknow
 
 ## `POST /upload/confirm`
 
-Applies user edits to preview cards, moves confirmed files into `assets/pdfs/`, `assets/images/`, or `assets/documents/`, and starts a background parse + index task.
+Applies user edits to preview cards, moves confirmed files into `assets/pdfs/`, `assets/images/`, or `assets/documents/`, and starts a background parse + index task. `IngestService` is the public task facade; it delegates workflow sequencing to `IngestWorkflow` and durable task snapshots to `TaskStore`.
 
 ```json
 // request
@@ -295,16 +295,21 @@ Serves one image extracted from `parsed/<asset_id>/images/` (figures pulled out 
 }
 ```
 
-The four modes map to:
+The four modes are selected by `SearchService` and dispatched through the
+active `SearchBackend` adapter:
 
-| Mode | Backend call |
+| Mode | Retrieval route |
 | --- | --- |
-| `text` | `qdrant_text_search` — dense + BM25 RRF on the text collection |
-| `text-to-image` | `qdrant_text_to_image_search` — embeds the query with the CLIP text encoder, queries the image collection |
-| `image-to-image` | `qdrant_image_to_image_search` — embeds `image_path` with the CLIP image encoder |
+| `text` | Dense + BM25 RRF on the text collection (with query rewrite when configured) |
+| `text-to-image` | Embeds the query with the CLIP text encoder and queries the image collection |
+| `image-to-image` | Embeds `image_path` with the CLIP image encoder |
 | `hybrid` | weighted merge of text + text-to-image (and image-to-image if `image_path` provided) |
 
 `image-to-image` without `image_path` returns HTTP 400.
+
+The API route is an HTTP adapter only: it converts request fields to a
+`SearchCommand`; retrieval itself is executed by `SearchService`, not by
+Qdrant-specific helpers.
 
 ## `POST /answer`
 
@@ -363,3 +368,11 @@ Runs the retrieval regression set. Each case reports whether any of the top-`top
 ```
 
 Cases live in JSON files (`{"version","groups":{group:[{query,expected_asset_ids}]}}`); the bundled default is a small text→text generic sample. Ship your own (or use `examples/eval_cases_chapter11_v{1,2}.json`) and point `cases_path` / `EVAL_CASES_PATH` at it. Without matching assets ingested, every case returns `hit: false`.
+
+Cases with one or more expected asset IDs are **positive** retrieval cases:
+their hit-rate and ranking metrics measure whether expected evidence was
+retrieved. Cases with `expected_asset_ids: []` are **negative** rejection
+cases: they report empty-result and false-retrieval rates separately and do
+not lower positive retrieval hit-rate. These measurements describe the chosen
+corpus and cases; they do not establish a universal retrieval-quality
+threshold.

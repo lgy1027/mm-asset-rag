@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +14,13 @@ from mm_asset_rag.search_service import (
     SearchMode,
     SearchService,
 )
+
+
+def test_search_service_has_no_concrete_qdrant_dependency() -> None:
+    source = Path("mm_asset_rag/search_service.py").read_text(encoding="utf-8")
+
+    assert "backends.qdrant_backend import" not in source
+    assert "qdrant_text_search" not in source
 
 
 def test_dispatch_search_builds_one_transport_neutral_command(monkeypatch) -> None:
