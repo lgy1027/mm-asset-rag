@@ -7,7 +7,7 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
@@ -43,6 +43,34 @@ def _make_asset(tmp_home: Path, name: str = "fish.png") -> Asset:
         tags=[],
         asset_dir=tmp_home / "assets",
     )
+
+
+def _wait_until(predicate, *, timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not met before timeout")
+
+
+def test_load_history_reads_through_task_store(tmp_home: Path) -> None:
+    store = Mock()
+    store.load.return_value = []
+
+    IngestService(task_store=store).load_history()
+
+    store.load.assert_called_once_with()
+
+
+def test_ingest_service_delegates_worker_to_workflow(tmp_home: Path) -> None:
+    asset = _make_asset(tmp_home)
+    workflow = Mock()
+
+    record = IngestService(workflow=workflow).ingest_assets([asset], ParseOptions(assets=[asset]))
+
+    _wait_until(lambda: workflow.run.called)
+    assert record.task_id
 
 
 def test_retry_task_resurrects_assets(tmp_home: Path) -> None:

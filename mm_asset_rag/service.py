@@ -1,11 +1,8 @@
-"""Background-task service for ingest / reindex / task history.
+"""Public facade for ingest workers, task lifecycle, and task history.
 
-Owns the daemon ``threading.Thread`` workers that run parse + index,
-persists task state to ``$MM_ASSET_RAG_HOME/tasks.db`` (SQLite; legacy
-``tasks.jsonl`` is migrated on first startup) so it survives restarts,
-and surfaces :class:`TaskRecord` snapshots to ``GET /tasks`` /
-``GET /tasks/{id}``. Both ``api.py`` and ``cli.py`` delegate here so the
-parse pipeline has one implementation.
+``IngestService`` retains thread spawning, cancellation, retry, streaming,
+and public task APIs. SQLite persistence is delegated to ``TaskStore`` and
+parse/enrich/document/index sequencing is delegated to ``IngestWorkflow``.
 """
 
 from __future__ import annotations
@@ -35,6 +32,7 @@ from .backends.qdrant_backend import (
 )
 from .config import load_env
 from .document_store import documents_jsonl_lock
+from .ingest_workflow import IngestWorkflow
 from .paths import (
     get_assets_dir,
     get_captions_dir,
@@ -42,7 +40,8 @@ from .paths import (
     get_documents_jsonl,
     get_parsed_dir,
 )
-from .registry import get_backend, get_parser
+from .registry import get_backend
+from .registry import get_parser as get_parser
 from .search_service import (
     SearchCommand,
     coerce_search_mode,
@@ -51,6 +50,7 @@ from .search_service import (
 )
 from .settings import Settings, get_settings
 from .sniff import sniff
+from .task_store import TaskRecord, TaskStore, task_from_dict
 
 # ─── Helpers shared by api.py and cli.py ──────────────────────────────────
 
@@ -149,28 +149,6 @@ class AssetStatus(str, Enum):
 
 
 @dataclass
-class TaskRecord:
-    task_id: str
-    kind: str  # "parse" or "ingest"
-    status: str = "pending"  # pending | running | done | partial | failed | interrupted
-    started_at: float = field(default_factory=time.time)
-    finished_at: float | None = None
-    total: int = 0
-    processed: int = 0
-    skipped: int = 0
-    failed: int = 0
-    current: str = ""
-    error: str | None = None
-    uploaded_files: list[str] = field(default_factory=list)
-    parse_options: dict[str, object] = field(default_factory=dict)
-    source: str = "upload"
-    origin_task_id: str | None = None
-    force: bool = False
-    failed_only: bool = False
-    asset_statuses: dict[str, str] = field(default_factory=dict)
-
-
-@dataclass
 class ParseOptions:
     """Per-task parse configuration for uploaded/auto-sniffed assets.
 
@@ -224,19 +202,8 @@ class DeleteAssetReport:
 # ─── Task bookkeeping ────────────────────────────────────────────────────
 
 
-class _TaskCancelled(Exception):
-    """Raised inside a worker's index progress callback to break out of a
-    long ``upsert_*`` call when the task was cancelled mid-index.
-
-    Daemon threads can't be force-stopped, so cancellation is cooperative:
-    the index path checks ``_is_cancelled`` at each progress tick (one per
-    upsert batch) and raises this to unwind out of ``backend.upsert_*``.
-    The outer ``except`` chain treats it as a clean cancel, not a crash.
-    """
-
-
 class IngestService:
-    """Stateful ingest + index + task-history service.
+    """Stateful facade for ingest, task lifecycle, and task history.
 
     A single instance is constructed per process and shared between the
     FastAPI app and (in the future) the CLI. The module-level
@@ -244,10 +211,17 @@ class IngestService:
     """
 
     _TASKS_LOCK = threading.Lock()
-    _PERSIST_LOCK = threading.Lock()
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        *,
+        task_store: TaskStore | None = None,
+        workflow: IngestWorkflow | None = None,
+    ) -> None:
         self._settings = settings or get_settings()
+        self._task_store = task_store if task_store is not None else TaskStore()
+        self._workflow = workflow if workflow is not None else IngestWorkflow()
         self._tasks: dict[str, TaskRecord] = {}
         self._stream_events: dict[str, list[tuple[threading.Event, dict[str, object]]]] = {}
         # Per-task cancellation flags. ``_spawn`` creates one when a task
@@ -300,7 +274,7 @@ class IngestService:
             uploaded=uploaded,
             parse_options=self._serialise_options(options),
         )
-        self._spawn(_run_ingest_task, rec, options)
+        self._spawn(self._workflow.run, rec, options)
         return rec
 
     def retry_task(
@@ -381,7 +355,7 @@ class IngestService:
             )
             rec.asset_statuses = preserved_statuses
             self._patch(rec)
-            self._spawn(_run_ingest_task, rec, options)
+            self._spawn(self._workflow.run, rec, options)
         else:
             raise ValueError(f"unknown task kind for retry: {original.kind!r}")
         return rec
@@ -438,8 +412,8 @@ class IngestService:
     def list_tasks(self) -> list[TaskRecord]:
         """Return the task history ordered by most recent ``updated_at``.
 
-        Reads directly from ``tasks.db`` (with the ``updated_at``
-        index) instead of the in-memory dict. This means a process
+        Reads through ``TaskStore`` from ``tasks.db`` instead of the
+        in-memory dict. This means a process
         that never called ``load_history`` still sees the persisted
         history, and the SQL ``ORDER BY updated_at DESC`` gives a
         deterministic, time-ordered view rather than the dict's
@@ -456,21 +430,7 @@ class IngestService:
         UI. The merged result keeps SQLite's ``updated_at DESC``
         order for the overlapping rows.
         """
-        import sqlite3
-
-        db_path = self._tasks_db_path()
-        if not db_path.exists():
-            with self._TASKS_LOCK:
-                return list(self._tasks.values())
-        try:
-            with sqlite3.connect(str(db_path)) as conn:
-                rows = conn.execute("SELECT payload FROM tasks ORDER BY updated_at DESC").fetchall()
-        except sqlite3.DatabaseError as exc:
-            print(f"[tasks] warning: list_tasks db read failed: {exc}")
-            # Fall through to the in-memory cache so a transient DB
-            # failure doesn't blank the UI.
-            with self._TASKS_LOCK:
-                return list(self._tasks.values())
+        persisted = self._task_store.list()
         # Snapshot the in-memory view *under the lock* so a concurrent
         # ``_patch`` can't mutate a rec mid-overlay. We then iterate
         # SQLite rows in their existing desc order and substitute the
@@ -479,17 +439,13 @@ class IngestService:
             mem_snapshot = dict(self._tasks)
         out: list[TaskRecord] = []
         seen_ids: set[str] = set()
-        for (payload,) in rows:
-            try:
-                obj = json.loads(payload)
-            except json.JSONDecodeError:
-                continue
-            task_id = obj.get("task_id") if isinstance(obj, dict) else None
-            if isinstance(task_id, str) and task_id in mem_snapshot:
+        for stored_rec in persisted:
+            task_id = stored_rec.task_id
+            if task_id in mem_snapshot:
                 out.append(mem_snapshot[task_id])
                 seen_ids.add(task_id)
             else:
-                out.append(self._task_from_dict(obj))
+                out.append(stored_rec)
         # Memory-only recs: created via ``_new_task`` but not yet
         # persisted to SQLite (the race window M8 closes). Prepend
         # newest-first so the just-spawned task shows at the top of
@@ -512,47 +468,24 @@ class IngestService:
         ``tasks.jsonl.migrated`` so we don't redo the migration on the
         next boot.
         """
-        import sqlite3
-
-        db_path = self._tasks_db_path()
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-
-        self._maybe_legacy_migrate(db_path)
-
-        try:
-            with sqlite3.connect(str(db_path)) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = list(conn.execute("SELECT payload FROM tasks"))
-        except sqlite3.DatabaseError as exc:
-            print(f"[tasks] warning: could not open history db: {exc}")
-            return
-
-        latest: dict[str, dict[str, object]] = {}
-        for row in rows:
-            try:
-                obj = json.loads(row["payload"])
-            except json.JSONDecodeError:
-                continue
-            task_id = obj.get("task_id") if isinstance(obj, dict) else None
-            if isinstance(task_id, str) and task_id:
-                latest[task_id] = obj
+        records = self._task_store.load()
 
         interrupted = 0
         with self._TASKS_LOCK:
-            for task_id, obj in latest.items():
-                if obj.get("finished_at") is None and obj.get("status") == "running":
-                    obj["status"] = "interrupted"
-                    obj["current"] = (
-                        f"interrupted (previous process exited): {obj.get('current', '')}"
-                    ).strip(": ")
-                    obj["finished_at"] = time.time()
-                    obj["error"] = obj.get("error") or "process exited before task completed"
+            for rec in records:
+                if rec.finished_at is None and rec.status == "running":
+                    rec.status = "interrupted"
+                    rec.current = (f"interrupted (previous process exited): {rec.current}").strip(
+                        ": "
+                    )
+                    rec.finished_at = time.time()
+                    rec.error = rec.error or "process exited before task completed"
                     interrupted += 1
-                    self._persist(self._task_from_dict(obj))
-                self._tasks[task_id] = self._task_from_dict(obj)
-        if latest:
+                    self._persist(rec)
+                self._tasks[rec.task_id] = rec
+        if records:
             print(
-                f"[tasks] loaded {len(latest)} task(s) from disk; {interrupted} marked interrupted"
+                f"[tasks] loaded {len(records)} task(s) from disk; {interrupted} marked interrupted"
             )
 
     def _maybe_legacy_migrate(self, db_path: Path) -> None:
@@ -564,50 +497,7 @@ class IngestService:
         A pre-existing ``tasks.db`` short-circuits the migration so we
         do not clobber the new store on a partial-boot upgrade.
         """
-        import sqlite3
-
-        if db_path.exists():
-            return
-        legacy = self._tasks_log_path_legacy()
-        if not legacy.exists():
-            return
-        with self._PERSIST_LOCK, sqlite3.connect(str(db_path)) as conn:
-            conn.isolation_level = None
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS tasks ("
-                "task_id TEXT PRIMARY KEY, "
-                "payload TEXT NOT NULL, "
-                "updated_at REAL NOT NULL"
-                ")"
-            )
-            imported = 0
-            with legacy.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    task_id = obj.get("task_id") if isinstance(obj, dict) else None
-                    if not isinstance(task_id, str) or not task_id:
-                        continue
-                    # On conflict, prefer the later row (which
-                    # is what the legacy ``reversed(load_entries)``
-                    # semantics gave us). SQLite insertion order
-                    # is preserved, but with ``INSERT OR IGNORE``
-                    # a later existing wins — so we just import
-                    # in file order and the *last* row wins by
-                    # virtue of being the last INSERT we attempt.
-                    conn.execute(
-                        "INSERT OR REPLACE INTO tasks (task_id, payload, updated_at)"
-                        " VALUES (?, ?, ?)",
-                        (task_id, json.dumps(obj, ensure_ascii=False), time.time()),
-                    )
-                    imported += 1
-        legacy.rename(legacy.with_name(legacy.name + ".migrated"))
-        print(f"[tasks] migrated {imported} record(s) from legacy {legacy}")
+        self._task_store._maybe_legacy_migrate(db_path)
 
     def _tasks_log_path_legacy(self) -> Path:
         """Return the *legacy* ``tasks.jsonl`` location.
@@ -616,16 +506,12 @@ class IngestService:
         can find the pre-SQLite history file. New writes go to
         :meth:`_tasks_db_path` / :meth:`_tasks_jsonl_path`.
         """
-        return get_data_dir() / "tasks.jsonl"
+        return self._task_store.legacy_path()
 
     @staticmethod
     def _task_from_dict(obj: dict[str, object]) -> TaskRecord:
         """Build a ``TaskRecord`` from a JSONL row, tolerating legacy records."""
-        kwargs: dict[str, object] = {}
-        for field_name in TaskRecord.__dataclass_fields__:
-            if field_name in obj:
-                kwargs[field_name] = obj[field_name]
-        return TaskRecord(**kwargs)  # type: ignore[arg-type]
+        return task_from_dict(obj)
 
     def list_assets(self) -> list[AssetIndexEntry]:
         """Return the non-deleted rows from the asset index, newest first."""
@@ -933,8 +819,9 @@ class IngestService:
         # which meant a concurrent ``_patch`` could setattr the rec
         # mid-serialise and produce a torn JSON line on disk (some
         # fields from the old state, some from the new). ``_persist``
-        # only takes ``_PERSIST_LOCK`` (not ``_TASKS_LOCK``), so this
-        # can't deadlock; the critical section is short because the
+        # delegates to ``TaskStore``, which only takes its class-level
+        # persistence lock (not ``_TASKS_LOCK``), so this can't deadlock;
+        # the critical section is short because the
         # JSONL tail-append happens after the SQLite write releases
         # the connection.
         with self._TASKS_LOCK:
@@ -1030,79 +917,14 @@ class IngestService:
                         self._stream_events.pop(task_id, None)
 
     def _persist(self, rec: TaskRecord) -> None:
-        """Persist ``rec`` to SQLite (with a tail-append JSONL backup).
-
-        SQLite is the source of truth: a single ``INSERT OR REPLACE``
-        inside an autocommit transaction gives us atomic durability
-        without the hand-rolled ``open(a) + flush + fsync`` dance.
-        We also keep appending one line to ``tasks.jsonl.last`` so an
-        external ``jq``/``grep`` over the file still works and so any
-        future migration to a different store can read both formats.
-        The SQLite write is authoritative; the JSONL line is best-
-        effort and a failed JSONL append is logged but does not mark
-        the task as failed.
-        """
-        import sqlite3
-
-        try:
-            db_path = self._tasks_db_path()
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            payload = json.dumps(asdict(rec), ensure_ascii=False)
-            with self._PERSIST_LOCK, sqlite3.connect(str(db_path)) as conn:
-                # autocommit mode → INSERT OR REPLACE is an atomic single-step write.
-                conn.isolation_level = None
-                conn.execute(
-                    "CREATE TABLE IF NOT EXISTS tasks ("
-                    "task_id TEXT PRIMARY KEY, "
-                    "payload TEXT NOT NULL, "
-                    "updated_at REAL NOT NULL"
-                    ")"
-                )
-                # WAL: concurrent readers + one writer; descending index keeps
-                # list_tasks on the index past 100k rows.
-                conn.execute("PRAGMA journal_mode = WAL")
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS tasks_updated_at_idx ON tasks (updated_at DESC)"
-                )
-                conn.execute(
-                    "INSERT OR REPLACE INTO tasks (task_id, payload, updated_at) VALUES (?, ?, ?)",
-                    (rec.task_id, payload, time.time()),
-                )
-        except (sqlite3.DatabaseError, OSError) as exc:
-            # SQLite error or filesystem error: cannot recover
-            # in-memory state. Surface on the record so the next
-            # ``/tasks/{id}`` snapshot shows it.
-            rec.error = (rec.error or "") + f"; persist failed: {exc}"
-            print(f"[tasks] warning: could not persist {rec.task_id}: {exc}")
-            return
-
-        # Tail-append JSONL snapshot, best-effort only. This is the
-        # only path that touches the *JSONL* format any more — the
-        # canonical store is SQLite. Keep one line per ``_patch`` so
-        # ``cat tasks.jsonl.last | tail -1`` always has the latest.
-        try:
-            jsonl_path = self._tasks_jsonl_path()
-            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
-            line = json.dumps(asdict(rec), ensure_ascii=False) + "\n"
-            with self._PERSIST_LOCK, jsonl_path.open("a", encoding="utf-8") as fh:
-                fh.write(line)
-                fh.flush()
-                os.fsync(fh.fileno())
-        except OSError as exc:
-            # JSONL is a debug tail — losing it does not invalidate
-            # the SQLite write. We do not raise because the task
-            # itself is fine.
-            print(f"[tasks] warning: jsonl tail append failed for {rec.task_id}: {exc}")
+        """Compatibility delegate to the injected task store."""
+        self._task_store.save(rec)
 
     def _tasks_db_path(self) -> Path:
-        return get_data_dir() / "tasks.db"
+        return self._task_store.db_path()
 
     def _tasks_jsonl_path(self) -> Path:
-        # Keep the same filename users may already be scripting
-        # against; append-only .jsonl.last replaces the legacy
-        # ``tasks.jsonl`` (which was an append of every patch) so the
-        # history-by-tail-streaming workflow stays valid.
-        return get_data_dir() / "tasks.jsonl.last"
+        return self._task_store.jsonl_path()
 
     @staticmethod
     def _serialise_options(options: ParseOptions) -> dict[str, object]:
@@ -1205,47 +1027,8 @@ class IngestService:
 
 
 def _run_parse_task(service: IngestService, rec: TaskRecord, options: ParseOptions) -> None:
-    """Parse either the full manifest or only the uploaded files.
-
-    Captures ``BaseException`` (not just ``Exception``) so SystemExit /
-    KeyboardInterrupt / abrupt shutdowns surface as ``status="failed"``
-    with the message in ``error``, instead of silently leaving the task
-    at ``done`` with stale state.
-
-    Note on KeyboardInterrupt: this runs on a daemon thread, and CPython
-    only delivers ``KeyboardInterrupt`` to the *main* thread — so a
-    Ctrl-C in the terminal will not actually trip the ``except
-    BaseException`` below; the main thread exits and the daemon is
-    hard-killed by the interpreter shut-down. The branch still earns
-    its keep for ``SystemExit`` raised explicitly inside the worker and
-    for any third-party library that raises something non-``Exception``
-    subclass, but for the Ctrl-C case the real safety net is
-    ``load_history`` on the next boot: it rewrites any task still in
-    ``running`` to ``interrupted`` so the UI never shows a stale
-    "running" row.
-    """
-    service._patch(rec, status="running", current="starting")
-    try:
-        _do_parse(service, rec, options)
-    except BaseException as exc:
-        # Daemon thread: Ctrl-C won't reach here (only the main
-        # thread receives KeyboardInterrupt). This branch fires for
-        # in-worker SystemExit or third-party BaseException-derived
-        # raises. The Ctrl-C recovery story is handled by
-        # ``load_history`` → ``interrupted`` on the next boot.
-        service._patch(
-            rec,
-            status="failed",
-            current=f"parse crashed: {type(exc).__name__}: {exc}",
-            error=f"{type(exc).__name__}: {exc}",
-            finished_at=time.time(),
-        )
-        print(f"[task {rec.task_id}] parse crashed: {exc!r}")
-        return
-
-    if rec.status == TaskStatus.FAILED:
-        service._patch(rec, finished_at=time.time())
-        return
+    """Compatibility worker entry; sequencing lives in ``IngestWorkflow``."""
+    service._workflow.run_parse(service, rec, options)
 
 
 def _remove_asset_rows_from_documents_jsonl(asset_ids: set[str]) -> int:
@@ -1301,340 +1084,16 @@ def _remove_asset_rows_from_documents_jsonl(asset_ids: set[str]) -> int:
 
 
 def _do_parse(service: IngestService, rec: TaskRecord, options: ParseOptions) -> None:
-    assets = list(options.assets)
-
-    if not assets:
-        service._patch(
-            rec,
-            status="done",
-            current="no assets to parse",
-            finished_at=time.time(),
-        )
-        return
-
-    # ``--force`` retry must clear cached parsed/<id>/ so the parse loop
-    # below re-runs every asset instead of short-circuiting on the
-    # existing raw.jsonl. The check is no-op for fresh uploads.
-    if rec.force:
-        from .paths import get_parsed_dir as _gpd
-
-        cleared: list[str] = []
-        for a in assets:
-            parsed_dir_a = _gpd() / a.asset_id
-            if parsed_dir_a.exists():
-                shutil.rmtree(parsed_dir_a, ignore_errors=True)
-                cleared.append(a.asset_id)
-        if cleared:
-            # Drop these assets' old chunk rows from documents.jsonl too.
-            # ``_do_parse`` re-writes chunks by appending (``target.open("a")``
-            # below), so without this a force re-parse would *duplicate* the
-            # asset's rows — one set from the original parse still on disk,
-            # plus the fresh set. The dup chunks then double the asset's
-            # weight in retrieval and drag down ranking (observed: MRR
-            # 0.896 with dups vs 0.927 after dedup). qdrant point cleanup is
-            # left to ``mmrag reindex``; removing the jsonl rows is the fix
-            # for the parse-time pollution source.
-            removed = _remove_asset_rows_from_documents_jsonl(set(cleared))
-            scope = "failed" if rec.failed_only else "all"
-            service._patch(
-                rec,
-                current=(
-                    f"force: cleared {len(cleared)} {scope} parsed/ cache dir(s) "
-                    f"({removed} documents.jsonl rows) before parse"
-                ),
-            )
-
-    service._patch(rec, total=len(assets), current=f"parsing {len(assets)} asset(s)")
-
-    failed = 0
-    skipped = 0
-    parsed = 0
-    target = get_documents_jsonl()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    local_statuses: dict[str, str] = {}
-    for i, asset in enumerate(assets, start=1):
-        # Cooperative cancellation: if cancel_task was called between
-        # assets, stop now and mark the task cancelled. The assets parsed
-        # so far are already on disk (parsed/ + documents.jsonl); the
-        # caller can retry the rest.
-        if service._is_cancelled(rec.task_id):
-            service._patch(
-                rec,
-                processed=i - 1,
-                current=f"cancelled before asset {asset.asset_id}",
-            )
-            return
-        try:
-            from .paths import get_parsed_dir
-
-            raw_path = get_parsed_dir() / asset.asset_id / "raw.jsonl"
-            if raw_path.exists() and raw_path.stat().st_size > 0:
-                skipped += 1
-                local_statuses[asset.asset_id] = "skipped"
-                service._patch(rec, processed=i, current=f"skip cached: {asset.asset_id}")
-                continue
-            try:
-                if asset.source_type == "pdf":
-                    parser = get_parser("pdf", options.pdf_parser)
-                    docs = parser.parse(asset)
-                elif asset.source_type == "image":
-                    parser = get_parser("image", "image")
-                    docs = parser.parse(
-                        asset,
-                        enable_ocr=options.enable_ocr,
-                        enable_vlm=options.enable_vlm,
-                    )
-                elif asset.source_type == "document":
-                    # Office/text formats (docx/pptx/xlsx/html/…). Default
-                    # backend is MarkItDown (core dep, no ML stack); docling
-                    # is the optional heavy alternative. A missing install
-                    # surfaces as a parse failure here.
-                    parser = get_parser("document", options.document_parser)
-                    docs = parser.parse(asset)
-                else:
-                    docs = []
-            except Exception as exc:
-                failed += 1
-                local_statuses[asset.asset_id] = "failed"
-                print(f"parse task failed for {asset.asset_id}: {exc}")
-                service._patch(rec, processed=i, current=f"error {asset.asset_id}: {exc}")
-                continue
-            # Enrichment (image caption + contextual) runs *before* the
-            # documents.jsonl lock so the (potentially slow, LLM-backed)
-            # enrichment doesn't hold the cross-process lock. Only the
-            # final append of rows is serialised.
-            if service._settings.image_caption_enabled and docs:
-                from .image_caption import enrich_docs_with_image_captions
-                from .paths import get_captions_dir as _gcd
-
-                cap_cache = _gcd() / f"{asset.asset_id}.jsonl"
-                service._patch(
-                    rec,
-                    current=f"image-caption: {asset.asset_id} ({len(docs)} chunks)",
-                )
-                enrich_docs_with_image_captions(docs, asset_id=asset.asset_id, cache_path=cap_cache)
-            # Contextual Retrieval: attach an LLM-generated context to each
-            # chunk before writing to documents.jsonl. On by default via
-            # ``Settings.contextual_enabled``; the per-task ``--contextual``
-            # flag forces it on. No-op (and no LLM cost) when OPENAI_* is
-            # unconfigured. Cached under parsed/<id>/context.jsonl so
-            # reindex reuses it.
-            if (options.contextual or service._settings.contextual_enabled) and docs:
-                from .contextual import enrich_docs_with_context
-
-                cache_path = get_parsed_dir() / asset.asset_id / "context.jsonl"
-                service._patch(
-                    rec,
-                    current=f"contextual: {asset.asset_id} ({len(docs)} chunks)",
-                )
-                enrich_docs_with_context(
-                    docs,
-                    asset_title=asset.title or asset.asset_id,
-                    cache_path=cache_path,
-                )
-            # Append under the documents.jsonl cross-process lock so the
-            # rows don't race a concurrent rewrite (os.replace in
-            # _remove_asset_rows_from_documents_jsonl) and vanish into a
-            # swapped-out inode.
-            with documents_jsonl_lock(target):
-                f = target.open("a", encoding="utf-8")
-                try:
-                    for d in docs:
-                        f.write(json.dumps(d.to_json(), ensure_ascii=False) + "\n")
-                finally:
-                    f.close()
-            parsed += 1
-            local_statuses[asset.asset_id] = "ok"
-            service._patch(
-                rec,
-                processed=i,
-                current=f"parsed {asset.asset_id} ({len(docs)} doc)",
-            )
-        except Exception as exc:
-            failed += 1
-            local_statuses[asset.asset_id] = "failed"
-            service._patch(rec, processed=i, current=f"error {asset.asset_id}: {exc}")
-
-    merged_statuses = {**rec.asset_statuses, **local_statuses}
-    # If the user cancelled during the last asset's parse (past the
-    # per-asset checkpoint at the loop top), ``cancel_task`` may or may not
-    # have patched status=CANCELLED yet — ``flag.set()`` and the status
-    # patch in ``cancel_task`` are two steps and not atomic. Set it
-    # explicitly here so the task can't end up ``running`` (which would
-    # let ``load_history`` rewrite it to "interrupted" on next boot,
-    # losing the cancel request). Idempotent if cancel_task already set it.
-    if service._is_cancelled(rec.task_id) or rec.status == TaskStatus.CANCELLED:
-        service._patch(
-            rec,
-            status=TaskStatus.CANCELLED,
-            finished_at=time.time(),
-            current=f"cancelled: parsed={parsed} skipped={skipped} failed={failed}",
-            asset_statuses=merged_statuses,
-        )
-        return
-    status = (
-        TaskStatus.DONE if failed == 0 and skipped + parsed == len(assets) else TaskStatus.PARTIAL
-    )
-    service._patch(
-        rec,
-        status=status,
-        finished_at=time.time(),
-        current=f"parse {status}: parsed={parsed} skipped={skipped} failed={failed}",
-        asset_statuses=merged_statuses,
-    )
+    """Compatibility parse seam; implementation lives in ``IngestWorkflow``."""
+    service._workflow.parse(service, rec, options)
 
 
 def _run_ingest_task(service: IngestService, rec: TaskRecord, options: ParseOptions) -> None:
-    """Parse + index in sequence. Captures BaseException for reliable failure surfacing."""
-    _run_parse_task(service, rec, options)
-    if rec.status == TaskStatus.FAILED:
-        service._patch(rec, finished_at=time.time())
-        return
-    if rec.status == TaskStatus.CANCELLED:
-        # Cancelled mid-parse — skip the index stage. cancel_task already
-        # set status + finished_at; nothing more to do.
-        return
-    parse_status = rec.status
-
-    # Keep the task ``running`` while we build the Qdrant index.
-    # ``_run_parse_task`` already set ``status="done"`` and
-    # ``finished_at`` once the parse stage completed, which causes the
-    # CLI's ``_wait_for_task`` (and any other terminal-state poller)
-    # to exit the process — and the daemon thread that drives the
-    # index step is killed before ``upsert_text`` ever runs. Re-flag
-    # the task as in-progress and let the final ``_patch`` at the end
-    # of the try block restore the terminal status.
-    #
-    # Cooperative cancel: if cancel_task was called during the parse
-    # stage, rec.status is already CANCELLED (terminal) — don't flip it
-    # back to running here. (Covers the narrow race where cancel arrives
-    # between the last parse checkpoint and this re-flag.)
-    #
-    # Seam guard: cancel_task arriving *after* parse set status=DONE
-    # (terminal) sees a terminal status and only sets the flag — its
-    # CANCELLED patch is gated on ``status not in terminal()``. So
-    # rec.status is still DONE here and the ``rec.status == CANCELLED``
-    # check above misses it. Check the flag explicitly so we patch
-    # CANCELLED and stop *before* flipping the task back to ``running``
-    # and driving the index loop. Otherwise the cancel intent only
-    # resurfaces at the first ``_progress`` tick (or, if the CLI polls
-    # the brief DONE window, the daemon is killed before index runs at
-    # all and the task stays DONE). Idempotent if cancel_task already
-    # patched CANCELLED.
-    if service._is_cancelled(rec.task_id) or rec.status == TaskStatus.CANCELLED:
-        service._patch(
-            rec,
-            status=TaskStatus.CANCELLED,
-            finished_at=time.time(),
-            current="cancelled before index",
-        )
-        return
-    service._patch(
-        rec,
-        status="running",
-        finished_at=None,
-        current="parse done, building index",
-    )
-
-    # Snapshot which assets the parse step successfully produced. Only
-    # these are candidates for the per-asset index status updates below.
-    indexed_targets = {
-        aid: status
-        for aid, status in rec.asset_statuses.items()
-        if status in {AssetStatus.OK, AssetStatus.SKIPPED}
-    }
-
-    def _progress(done: int, total: int, phase: str) -> None:
-        # Cancel check during the index phase too — each progress tick is
-        # a natural checkpoint (one upsert batch). If cancelled, stop the
-        # index build here; the task stays CANCELLED (cancel_task already
-        # set status + finished_at).
-        if service._is_cancelled(rec.task_id):
-            raise _TaskCancelled
-        service._patch(
-            rec,
-            processed=done,
-            total=total,
-            current=f"indexing: {phase}",
-        )
-
-    try:
-        backend = get_backend("qdrant")
-        text_n, text_name = backend.upsert_text(progress_cb=_progress)
-        service._patch(rec, current=f"text indexed · {text_name}")
-        image_n, _image_name = backend.upsert_image(progress_cb=_progress)
-        # All points are now upserted. Drop the in-process vocab / IDF
-        # caches before we mark the task done so a query issued the
-        # moment the UI shows "done" doesn't reuse stats built against
-        # the pre-ingest collection state. Lazy + suppressed so a cache
-        # module that's missing or raises can't crash the success path.
-        service._invalidate_search_caches()
-        # Index succeeded: mark parse-ok assets as fully indexed so
-        # --failed-only retry can skip them next time.
-        new_statuses = dict(rec.asset_statuses)
-        for aid in indexed_targets:
-            new_statuses[aid] = "indexed"
-        # Symmetric with _do_parse's final patch: if cancel arrived between
-        # the last _progress tick and here (the tick is the only cancel
-        # checkpoint in the index loop), cancel_task may have patched
-        # status=CANCELLED or only set the flag. Set CANCELLED explicitly
-        # so we don't overwrite it with parse_status (done/partial) — that
-        # would flip the UI from "cancelled" to "done" and lose the request.
-        if service._is_cancelled(rec.task_id) or rec.status == TaskStatus.CANCELLED:
-            service._patch(
-                rec,
-                status=TaskStatus.CANCELLED,
-                finished_at=time.time(),
-                current=f"cancelled after index · text={text_n} image={image_n}",
-                asset_statuses=new_statuses,
-            )
-            return
-        service._patch(
-            rec,
-            current=f"index built · text={text_n} image={image_n}",
-            status=parse_status,
-            finished_at=time.time(),
-            asset_statuses=new_statuses,
-        )
-    except _TaskCancelled:
-        # Cancelled mid-index. cancel_task may have seen status=DONE
-        # (terminal, set by _run_parse_task at the parse→index seam) and
-        # skipped patching CANCELLED, only setting the flag; _progress then
-        # raised here. Patch CANCELLED explicitly so the task can't stay
-        # "running" — load_history would rewrite "running"→"interrupted"
-        # on next boot, losing the cancel intent. Idempotent if cancel_task
-        # already patched. Partial index points remain in Qdrant; a retry
-        # rebuilds from documents.jsonl.
-        service._patch(
-            rec,
-            status=TaskStatus.CANCELLED,
-            finished_at=time.time(),
-            current="cancelled during index",
-        )
-        print(f"[task {rec.task_id}] index cancelled by request")
-        return
-    except BaseException as exc:
-        # Same daemon-thread caveat as ``_run_parse_task``: Ctrl-C is
-        # delivered to the main thread only, so this branch handles
-        # in-worker SystemExit / BaseException-derived raises, not
-        # KeyboardInterrupt. Ctrl-C recovery is handled by
-        # ``load_history`` rewriting ``running`` → ``interrupted`` on
-        # the next boot.
-        new_statuses = dict(rec.asset_statuses)
-        for aid in indexed_targets:
-            new_statuses[aid] = "failed_index"
-        service._patch(
-            rec,
-            current=f"index crashed: {type(exc).__name__}: {exc}",
-            error=f"{type(exc).__name__}: {exc}",
-            status="failed",
-            finished_at=time.time(),
-            asset_statuses=new_statuses,
-        )
-        print(f"[task {rec.task_id}] index crashed: {exc!r}")
+    """Compatibility worker entry; sequencing lives in ``IngestWorkflow``."""
+    service._workflow.run(service, rec, options)
 
 
-# ─── Module-level service singleton ────────────────────────────────────
+# ─── Module-level service singleton
 
 
 _service: IngestService | None = None
