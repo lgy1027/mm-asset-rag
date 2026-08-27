@@ -6,7 +6,6 @@ import asyncio
 import queue
 import re
 import threading
-from contextlib import suppress
 
 from .settings import get_settings
 
@@ -58,8 +57,17 @@ async def _iter_sync_in_thread(factory, *args, **kwargs) -> asyncio.Queue:
     stop = threading.Event()
 
     def _put_terminal(item) -> None:
-        with suppress(queue.Full):
-            out.put_nowait(item)
+        while True:
+            try:
+                out.put(item, timeout=0.1)
+                return
+            except queue.Full:
+                # An active consumer will eventually free a slot, so keep
+                # retrying and preserve terminal ordering. On disconnect the
+                # consumer sets ``stop``; abandon after this bounded attempt
+                # instead of leaking a producer thread behind a full queue.
+                if stop.is_set():
+                    return
 
     def _worker():
         try:

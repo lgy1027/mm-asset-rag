@@ -551,8 +551,10 @@ def _multi_query_text(
         from .registry import get_backend
 
         backend = get_backend("qdrant")
+    effective_min = get_settings().min_score if min_score is None else min_score
     if len(queries) == 1:
-        return backend.search_text(query=queries[0], top_k=top_k)
+        hits = backend.search_text(query=queries[0], top_k=top_k)
+        return [hit for hit in hits if hit.score >= effective_min]
 
     workers = max(1, min(int(n_parallel), len(queries)))
 
@@ -583,7 +585,7 @@ def _multi_query_text(
 
     groups = [h if h is not None else [] for h in variant_hits]
     weights = [1.0] * len(groups)
-    return merge_hits(groups, weights, top_k=top_k, min_score=min_score or 0.0)
+    return merge_hits(groups, weights, top_k=top_k, min_score=effective_min)
 
 
 def text_search_with_rewrite(

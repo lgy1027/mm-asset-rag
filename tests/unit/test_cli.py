@@ -58,6 +58,39 @@ def test_cli_search_image_flag() -> None:
     assert args.image == "/tmp/img.png"
 
 
+def test_cli_search_translates_invalid_image_path_to_system_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CLI renders search validation failures without a Python traceback."""
+    import mm_asset_rag.service as service_mod
+    from mm_asset_rag.search_service import SearchService
+
+    class _Backend:
+        pass
+
+    monkeypatch.setattr(service_mod, "get_search_service", lambda: SearchService(_Backend()))
+    args = build_parser().parse_args(
+        ["search", "q", "--mode", "hybrid", "--image", "../outside.png"]
+    )
+
+    with pytest.raises(SystemExit, match="error: image_path resolves outside assets/"):
+        args.func(args)
+
+
+def test_cli_search_preserves_runtime_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Backend/runtime failures retain the existing RuntimeError behavior."""
+    import mm_asset_rag.cli as cli_mod
+
+    def fail_search(**kwargs):
+        raise RuntimeError("qdrant unavailable")
+
+    monkeypatch.setattr(cli_mod, "dispatch_search", fail_search)
+    args = build_parser().parse_args(["search", "q"])
+
+    with pytest.raises(RuntimeError, match="qdrant unavailable"):
+        args.func(args)
+
+
 def test_cli_answer_subcommand() -> None:
     parser = build_parser()
     args = parser.parse_args(["answer", "why?", "--top-k", "3"])

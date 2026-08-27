@@ -368,6 +368,72 @@ def test_text_search_with_rewrite_enabled_fans_out_per_variant(monkeypatch) -> N
     assert out[0].asset_id == "a"
 
 
+def test_text_search_single_variant_applies_settings_min_score(monkeypatch) -> None:
+    """A rewrite-disabled text search filters raw backend hits with the configured floor."""
+
+    class _Backend:
+        def search_text(self, *, query, top_k):
+            return [_hit("kept", 0.7), _hit("dropped", 0.5)]
+
+    monkeypatch.setenv("QUERY_REWRITE_ENABLED", "false")
+    monkeypatch.setenv("MIN_SCORE", "0.6")
+    get_settings.cache_clear()
+
+    out = qr.text_search_with_rewrite("q", top_k=5, backend=_Backend())
+
+    assert [hit.asset_id for hit in out] == ["kept"]
+
+
+def test_text_search_single_variant_explicit_min_score_overrides_settings(monkeypatch) -> None:
+    """A command floor takes precedence over the configured text-search floor."""
+
+    class _Backend:
+        def search_text(self, *, query, top_k):
+            return [_hit("kept-by-override", 0.5)]
+
+    monkeypatch.setenv("QUERY_REWRITE_ENABLED", "false")
+    monkeypatch.setenv("MIN_SCORE", "0.6")
+    get_settings.cache_clear()
+
+    out = qr.text_search_with_rewrite("q", top_k=5, min_score=0.4, backend=_Backend())
+
+    assert [hit.asset_id for hit in out] == ["kept-by-override"]
+
+
+def test_text_search_multi_variant_applies_settings_min_score(monkeypatch) -> None:
+    """An omitted command floor uses Settings.min_score after multi-query RRF fusion."""
+    monkeypatch.setattr(qr, "rewrite_query", lambda query, settings=None: [query, f"{query} alt"])
+
+    class _Backend:
+        def search_text(self, *, query, top_k):
+            if query.endswith(" alt"):
+                return [_hit("shared", 0.8), _hit("alt-only", 0.7)]
+            return [_hit("shared", 0.9), _hit("original-only", 0.6)]
+
+    monkeypatch.setenv("MIN_SCORE", "0.02")
+    get_settings.cache_clear()
+
+    out = qr.text_search_with_rewrite("q", top_k=5, backend=_Backend())
+
+    assert [hit.asset_id for hit in out] == ["shared"]
+
+
+def test_text_search_multi_variant_explicit_zero_disables_settings_floor(monkeypatch) -> None:
+    """An explicit zero floor retains fused tail hits even when Settings configures a floor."""
+    monkeypatch.setattr(qr, "rewrite_query", lambda query, settings=None: [query, f"{query} alt"])
+
+    class _Backend:
+        def search_text(self, *, query, top_k):
+            return [_hit(query, 0.9)]
+
+    monkeypatch.setenv("MIN_SCORE", "0.02")
+    get_settings.cache_clear()
+
+    out = qr.text_search_with_rewrite("q", top_k=5, min_score=0.0, backend=_Backend())
+
+    assert {hit.asset_id for hit in out} == {"q", "q alt"}
+
+
 def test_text_search_with_rewrite_never_touches_hybrid(monkeypatch) -> None:
     """Lock down the text-only semantics: ``text_search_with_rewrite`` must
     not invoke :func:`mm_asset_rag.retrieval.hybrid_search` even when the

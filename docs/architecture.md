@@ -3,41 +3,17 @@
 ## Layered view
 
 ```
-                       ┌────────────────────────────────────────────┐
-                       │       Thin entry points (route layer)      │
-                       │  FastAPI app (mm_asset_rag/api.py)        │
-                       │  CLI      (mm_asset_rag/cli.py)           │
-                       └─────────────────┬──────────────────────────┘
-                                         │  delegates
-                                         ▼
-                       ┌────────────────────────────────────────────┐
-                       │        Application services                │
-                       │ SearchService (search_service.py):         │
-                       │   - execute(SearchCommand)                 │
-                       │  IngestService:                            │
-                       │   - parse_assets / ingest_assets            │
-                       │   - reindex (force-recreate)                │
-                       │   - load_history / list_tasks / get_task    │
-                       └─────────────────┬──────────────────────────┘
-                                         │
-        ┌───────────────────┬───────────┼───────────┬───────────────────┐
-        ▼                   ▼           ▼           ▼                   ▼
- ┌─────────────┐    ┌─────────────┐  ┌─────────┐ ┌─────────────┐  ┌─────────────┐
- │  Parsers    │    │  Embedders   │  │ Backends│ │  Retrieval   │  │   Answer     │
- │ (registry)  │    │  (registry)  │  │(reg.)   │ │  (pure)     │  │  (LLM)      │
- │             │    │              │  │         │ │              │  │              │
- │ pdf_parser  │    │ text_embed   │  │ Qdrant  │ │ normalize_   │  │ hybrid_      │
- │ image_      │    │ image_embed  │  │ (local/ │ │   scores     │  │   search     │
- │   parser    │    │              │  │ server) │ │ merge_hits   │  │ ↓            │
- │ audio_      │    │              │  │         │ │ hybrid_search│  │ llm_answer   │
- │   parser    │    │              │  │         │ │              │  │   OR         │
- │   ...       │    │              │  │         │ │              │  │ evidence-    │
- │             │    │              │  │         │ │              │  │   summary    │
- └──────┬──────┘    └──────┬───────┘  └────┬────┘ └──────┬───────┘  └─────────────┘
-        │                  │              │           │
-        ▼                  ▼              ▼           ▼
-  ParsedDocument ────► dense + sparse ─► Qdrant ──► SearchHit ──► answer
-  (jsonl store)         vectors        collections     (merged)      (text)
+FastAPI / CLI
+  ├─ upload ─► UploadPipeline ─► assets/pdfs | assets/images | assets/documents
+  │                              └─► IngestService / IngestWorkflow
+  │                                   └─► parsers ─► embedders ─► IndexBackend
+  ├─ search ─► SearchService.execute(SearchCommand)
+  │              └─► query rewrite / retrieval policy ─► SearchBackend ─► SearchHit
+  └─ answer/chat ─► SearchService ─► SearchHit
+                     └─► llm_answer / stream_answer_chunks / evidence fallback
+
+Registries select the parser, embedder, SearchBackend, and IndexBackend adapters;
+Qdrant is the built-in search/index adapter.
 ```
 
 > This is the **component** view. For the end-to-end **data flow** view
@@ -58,7 +34,8 @@
 - **`upload_pipeline.UploadPipeline`** owns the two-stage upload flow:
   `/upload/preview` copies files into `.preview-cache`, calls `sniff.py` and
   optional VLM metadata extraction, then `/upload/confirm` moves confirmed
-  files into `assets/pdfs` or `assets/images` and constructs `Asset` objects.
+  files into `assets/pdfs`, `assets/images`, or `assets/documents` and constructs
+  `Asset` objects.
 - **`service.IngestService`** is the public facade for parse + index + task
   lifecycle work. `IngestWorkflow` owns parse/enrich/document/index
   sequencing, while `TaskStore` owns SQLite persistence; the facade keeps
@@ -73,12 +50,12 @@
   `QdrantBackend` is the Qdrant adapter (local file or remote server),
   registered behind the `SearchBackend` and `IndexBackend` ports. Those ports
   are the swap-in point for Milvus / Pinecone.
-- **`retrieval.hybrid_search`** is pure (no I/O); it normalizes per-route
-  scores and weights them from `Settings` (defaults: text 0.80,
-  text-to-image 0.20, image-to-image 0.15).
-- **`answer.llm_answer` / `stream_answer_chunks`** issue an OpenAI-
-  compatible chat completion with the retrieved evidence as context. When
-  no LLM is configured, an evidence-summary fallback is returned instead.
+- **`retrieval.hybrid_search`** orchestrates backend route searches, rank-based
+  fusion, configured weights, and optional reranking. Its `merge_hits` helper is
+  pure, but `hybrid_search` itself invokes backend and reranker paths.
+- **`answer.answer_question`** obtains evidence through `SearchService` when hits
+  are not supplied. **`llm_answer` / `stream_answer_chunks`** generate from those
+  hits; when no LLM is configured, an evidence-summary fallback is returned.
 
 ## Protocol + registry
 
@@ -135,5 +112,5 @@ dropped that integration because:
   are not first-class in LlamaIndex's `VectorStore` abstraction.
 
 `QdrantBackend` talks to `qdrant-client` directly; application services use
-its ports, while the project owns the sparse + dense hybrid logic in
+its ports, while retrieval policy coordinates Qdrant's route results in
 `retrieval.hybrid_search`.

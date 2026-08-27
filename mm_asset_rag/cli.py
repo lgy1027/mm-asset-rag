@@ -17,7 +17,7 @@ from .answer import answer_json
 from .config import load_env
 from .evaluation import run_eval, write_eval_report
 from .paths import get_documents_jsonl
-from .search_service import get_search_service
+from .search_service import SearchInputError, get_search_service
 from .service import ParseOptions, dispatch_search, get_service
 from .upload_pipeline import UserEdits, get_pipeline
 
@@ -150,6 +150,8 @@ def command_search(args: argparse.Namespace) -> None:
             image_path=args.image or None,
             top_k=args.top_k,
         )
+    except SearchInputError as exc:
+        raise SystemExit(f"error: {exc}") from exc
     except RuntimeError as exc:
         # dispatch_search raises HTTPException for image-to-image without
         # image_path; surface a friendlier message for the CLI.

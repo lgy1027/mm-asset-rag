@@ -657,6 +657,71 @@ def test_stream_bridge_is_bounded() -> None:
     assert bridge.maxsize == 64
 
 
+def test_stream_bridge_delivers_done_after_full_queue_drains() -> None:
+    """A fast producer cannot lose completion when its 64-slot queue fills."""
+    import asyncio
+    import threading
+
+    from mm_asset_rag.api_streaming import _STREAM_DONE, _iter_sync_in_thread
+
+    producer_exhausted = threading.Event()
+
+    def producer():
+        yield from range(65)
+        producer_exhausted.set()
+
+    async def main():
+        bridge = await _iter_sync_in_thread(producer)
+        await asyncio.sleep(0.05)
+        assert bridge.qsize() == 64
+
+        received = [await asyncio.to_thread(bridge.get, True, 1.0)]
+        assert await asyncio.to_thread(producer_exhausted.wait, 1.0)
+        await asyncio.sleep(0.05)
+
+        while True:
+            item = await asyncio.to_thread(bridge.get, True, 1.0)
+            if item is _STREAM_DONE:
+                return received
+            received.append(item)
+
+    assert asyncio.run(main()) == list(range(65))
+
+
+def test_stream_bridge_delivers_error_and_done_after_full_queue_drains() -> None:
+    """An exception and completion remain ordered and observable after queue saturation."""
+    import asyncio
+
+    from mm_asset_rag.api_streaming import _STREAM_DONE, _iter_sync_in_thread
+
+    def producer():
+        yield from range(65)
+        raise RuntimeError("producer failed")
+
+    async def main():
+        bridge = await _iter_sync_in_thread(producer)
+        await asyncio.sleep(0.05)
+        assert bridge.qsize() == 64
+
+        received = [await asyncio.to_thread(bridge.get, True, 1.0)]
+        await asyncio.sleep(0.05)
+        terminal = []
+        while True:
+            item = await asyncio.to_thread(bridge.get, True, 1.0)
+            if item is _STREAM_DONE:
+                return received, terminal
+            if isinstance(item, BaseException):
+                terminal.append(item)
+            else:
+                received.append(item)
+
+    received, terminal = asyncio.run(main())
+    assert received == list(range(65))
+    assert len(terminal) == 1
+    assert isinstance(terminal[0], RuntimeError)
+    assert str(terminal[0]) == "producer failed"
+
+
 def test_iter_sync_in_thread_stop_signals_producer() -> None:
     """Setting ``bridge.stop`` lets the producer exit between yields.
 
