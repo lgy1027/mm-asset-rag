@@ -10,10 +10,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from qdrant_client import QdrantClient, models
 
 from mm_asset_rag.backends import qdrant_backend
 from mm_asset_rag.backends.qdrant import client as qdrant_client
-from mm_asset_rag.backends.qdrant import collections as qdrant_collections
 from mm_asset_rag.backends.qdrant import indexing as qdrant_indexing
 from mm_asset_rag.backends.qdrant import search as qdrant_search
 from mm_asset_rag.backends.qdrant_backend import (
@@ -22,7 +22,7 @@ from mm_asset_rag.backends.qdrant_backend import (
     _select_top_chunks_per_pdf,
     _tokenize_for_bm25,
 )
-from mm_asset_rag.protocols import IndexBackend, SearchBackend
+from mm_asset_rag.protocols import IndexBackend, SearchBackend, SearchFilter
 from mm_asset_rag.registry import get_backend
 from mm_asset_rag.schema import ParsedDocument
 
@@ -45,6 +45,217 @@ def test_legacy_qdrant_text_search_reexports_adapter_implementation(monkeypatch)
     monkeypatch.setattr(qdrant_search, "text_search", lambda query, top_k=5: ["hit"])
 
     assert qdrant_backend.qdrant_text_search("needle") == ["hit"]
+
+
+def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
+    monkeypatch, fake_qdrant_client
+) -> None:
+    """Index rows must not leak parser-era asset IDs into Qdrant payloads."""
+    from mm_asset_rag.knowledge_models import (
+        AccessPolicy,
+        Asset,
+        Chunk,
+        Document,
+        DocumentVersion,
+        Source,
+    )
+
+    source = Source(source_id="upload:report", uri="uploads/report.pdf")
+    policy = AccessPolicy(
+        collection="engineering",
+        allowed_principals=("alice",),
+        metadata={"department": "search"},
+    )
+    document = Document("report", "System report", source, policy)
+    version = DocumentVersion.create(document, "a" * 64)
+    chunk = Chunk.create(
+        document_version=version,
+        asset=Asset("a" * 64, "pdf", "pdfs/report.pdf"),
+        ordinal=0,
+        text="retrieval evidence",
+        source=source,
+        access_policy=policy,
+        metadata={"asset_id": "legacy-leak", "section": "Summary"},
+    )
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1, 0.2]
+    embedder.embed_batch.return_value = []
+    monkeypatch.setattr(qdrant_indexing, "read_documents", lambda: [chunk])
+    monkeypatch.setattr(qdrant_indexing, "get_default_text_embedder", lambda: embedder)
+    monkeypatch.setattr(
+        qdrant_indexing,
+        "_embed_bm25",
+        lambda texts: [qdrant_indexing.models.SparseVector(indices=[1], values=[1.0])],
+    )
+    monkeypatch.setattr(qdrant_indexing, "get_qdrant_client", lambda: fake_qdrant_client)
+    monkeypatch.setattr(qdrant_indexing, "text_collection", lambda dim: "v2_text")
+    monkeypatch.setattr(qdrant_indexing, "_create_collection", lambda *args, **kwargs: None)
+    fake_qdrant_client.retrieve.return_value = []
+    captured_points = []
+    fake_qdrant_client.upsert.side_effect = lambda *, collection_name, points, wait: (
+        captured_points.extend(points)
+    )
+
+    qdrant_indexing.build_qdrant_text_index(force_recreate=True)
+
+    payload = captured_points[0].payload
+    assert set(payload) == {
+        "document_id",
+        "title",
+        "version_id",
+        "version_number",
+        "chunk_id",
+        "ordinal",
+        "text",
+        "source_id",
+        "source_uri",
+        "source_provider",
+        "source_type",
+        "source_path",
+        "collection",
+        "allowed_principals",
+        "metadata",
+        "chunk_metadata",
+        "cache_id",
+    }
+    assert "asset_id" not in repr(payload)
+    assert payload["document_id"] == "report"
+    assert payload["version_id"] == version.version_id
+    assert payload["chunk_id"] == chunk.chunk_id
+    from mm_asset_rag.paths import physical_cache_id
+
+    assert payload["cache_id"] == physical_cache_id("pdfs/report.pdf")
+    assert payload["metadata"] == {"department": "search"}
+    indexed_fields = {
+        call.kwargs["field_name"] for call in fake_qdrant_client.create_payload_index.call_args_list
+    }
+    assert {
+        "document_id",
+        "version_id",
+        "chunk_id",
+        "collection",
+        "allowed_principals",
+        "metadata.department",
+    } <= indexed_fields
+
+
+def test_qdrant_hit_keeps_physical_cache_id_for_answer_images() -> None:
+    hit = qdrant_search._payload_to_hit(
+        "text",
+        0.9,
+        {
+            "document_id": "public-document",
+            "cache_id": "physical-cache-key",
+            "title": "Title",
+            "source_type": "pdf",
+            "source_path": "pdfs/file.pdf",
+            "text": "body",
+            "chunk_metadata": {"images": [{"path": "images/figure.png"}]},
+        },
+    )
+
+    assert hit.asset_id == "public-document"
+    assert hit.cache_id == "physical-cache-key"
+
+
+def test_qdrant_payload_cache_id_distinguishes_same_stem_paths() -> None:
+    from dataclasses import replace
+
+    from mm_asset_rag.knowledge_models import (
+        AccessPolicy,
+        Asset,
+        Chunk,
+        Document,
+        DocumentVersion,
+        Source,
+    )
+
+    source = Source(source_id="upload:shared")
+    policy = AccessPolicy(collection="team", allowed_principals=("alice",))
+    document = Document("shared", "Shared", source, policy)
+    version = DocumentVersion.create(document, "f" * 64)
+    pdf = Chunk.create(
+        document_version=version,
+        asset=Asset("f" * 64, "pdf", "pdfs/shared.pdf"),
+        ordinal=0,
+        text="pdf",
+        source=source,
+        access_policy=policy,
+    )
+    office = replace(pdf, asset=Asset("f" * 64, "document", "documents/shared.pdf"))
+
+    assert (
+        qdrant_indexing._v2_payload(pdf)["cache_id"]
+        != qdrant_indexing._v2_payload(office)["cache_id"]
+    )
+
+
+def test_native_policy_filter_is_applied_to_text_and_image_routes(
+    monkeypatch, fake_qdrant_client
+) -> None:
+    """Every route supplies collection, metadata, and ACL predicates to Qdrant."""
+    policy_filter = SearchFilter(
+        collection="engineering", metadata={"department": "search"}, principal="alice"
+    )
+    monkeypatch.setattr(qdrant_search, "get_qdrant_client", lambda: fake_qdrant_client)
+    monkeypatch.setattr(qdrant_search, "image_collection", lambda dim: "v2_image")
+
+    class _ImageProvider:
+        def embed_text(self, query):
+            return [0.1, 0.2]
+
+        def embed_image(self, path):
+            return [0.1, 0.2]
+
+    monkeypatch.setattr(qdrant_search, "get_default_image_embedder", lambda: _ImageProvider())
+
+    qdrant_search.qdrant_text_to_image_search("needle", search_filter=policy_filter)
+    qdrant_search.qdrant_image_to_image_search(Path("needle.png"), search_filter=policy_filter)
+
+    first_filter = fake_qdrant_client.query_points.call_args_list[0].kwargs["query_filter"]
+    second_filter = fake_qdrant_client.query_points.call_args_list[1].kwargs["query_filter"]
+    for native_filter in (first_filter, second_filter):
+        assert native_filter is not None
+        field_conditions = native_filter.must
+        assert {(condition.key, condition.match.value) for condition in field_conditions[:2]} == {
+            ("collection", "engineering"),
+            ("metadata.department", "search"),
+        }
+        assert native_filter.should is not None
+
+
+def test_native_public_acl_filter_rejects_a_missing_acl_payload() -> None:
+    """Qdrant's explicit empty-list condition must not admit a missing ACL."""
+    client = QdrantClient(":memory:")
+    client.create_collection(
+        collection_name="acl_shape",
+        vectors_config=models.VectorParams(size=2, distance=models.Distance.COSINE),
+    )
+    client.upsert(
+        collection_name="acl_shape",
+        points=[
+            models.PointStruct(id=1, vector=[1.0, 0.0], payload={"collection": "team"}),
+            models.PointStruct(
+                id=2,
+                vector=[1.0, 0.0],
+                payload={"collection": "team", "allowed_principals": []},
+            ),
+            models.PointStruct(
+                id=3,
+                vector=[1.0, 0.0],
+                payload={"collection": "team", "allowed_principals": ["alice"]},
+            ),
+        ],
+    )
+
+    results = client.query_points(
+        collection_name="acl_shape",
+        query=[1.0, 0.0],
+        query_filter=qdrant_search._native_policy_filter(SearchFilter(collection="team")),
+        limit=10,
+    ).points
+
+    assert [point.id for point in results] == [2]
 
 
 # ─── _tokenize_for_bm25 ─────────────────────────────────────────────────
@@ -297,7 +508,7 @@ def test_qdrant_text_search_no_filter_when_include_image_sources(monkeypatch) ->
     monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
     qdrant_backend.qdrant_text_search("query", top_k=5, include_image_sources=True)
-    assert captured["filter"] is None
+    assert captured["filter"].must_not is None
 
 
 # ─── get_qdrant_client singleton ─────────────────────────────────────────
@@ -771,118 +982,3 @@ def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> N
 
     assert constructed == ["http://example:6333"]
     assert qdrant_client._QDRANT_CLIENT is None
-
-
-# ─── delete_points_by_asset_id: dim-suffixed collection resolution ──────
-
-
-def _mock_client_with_collections(names: list[str]) -> MagicMock:
-    """A fake QdrantClient whose ``get_collections`` returns the given names.
-
-    Qdrant's ``get_collections`` returns ``CollectionDescription`` objects with
-    a ``.name: str`` field. ``MagicMock(name=n)`` sets the mock's *repr* name,
-    not a ``.name`` attribute returning the string — so build real lightweight
-    objects to match the real ``CollectionDescription`` shape.
-    """
-
-    class _CollectionDescription:
-        def __init__(self, n: str) -> None:
-            self.name = n
-
-    client = MagicMock()
-    client.get_collections.return_value = MagicMock(
-        collections=[_CollectionDescription(n) for n in names]
-    )
-    return client
-
-
-def test_delete_points_resolves_dim_suffixed_collections(monkeypatch, tmp_home):
-    """The bug fix: delete must target the real ``multimodal_text_1024d``
-    collection (resolved from the live server), not the bare base name
-    ``multimodal_text`` that ``text_collection()`` falls back to when the
-    process never ingested. A bare-base delete raises 'Collection not found'
-    and was silently swallowed, leaving points behind."""
-    import mm_asset_rag.backends.qdrant_backend as qb
-
-    client = _mock_client_with_collections(
-        ["multimodal_text_1024d", "multimodal_image_768d", "other_coll"]
-    )
-    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
-
-    counts = qb.delete_points_by_asset_id("asset_x")
-
-    deleted_text = [
-        c.kwargs.get("collection_name") or c.args[0] for c in client.delete.call_args_list
-    ]
-    assert "multimodal_text_1024d" in deleted_text
-    assert "multimodal_image_768d" in deleted_text
-    assert "other_coll" not in deleted_text
-    assert "multimodal_text" not in deleted_text  # never the bare base name
-    assert counts == {"text": 1, "image": 1}
-
-
-def test_delete_points_handles_no_matching_collection(monkeypatch, tmp_home):
-    """No collection matching the base name → no delete calls, no raise,
-    counts 0. (Server has unrelated collections only.)"""
-    import mm_asset_rag.backends.qdrant_backend as qb
-
-    client = _mock_client_with_collections(["unrelated_one", "unrelated_two"])
-    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
-
-    counts = qb.delete_points_by_asset_id("asset_x")
-
-    client.delete.assert_not_called()
-    assert counts == {"text": 0, "image": 0}
-
-
-def test_delete_points_respects_active_collection_override(monkeypatch, tmp_home):
-    """When ``qdrant_active_text_collection`` is pinned, use that name verbatim
-    (migration scenario) instead of listing — preserving the pin intent."""
-    import mm_asset_rag.backends.qdrant_backend as qb
-    from mm_asset_rag.settings import get_settings
-
-    get_settings.cache_clear()
-    monkeypatch.setenv("QDRANT_ACTIVE_TEXT_COLLECTION", "my_pinned_text")
-    monkeypatch.setenv("QDRANT_ACTIVE_IMAGE_COLLECTION", "my_pinned_image")
-
-    client = _mock_client_with_collections(["multimodal_text_1024d"])  # real ones present
-    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
-
-    qb.delete_points_by_asset_id("asset_x")
-
-    deleted = [c.kwargs.get("collection_name") or c.args[0] for c in client.delete.call_args_list]
-    assert "my_pinned_text" in deleted
-    assert "my_pinned_image" in deleted
-    # The live-listed collection is NOT touched when a pin is set.
-    assert "multimodal_text_1024d" not in deleted
-    get_settings.cache_clear()
-
-
-def test_delete_points_empty_asset_id_returns_zero(monkeypatch, tmp_home):
-    """Empty asset_id short-circuits without touching Qdrant."""
-    import mm_asset_rag.backends.qdrant_backend as qb
-
-    client = _mock_client_with_collections(["multimodal_text_1024d"])
-    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
-
-    assert qb.delete_points_by_asset_id("") == {"text": 0, "image": 0}
-    client.get_collections.assert_not_called()
-
-
-def test_delete_points_continues_after_collection_failure(monkeypatch, tmp_home, capsys):
-    """A failing collection delete is logged but does not abort the other
-    collections — delete_asset's overall cleanup must still complete."""
-    import mm_asset_rag.backends.qdrant_backend as qb
-
-    client = _mock_client_with_collections(["multimodal_text_1024d", "multimodal_text_768d"])
-    # First delete call raises, second succeeds.
-    client.delete.side_effect = [RuntimeError("boom"), None]
-    monkeypatch.setattr(qdrant_collections, "get_qdrant_client", lambda: client)
-
-    counts = qb.delete_points_by_asset_id("asset_x")
-
-    assert client.delete.call_count == 2
-    # One of the two succeeded → counts reflects the successful one.
-    assert counts["text"] == 1
-    captured = capsys.readouterr().out
-    assert "failed to delete text points" in captured

@@ -1,193 +1,277 @@
-"""Append-only content-hash index for confirmed assets.
-
-``UploadPipeline.confirm`` writes here on confirm; ``IngestService.delete_asset``
-writes a ``deleted=True`` row. The second ``confirm`` of an identical file
-discovers the first by content hash and reuses the same ``asset_id`` /
-``relative_path`` instead of allocating a new one.
-
-Storage: ``$MM_ASSET_RAG_HOME/asset_index.jsonl`` — one JSON object per line,
-latest row wins, ``deleted=True`` is another row (not a mutation) so the
-history is preserved. The module only records the decision; it touches
-neither the assets directory nor Qdrant.
-"""
+"""Append-only persistence for document versions and their physical assets."""
 
 from __future__ import annotations
 
 import json
 import os
 import threading
-import time
-from dataclasses import asdict, dataclass, field
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from .document_store import _advisory_lock
+from .knowledge_models import AccessPolicy, Asset, Document, DocumentVersion, Source
 from .paths import get_asset_index_path
 
-_INDEX_LOCK = threading.Lock()
+_INDEX_LOCK = threading.RLock()
+_INDEX_GUARD_STATE = threading.local()
 
 
-@dataclass
-class AssetIndexEntry:
-    asset_id: str
-    sha256: str
-    source_type: str
-    relative_path: str
-    asset_title: str = ""
-    ingested_at: float = field(default_factory=time.time)
-    last_task_id: str | None = None
-    deleted: bool = False
-    deleted_at: float | None = None
-    tags: list[str] = field(default_factory=list)
+@contextmanager
+def _index_guard(target: Path, *, exclusive: bool):
+    """Guard index I/O with both a process and cross-process lock.
+
+    ``upsert_records`` calls ``upsert_record`` while holding the transaction
+    lock. The thread-local depth avoids reopening the same advisory lock in
+    that nested call, which would deadlock on POSIX ``flock``.
+    """
+    with _INDEX_LOCK:
+        depth = getattr(_INDEX_GUARD_STATE, "depth", 0)
+        if depth:
+            yield
+            return
+        _INDEX_GUARD_STATE.depth = depth + 1
+        try:
+            with _advisory_lock(target, exclusive=exclusive):
+                yield
+        finally:
+            _INDEX_GUARD_STATE.depth = depth
+
+
+@dataclass(frozen=True)
+class DocumentVersionRecord:
+    """The complete persisted record written after upload confirmation."""
+
+    document: Document
+    version: DocumentVersion
+    asset: Asset
+    created_at: float | None = None
+    access_policy: AccessPolicy = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.version.document_id != self.document.document_id:
+            raise ValueError("version must belong to document")
+        if self.version.content_hash != self.asset.content_hash:
+            raise ValueError("version and asset content hashes must match")
+        object.__setattr__(self, "access_policy", self.document.access_policy)
+
+    def to_record(self) -> dict[str, object]:
+        record = {
+            "document": self.document.to_record(),
+            "version": self.version.to_record(),
+            "asset": self.asset.to_record(),
+            "access_policy": self.access_policy.to_record(),
+        }
+        if self.created_at is not None:
+            record["created_at"] = self.created_at
+        return record
 
 
 def _entry_path() -> Path:
     return get_asset_index_path()
 
 
-def load_entries(path: Path | None = None) -> list[AssetIndexEntry]:
-    """Read every index row, tolerating corrupt / empty / missing file."""
-    target = path or _entry_path()
+def _record_from_dict(payload: object) -> DocumentVersionRecord | None:
+    if not isinstance(payload, dict) or "asset_id" in payload:
+        return None
+    document_data = payload.get("document")
+    version_data = payload.get("version")
+    asset_data = payload.get("asset")
+    policy_data = payload.get("access_policy")
+    if not all(
+        isinstance(value, dict) for value in (document_data, version_data, asset_data, policy_data)
+    ):
+        return None
+    source_data = document_data.get("source")
+    principals = policy_data.get("allowed_principals")
+    if not isinstance(source_data, dict) or not isinstance(principals, list):
+        return None
+    metadata = policy_data.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return None
+    try:
+        source = Source(
+            source_id=str(source_data["source_id"]),
+            uri=str(source_data.get("uri", "")),
+            provider=str(source_data.get("provider", "upload")),
+        )
+        policy = AccessPolicy(
+            collection=str(policy_data["collection"]),
+            allowed_principals=tuple(str(value) for value in principals),
+            metadata=metadata,
+        )
+        document = Document(
+            document_id=str(document_data["document_id"]),
+            title=str(document_data.get("title", "")),
+            source=source,
+            access_policy=policy,
+        )
+        version = DocumentVersion(
+            document_id=str(version_data["document_id"]),
+            version_number=int(version_data["version_number"]),
+            content_hash=str(version_data["content_hash"]),
+            version_id=str(version_data["version_id"]),
+        )
+        asset = Asset(
+            content_hash=str(asset_data["content_hash"]),
+            source_type=str(asset_data["source_type"]),
+            relative_path=str(asset_data["relative_path"]),
+        )
+        created_at = payload.get("created_at")
+        return DocumentVersionRecord(
+            document=document,
+            version=version,
+            asset=asset,
+            created_at=float(created_at) if created_at is not None else None,
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _load_records_unlocked(target: Path) -> list[DocumentVersionRecord]:
+    records: list[DocumentVersionRecord] = []
     if not target.exists():
-        return []
-    entries: list[AssetIndexEntry] = []
-    with target.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
+        return records
+    with target.open("r", encoding="utf-8") as handle:
+        for line in handle:
             try:
-                obj = json.loads(line)
+                record = _record_from_dict(json.loads(line))
             except json.JSONDecodeError:
-                continue
-            if not isinstance(obj, dict):
-                continue
-            try:
-                raw_tags = obj.get("tags") or []
-                if not isinstance(raw_tags, list):
-                    raw_tags = []
-                entries.append(
-                    AssetIndexEntry(
-                        asset_id=str(obj.get("asset_id", "")),
-                        sha256=str(obj.get("sha256", "")),
-                        source_type=str(obj.get("source_type", "")),
-                        relative_path=str(obj.get("relative_path", "")),
-                        asset_title=str(obj.get("asset_title", "")),
-                        ingested_at=float(obj.get("ingested_at") or 0.0),
-                        last_task_id=(
-                            str(obj["last_task_id"]) if obj.get("last_task_id") else None
-                        ),
-                        deleted=bool(obj.get("deleted", False)),
-                        deleted_at=(
-                            float(obj["deleted_at"]) if obj.get("deleted_at") is not None else None
-                        ),
-                        tags=[str(t) for t in raw_tags if isinstance(t, (str, int, float))],
-                    )
-                )
-            except (TypeError, ValueError):
-                continue
-    return entries
+                record = None
+            if record is not None:
+                records.append(record)
+    return records
 
 
-def latest_by_asset_id(
-    entries: list[AssetIndexEntry] | None = None,
-    path: Path | None = None,
-) -> dict[str, AssetIndexEntry]:
-    """Fold raw rows to the latest entry per ``asset_id``."""
-    source = entries if entries is not None else load_entries(path)
-    latest: dict[str, AssetIndexEntry] = {}
-    for entry in source:
-        latest[entry.asset_id] = entry
-    return latest
+def load_records(path: Path | None = None) -> list[DocumentVersionRecord]:
+    """Load only complete v2 records; old asset-only rows are unsupported."""
+    target = path or _entry_path()
+    with _index_guard(target, exclusive=False):
+        return _load_records_unlocked(target)
 
 
-def find_by_sha256(
-    sha256: str,
-    *,
-    include_deleted: bool = False,
-    path: Path | None = None,
-) -> AssetIndexEntry | None:
-    """Return the latest entry matching ``sha256``.
-
-    Iterates from the most recent row backwards so a ``deleted=True``
-    tombstone correctly shadows any earlier non-deleted row with the
-    same hash. ``include_deleted=True`` ignores tombstones.
-    """
-    if not sha256:
-        return None
-    for entry in reversed(load_entries(path)):
-        if entry.sha256 != sha256:
-            continue
-        if not include_deleted and entry.deleted:
-            return None
-        return entry
+def find_version(
+    document_id: str, content_hash: str, *, path: Path | None = None
+) -> DocumentVersionRecord | None:
+    target = path or _entry_path()
+    with _index_guard(target, exclusive=False):
+        for record in reversed(_load_records_unlocked(target)):
+            if (
+                record.document.document_id == document_id
+                and record.version.content_hash == content_hash
+            ):
+                return record
     return None
 
 
-def find_active_by_asset_id(
-    asset_id: str,
-    *,
-    path: Path | None = None,
-) -> AssetIndexEntry | None:
-    """Return the latest non-deleted entry for ``asset_id``."""
-    if not asset_id:
-        return None
-    for entry in reversed(load_entries(path)):
-        if entry.asset_id == asset_id:
-            return entry if not entry.deleted else None
+def find_by_content_hash(
+    content_hash: str, *, path: Path | None = None
+) -> DocumentVersionRecord | None:
+    """Return the latest v2 physical-asset record with this content hash."""
+    target = path or _entry_path()
+    with _index_guard(target, exclusive=False):
+        for record in reversed(_load_records_unlocked(target)):
+            if record.asset.content_hash == content_hash:
+                return record
     return None
 
 
-def upsert_entry(entry: AssetIndexEntry, path: Path | None = None) -> str | None:
-    """Append a new index row with fsync durability.
+def find_by_relative_path(
+    relative_path: str, *, path: Path | None = None
+) -> DocumentVersionRecord | None:
+    """Return the latest v2 record for a canonical physical asset path."""
+    if not relative_path:
+        return None
+    target = path or _entry_path()
+    with _index_guard(target, exclusive=False):
+        for record in reversed(_load_records_unlocked(target)):
+            if record.asset.relative_path == relative_path:
+                return record
+    return None
 
-    The caller is expected to have computed a fresh ``ingested_at`` /
-    ``last_task_id``; we do not deduplicate inside ``upsert_entry`` so the
-    JSONL history is preserved. Returns the entry's own ``asset_id``.
+
+def next_version_number(document_id: str, *, path: Path | None = None) -> int:
+    target = path or _entry_path()
+    with _index_guard(target, exclusive=False):
+        versions = [
+            record.version.version_number
+            for record in _load_records_unlocked(target)
+            if record.document.document_id == document_id
+        ]
+        return max(versions, default=0) + 1
+
+
+def upsert_record(record: DocumentVersionRecord, path: Path | None = None) -> DocumentVersionRecord:
+    """Atomically find-or-create one document/content version record."""
+    target = path or _entry_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _index_guard(target, exclusive=True):
+        records = _load_records_unlocked(target)
+        for existing in records:
+            if (
+                existing.document.document_id == record.document.document_id
+                and existing.version.content_hash == record.version.content_hash
+            ):
+                return existing
+        version_number = (
+            max(
+                (
+                    item.version.version_number
+                    for item in records
+                    if item.document.document_id == record.document.document_id
+                ),
+                default=0,
+            )
+            + 1
+        )
+        persisted = DocumentVersionRecord(
+            document=record.document,
+            version=DocumentVersion.create(
+                record.document,
+                record.asset.content_hash,
+                version_number=version_number,
+            ),
+            asset=record.asset,
+            created_at=record.created_at,
+        )
+        line = json.dumps(persisted.to_record(), ensure_ascii=False) + "\n"
+        with target.open("a", encoding="utf-8") as handle:
+            handle.write(line)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return persisted
+
+
+def upsert_records(
+    records: list[DocumentVersionRecord], path: Path | None = None
+) -> list[DocumentVersionRecord]:
+    """Find-or-create records as one atomic index transaction.
+
+    The lock covers every idempotence check and version allocation in the
+    batch. If any write fails, restore the exact pre-transaction file so a
+    retry can safely move and persist the upload again.
     """
     target = path or _entry_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(asdict(entry), ensure_ascii=False) + "\n"
-    with _INDEX_LOCK, target.open("a", encoding="utf-8") as fh:
-        fh.write(line)
-        fh.flush()
-        os.fsync(fh.fileno())
-    return entry.asset_id
+    with _index_guard(target, exclusive=True):
+        existed = target.exists()
+        snapshot = target.read_bytes() if existed else None
+        try:
+            return [upsert_record(record, path=target) for record in records]
+        except Exception:
+            try:
+                if snapshot is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    target.write_bytes(snapshot)
+            except OSError as rollback_error:
+                raise OSError(
+                    f"index transaction failed and rollback failed: {rollback_error}"
+                ) from rollback_error
+            raise
 
 
-def mark_deleted(asset_id: str, *, path: Path | None = None, at: float | None = None) -> bool:
-    """Record a ``deleted=True`` row for ``asset_id``.
-
-    Returns ``True`` if a deletion row was written, ``False`` if the asset
-    is unknown or already tombstoned by a more recent row.
-    """
-    if not asset_id:
-        return False
-    entries = load_entries(path)
-    current = next((e for e in reversed(entries) if e.asset_id == asset_id), None)
-    if current is None or current.deleted:
-        return False
-    upsert_entry(
-        AssetIndexEntry(
-            asset_id=asset_id,
-            sha256=current.sha256,
-            source_type=current.source_type,
-            relative_path=current.relative_path,
-            asset_title=current.asset_title,
-            ingested_at=current.ingested_at,
-            last_task_id=current.last_task_id,
-            deleted=True,
-            deleted_at=at if at is not None else time.time(),
-            tags=list(current.tags),
-        ),
-        path=path,
-    )
-    return True
-
-
-def list_active(*, path: Path | None = None) -> list[AssetIndexEntry]:
-    """Return one entry per non-deleted asset, latest first."""
-    latest = latest_by_asset_id(path=path)
-    return sorted(
-        (entry for entry in latest.values() if not entry.deleted),
-        key=lambda e: e.ingested_at,
-        reverse=True,
-    )
+# ``IngestService`` is migrated in Task 5.  Retaining this import-only alias
+# keeps the intermediate v2 branch importable; it does not accept or persist
+# the legacy asset-only shape.
+AssetIndexEntry = DocumentVersionRecord

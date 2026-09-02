@@ -61,7 +61,18 @@ def command_parse(args: argparse.Namespace) -> None:
     if not previews:
         raise SystemExit("no files to parse")
     cache_id = previews[0].cache_id
-    edits = [UserEdits(preview_id=p.preview_id, rejected=not p.is_supported) for p in previews]
+    if args.document_id and len(previews) != 1:
+        raise SystemExit("--document-id requires exactly one input file")
+    edits = [
+        UserEdits(
+            preview_id=p.preview_id,
+            document_id=args.document_id,
+            collection=args.collection,
+            allowed_principals=list(args.principals),
+            rejected=not p.is_supported,
+        )
+        for p in previews
+    ]
     assets = pipeline.confirm(cache_id, edits)
     if not assets:
         raise SystemExit("no supported files to parse")
@@ -127,8 +138,35 @@ def command_reindex(args: argparse.Namespace) -> None:
 
 
 def print_hits(hits) -> None:
-    rows = [asdict(hit) for hit in hits]
+    rows = [_serialize_hit(hit) for hit in hits]
     safe_print(json.dumps(rows, ensure_ascii=False, indent=2))
+
+
+def _without_asset_id(value: object) -> object:
+    if isinstance(value, dict):
+        return {key: _without_asset_id(item) for key, item in value.items() if key != "asset_id"}
+    if isinstance(value, list):
+        return [_without_asset_id(item) for item in value]
+    return value
+
+
+def _serialize_hit(hit) -> dict[str, object]:
+    """Serialize the public retrieval contract, never the internal DTO."""
+    metadata = hit.metadata if isinstance(hit.metadata, dict) else {}
+    return {
+        "document_id": metadata.get("document_id"),
+        "version_id": metadata.get("version_id"),
+        "chunk_id": metadata.get("chunk_id"),
+        "title": hit.title,
+        "source_type": hit.source_type,
+        "source_path": hit.source_path,
+        "evidence": hit.evidence,
+        "score": hit.score,
+        "routes": metadata.get("routes", [hit.route]),
+        "page": metadata.get("page"),
+        "parser": metadata.get("parser") or metadata.get("provider"),
+        "images": _without_asset_id(hit.images or metadata.get("images") or []),
+    }
 
 
 def safe_print(text: str) -> None:
@@ -149,6 +187,9 @@ def command_search(args: argparse.Namespace) -> None:
             mode=args.mode,
             image_path=args.image or None,
             top_k=args.top_k,
+            collection=args.collection,
+            metadata_filter=args.metadata_filter,
+            principal=args.principal,
         )
     except SearchInputError as exc:
         raise SystemExit(f"error: {exc}") from exc
@@ -181,7 +222,13 @@ def command_eval(args: argparse.Namespace) -> None:
     if args.answer_quality:
         from .answer_evaluation import run_answer_eval, write_answer_eval_report
 
-        results = run_answer_eval(top_k=args.top_k, cases_path=cases_path)
+        results = run_answer_eval(
+            top_k=args.top_k,
+            cases_path=cases_path,
+            collection=args.collection,
+            metadata_filter=args.metadata_filter,
+            principal=args.principal,
+        )
         write_answer_eval_report(results)
         safe_print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
         # Surface the dominant "all fallback" / "all faithfulness skipped"
@@ -207,7 +254,13 @@ def command_eval(args: argparse.Namespace) -> None:
     if args.v2:
         from .evaluation_v2 import run_eval_v2, write_eval_report_v2
 
-        results = run_eval_v2(top_k=args.top_k, cases_path=cases_path)
+        results = run_eval_v2(
+            top_k=args.top_k,
+            cases_path=cases_path,
+            collection=args.collection,
+            metadata_filter=args.metadata_filter,
+            principal=args.principal,
+        )
         # Only the text→text group runs here; the text→image / image→image
         # groups live in their own one-shots under ``evaluation_v2.__main__``.
         # ``write_eval_report_v2`` expects a ``{group_name: [V2Result, ...]}``
@@ -216,7 +269,13 @@ def command_eval(args: argparse.Namespace) -> None:
         write_eval_report_v2({"text_to_text": results})
         safe_print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
         return
-    results = run_eval(top_k=args.top_k, cases_path=cases_path)
+    results = run_eval(
+        top_k=args.top_k,
+        cases_path=cases_path,
+        collection=args.collection,
+        metadata_filter=args.metadata_filter,
+        principal=args.principal,
+    )
     write_eval_report(results)
     safe_print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
 
@@ -227,6 +286,10 @@ def command_answer(args: argparse.Namespace) -> None:
             args.question,
             top_k=args.top_k,
             search_service=get_search_service(),
+            collection=args.collection,
+            metadata_filter=args.metadata_filter,
+            principal=args.principal,
+            min_confidence=args.min_confidence,
         )
     )
 
@@ -253,20 +316,37 @@ def command_retry(args: argparse.Namespace) -> None:
     _wait_for_task(rec.task_id)
 
 
-def command_delete(args: argparse.Namespace) -> None:
-    """Delete an asset (best-effort across disk, parsed, captions, Qdrant, index)."""
-    if not args.dry_run and not args.yes:
-        confirm = input(
-            f"Delete asset {args.asset_id}? This will remove its file, parsed/, "
-            "captions/, Qdrant points and asset index entry. [y/N] "
+def command_documents(args: argparse.Namespace) -> None:
+    """List logical documents and their latest immutable version."""
+    from . import asset_index
+
+    latest = {}
+    for record in asset_index.load_records():
+        policy = record.access_policy
+        if policy.collection != args.collection or not policy.allows(args.principal):
+            continue
+        if any(
+            policy.metadata.get(key) != value for key, value in (args.metadata_filter or {}).items()
+        ):
+            continue
+        current = latest.get(record.document.document_id)
+        if current is None or record.version.version_number > current.version.version_number:
+            latest[record.document.document_id] = record
+    safe_print(
+        json.dumps(
+            [
+                {
+                    "document_id": record.document.document_id,
+                    "title": record.document.title,
+                    "source": record.document.source.to_record(),
+                    "latest_version": record.version.to_record(),
+                }
+                for _document_id, record in sorted(latest.items())
+            ],
+            ensure_ascii=False,
+            indent=2,
         )
-        if confirm.strip().lower() not in {"y", "yes"}:
-            print("aborted")
-            return
-    report = get_service().delete_asset(args.asset_id, dry_run=args.dry_run)
-    if not report.was_known:
-        raise SystemExit(f"unknown asset: {args.asset_id}")
-    safe_print(json.dumps(asdict(report), ensure_ascii=False, indent=2))
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -278,6 +358,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     parse_cmd = subparsers.add_parser("parse", help="Parse and index PDF/image files")
     parse_cmd.add_argument("files", nargs="+", help="PDF/image files to ingest")
+    parse_cmd.add_argument(
+        "--document-id",
+        help="Stable logical document identity (allowed only for one input file)",
+    )
+    parse_cmd.add_argument("--collection", required=True, help="Access-policy collection")
+    parse_cmd.add_argument(
+        "--principal",
+        dest="principals",
+        action="append",
+        required=True,
+        help="Allowed principal; repeat to grant more than one",
+    )
     parse_cmd.add_argument(
         "--pdf-parser",
         choices=["auto", "pymupdf", "paddleocr_vl", "docling", "ppocr"],
@@ -329,7 +421,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     reindex_cmd.set_defaults(func=command_reindex)
 
-    search_cmd = subparsers.add_parser("search", help="Search indexed assets")
+    search_cmd = subparsers.add_parser("search", help="Search authorized documents")
     search_cmd.add_argument("query")
     search_cmd.add_argument(
         "--mode",
@@ -340,18 +432,35 @@ def build_parser() -> argparse.ArgumentParser:
         "--image", default="", help="Path to query image (for image-to-image / hybrid)"
     )
     search_cmd.add_argument("--top-k", type=int, default=5)
+    search_cmd.add_argument("--collection", required=True, help="Access-policy collection")
+    search_cmd.add_argument("--principal", required=True, help="Requesting principal")
+    search_cmd.add_argument(
+        "--metadata-filter",
+        type=json.loads,
+        default=None,
+        help="JSON object of required policy metadata",
+    )
     search_cmd.set_defaults(func=command_search)
 
     eval_cmd = subparsers.add_parser("eval", help="Run the small retrieval regression set")
     eval_cmd.add_argument("--top-k", type=int, default=5)
+    eval_cmd.add_argument("--collection", required=True, help="Access-policy collection")
+    eval_cmd.add_argument("--principal", required=True, help="Requesting principal")
+    eval_cmd.add_argument(
+        "--metadata-filter",
+        type=json.loads,
+        default=None,
+        help="JSON object of required policy metadata",
+    )
     eval_cmd.add_argument(
         "--cases",
         default=None,
         help=(
             "Path to a case JSON overriding the default "
             "(Settings.EVAL_CASES_PATH → the bundled sample). Schema: "
-            '{"version","groups":{group:[{query,expected_asset_ids}]}}. '
-            "Ship your own or use examples/eval_cases_chapter11_v{1,2}.json."
+            '{"version","groups":{group:[{query_id,query}]},'
+            '"qrels":{query_id:{document_id:relevance}}}. '
+            "Document IDs are matched exactly."
         ),
     )
     # --v2 and --answer-quality are mutually exclusive: they share top_k /
@@ -386,6 +495,20 @@ def build_parser() -> argparse.ArgumentParser:
     answer_cmd = subparsers.add_parser("answer", help="Answer with retrieved multimodal evidence")
     answer_cmd.add_argument("question")
     answer_cmd.add_argument("--top-k", type=int, default=5)
+    answer_cmd.add_argument("--collection", required=True, help="Access-policy collection")
+    answer_cmd.add_argument("--principal", required=True, help="Requesting principal")
+    answer_cmd.add_argument(
+        "--metadata-filter",
+        type=json.loads,
+        default=None,
+        help="JSON object of required policy metadata",
+    )
+    answer_cmd.add_argument(
+        "--min-confidence",
+        type=float,
+        required=True,
+        help="Mandatory refusal threshold; the LLM is not called below it",
+    )
     answer_cmd.set_defaults(func=command_answer)
 
     retry_cmd = subparsers.add_parser(
@@ -408,18 +531,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     retry_cmd.set_defaults(func=command_retry)
 
-    delete_cmd = subparsers.add_parser(
-        "delete",
-        help="Delete an asset (file, parsed/, captions/, Qdrant points, index entry)",
+    documents_cmd = subparsers.add_parser(
+        "documents", help="List logical documents and their latest versions"
     )
-    delete_cmd.add_argument("asset_id", help="Asset id to delete")
-    delete_cmd.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
-    delete_cmd.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be removed without touching the disk or Qdrant",
+    documents_cmd.add_argument("--collection", required=True, help="Access-policy collection")
+    documents_cmd.add_argument("--principal", required=True, help="Requesting principal")
+    documents_cmd.add_argument(
+        "--metadata-filter",
+        type=json.loads,
+        default=None,
+        help="JSON object of required policy metadata",
     )
-    delete_cmd.set_defaults(func=command_delete)
+    documents_cmd.set_defaults(func=command_documents)
 
     return parser
 

@@ -2,19 +2,30 @@
   "version": "v2",
   "groups": {
     "zh_on_en": [
-      {"query": "CLIP 模型", "expected_asset_ids": ["Learning Transferable Visual Models From Natural Language Supervision"]},
-      {"query": "BERT 预训练双向 transformer", "expected_asset_ids": ["Bert"]},
-      {"query": "RAG 检索增强生成", "expected_asset_ids": ["Retrieval Augmented Generation"]},
-      {"query": "残差网络 ResNet", "expected_asset_ids": ["Resnet"]}
+      {"query_id": "v2-zh-clip", "query": "CLIP 模型"},
+      {"query_id": "v2-zh-bert", "query": "BERT 预训练双向 transformer"},
+      {"query_id": "v2-zh-rag", "query": "RAG 检索增强生成"},
+      {"query_id": "v2-zh-resnet", "query": "残差网络 ResNet"}
     ],
     "en_on_en": [
-      {"query": "image classification deep learning", "expected_asset_ids": ["Alexnet"]},
-      {"query": "real-time object detection", "expected_asset_ids": ["You Only Look Once"]},
-      {"query": "GAN generative adversarial nets", "expected_asset_ids": ["Gan"]}
+      {"query_id": "v2-en-alexnet", "query": "image classification deep learning"},
+      {"query_id": "v2-en-yolo", "query": "real-time object detection"},
+      {"query_id": "v2-en-gan", "query": "GAN generative adversarial nets"}
     ],
     "negative": [
-      {"query": "强化学习算法 PPO DQN", "expected_asset_ids": []},
-      {"query": "联邦学习框架", "expected_asset_ids": []}
+      {"query_id": "v2-negative-rl", "query": "强化学习算法 PPO DQN"},
+      {"query_id": "v2-negative-fl", "query": "联邦学习框架"}
     ]
+  },
+  "qrels": {
+    "v2-zh-clip": {"Learning Transferable Visual Models From Natural Language Supervision": 1},
+    "v2-zh-bert": {"Bert": 1},
+    "v2-zh-rag": {"Retrieval Augmented Generation": 1},
+    "v2-zh-resnet": {"Resnet": 1},
+    "v2-en-alexnet": {"Alexnet": 1},
+    "v2-en-yolo": {"You Only Look Once": 1},
+    "v2-en-gan": {"Gan": 1},
+    "v2-negative-rl": {},
+    "v2-negative-fl": {}
   }
 }

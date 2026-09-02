@@ -1,10 +1,11 @@
 import json
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
 
+from .knowledge_models import Chunk
 from .paths import get_documents_jsonl
-from .schema import ParsedDocument
 
 
 @contextmanager
@@ -56,11 +57,10 @@ def documents_jsonl_lock(path: Path | None = None):
     Two write shapes touch this file and must not overlap, or data is
     lost:
 
-    * ``_do_parse`` appends one chunk-row per parsed asset
+    * the ingest workflow appends chunk rows for a parsed document version
       (``target.open("a")``).
-    * ``_remove_asset_rows_from_documents_jsonl`` does a read → tmp →
-      ``os.replace`` rewrite (used by ``delete_asset`` and the
-      force-retry path).
+    * document/version lifecycle cleanup does a read → tmp →
+      ``os.replace`` rewrite for exact version rows (including force retry).
 
     If the rewrite's ``os.replace`` swaps the file out while an appender
     still holds the old fd, the appender keeps writing to the now-unlinked
@@ -74,29 +74,56 @@ def documents_jsonl_lock(path: Path | None = None):
         yield
 
 
-def write_documents(documents: list[ParsedDocument], path: Path | None = None) -> None:
+def write_documents(documents: list[Chunk], path: Path | None = None) -> None:
+    """Persist only complete document-version chunk rows."""
     target = path or get_documents_jsonl()
     target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as file_obj:
+    # Validate before touching the existing store, then replace it atomically
+    # under the same cross-process lock used by append/rewrite callers.
+    if any(not isinstance(document, Chunk) for document in documents):
+        raise TypeError("documents.jsonl accepts Chunk records only")
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    with documents_jsonl_lock(target):
+        try:
+            with temporary.open("w", encoding="utf-8") as file_obj:
+                for document in documents:
+                    file_obj.write(json.dumps(document.to_record(), ensure_ascii=False) + "\n")
+                file_obj.flush()
+                os.fsync(file_obj.fileno())
+            os.replace(temporary, target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+
+
+def append_documents(documents: list[Chunk], path: Path | None = None) -> None:
+    """Append validated v2 chunks without exposing legacy DTO rows."""
+    target = path or get_documents_jsonl()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if any(not isinstance(document, Chunk) for document in documents):
+        raise TypeError("documents.jsonl accepts Chunk records only")
+    with documents_jsonl_lock(target), target.open("a", encoding="utf-8") as file_obj:
         for document in documents:
-            file_obj.write(json.dumps(document.to_json(), ensure_ascii=False) + "\n")
+            file_obj.write(json.dumps(document.to_record(), ensure_ascii=False) + "\n")
+        file_obj.flush()
+        os.fsync(file_obj.fileno())
 
 
-def read_documents(path: Path | None = None) -> list[ParsedDocument]:
-    """Read all ``ParsedDocument`` rows from the JSONL store.
+def read_documents(path: Path | None = None) -> list[Chunk]:
+    """Read complete v2 ``Chunk`` rows from the JSONL store.
 
     Holds a shared advisory lock so a concurrent appender can't expose a
     half-written line mid-parse. A corrupted row (truncated write, partial
     flush, OOM kill mid-append) is skipped with a warning rather than
-    aborting the whole index build — matching :func:`asset_index.load_entries`
-    and ``_remove_asset_rows_from_documents_jsonl``. The next reindex
-    rebuilds from the surviving rows; losing one chunk beats failing the
+    aborting the whole index build — matching :func:`asset_index.load_records`
+    and the exact document-version row cleanup path. The next reindex
+    rebuilds from the surviving rows; losing one chunk is preferable to failing the
     whole index build.
     """
     target = path or get_documents_jsonl()
     if not target.exists():
         raise RuntimeError(f"Document JSONL not found: {target}")
-    documents: list[ParsedDocument] = []
+    documents: list[Chunk] = []
     with _advisory_lock(target, exclusive=False), target.open("r", encoding="utf-8") as file_obj:
         for lineno, line in enumerate(file_obj, 1):
             line = line.strip()
@@ -104,13 +131,8 @@ def read_documents(path: Path | None = None) -> list[ParsedDocument]:
                 continue
             try:
                 payload = json.loads(line)
-                documents.append(
-                    ParsedDocument(
-                        text=str(payload["text"]),
-                        metadata=dict(payload.get("metadata", {})),
-                    )
-                )
-            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                documents.append(Chunk.from_record(payload))
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
                 print(
                     f"[document_store] skip malformed row {lineno} in {target.name}: {exc}",
                     file=sys.stderr,

@@ -68,13 +68,19 @@ def _rrf_score(rank: int, weight: float) -> float:
     return weight / (RRF_K + rank)
 
 
+def _document_id(hit: SearchHit) -> str | None:
+    """Return the required nonempty v2 logical identity, if present."""
+    value = hit.metadata.get("document_id")
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def _rank_hits(hits: list[SearchHit]) -> list[tuple[SearchHit, int]]:
     """Sort ``hits`` by descending raw ``score`` and assign 1-based ranks.
 
     Ties are broken by ``asset_id`` so the ranking is deterministic when
     many hits share a score (common for BM25 on short queries).
     """
-    ordered = sorted(hits, key=lambda h: (-h.score, h.asset_id))
+    ordered = sorted(hits, key=lambda h: (-h.score, _document_id(h) or ""))
     return [(hit, rank) for rank, hit in enumerate(ordered, start=1)]
 
 
@@ -107,25 +113,29 @@ def merge_hits(
     for group, weight in zip(groups, weights):
         if weight <= 0:
             continue
-        for hit, rank in _rank_hits(group):
+        valid_hits = [hit for hit in group if _document_id(hit) is not None]
+        for hit, rank in _rank_hits(valid_hits):
             if hit.score <= 0:
                 # A zero-score hit carries no signal in its route; skip
                 # it so it neither contributes RRF weight nor crowds the
                 # per-route rank space for downstream hits.
                 continue
-            key = hit.asset_id
+            key = _document_id(hit)
+            if key is None:  # Defensive: ``valid_hits`` establishes this invariant.
+                continue
             contribution = _rrf_score(rank, weight)
             if key not in merged:
                 merged[key] = SearchHit(
                     route=hit.route,
                     score=contribution,
-                    asset_id=hit.asset_id,
+                    asset_id=key,
                     title=hit.title,
                     source_type=hit.source_type,
                     source_path=hit.source_path,
                     evidence=hit.evidence,
                     metadata={
                         **hit.metadata,
+                        "document_id": key,
                         "routes": [hit.route],
                         # Preserve the route's raw score (CLIP cosine for
                         # image routes, dense/BM25 for text) so the reranker
@@ -134,26 +144,28 @@ def merge_hits(
                         "raw_score": hit.score,
                     },
                     images=list(hit.images),
+                    cache_id=hit.cache_id,
                 )
             else:
                 current = merged[key]
+                representative = (
+                    hit if hit.score > float(current.metadata.get("raw_score", 0.0)) else current
+                )
                 merged[key] = SearchHit(
                     route=current.route,
                     score=current.score + contribution,
-                    asset_id=current.asset_id,
-                    title=current.title,
-                    source_type=current.source_type,
-                    source_path=current.source_path,
-                    evidence=(
-                        hit.evidence
-                        if len(hit.evidence) > len(current.evidence)
-                        else current.evidence
-                    ),
+                    asset_id=key,
+                    title=representative.title,
+                    source_type=representative.source_type,
+                    source_path=representative.source_path,
+                    evidence=representative.evidence,
                     metadata={
-                        **current.metadata,
+                        **representative.metadata,
+                        "document_id": key,
                         "routes": _merge_routes(current.metadata.get("routes"), hit.route),
                     },
                     images=_merge_images(current.images, hit.images),
+                    cache_id=representative.cache_id,
                 )
     sorted_hits = sorted(merged.values(), key=lambda hit: hit.score, reverse=True)
     if min_score > 0.0:

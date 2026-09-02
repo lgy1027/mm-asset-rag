@@ -193,19 +193,25 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 
 ## 评估
 
-`mmrag eval` 拿一组 `query → expected_asset_ids` 对照活索引跑,报 hit-rate / MRR。cases 写在 JSON 里(`{"version","groups":{group:[{query,expected_asset_ids}]}}`)。**默认** 走包内置小样例(`mm_asset_rag/eval_data/`)— 一个文本→text 模板,对着几篇经典 arxiv 论文。前提是**语料已 ingest**,否则全是 `hit: false`。
+`mmrag eval` 用分组查询和逻辑文档 qrels 对照活索引评测,报告文档级 Recall、MRR、MAP 和分级 NDCG。每个 case 包含 `query_id` 和 `query`;顶层 `qrels` 把每个查询 ID 映射到 `{document_id: relevance}`。**默认** 走包内置的 qrels 小样例(`mm_asset_rag/eval_data/`)。文档必须已用 qrels 中完全一致、区分大小写的 `document_id` ingest,否则正例会记为未命中。
+
+```json
+{
+  "version": "v1",
+  "groups": {"zh": [{"query_id": "q1", "query": "..."}]},
+  "qrels": {"q1": {"document-id": 3}}
+}
+```
 
 想评估自己的语料,写自己的 case 文件,传 `--cases`(或设 `EVAL_CASES_PATH`):
 
 ```bash
-# 1. 先 ingest 你的评估语料(cases 引用 asset title/id,
-#    把 mmrag parse 指到你要评估的那批)
+# 1. 先 ingest 你的评估语料,document_id 要与 qrels 完全一致
 mmrag parse ./my_eval_corpus/*.pdf
 # 2. 跑评估
 mmrag eval                              # 默认内置样例
 mmrag eval --cases my_cases.json        # 自定义
 mmrag eval --v2                         # v2:多维度,中文为主
-mmrag eval --v2 --cases examples/eval_cases_chapter11_v2.json   # 内部基线
 ```
 
 没配 LLM 也能跑(只评检索),`/answer` 相关 case 优雅降级。

@@ -40,7 +40,7 @@ import uuid
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 try:  # Unix-only; the project targets darwin/Linux where this is always present.
@@ -49,8 +49,10 @@ except ImportError:  # pragma: no cover - exercised only on non-Unix platforms
     fcntl = None  # type: ignore[assignment]
 
 from . import asset_index, auto_meta
-from .assets import Asset, from_sniffed
+from .assets import Asset, from_sniffed, persisted_asset
 from .auto_meta import AutoMeta
+from .knowledge_models import AccessPolicy, Document, DocumentVersion, Source
+from .paths import physical_cache_id
 from .settings import get_settings
 from .sniff import SniffedAsset, sniff
 
@@ -109,6 +111,11 @@ class _PreparedAsset:
     target_path: Path
     asset: Asset
     sha256: str
+    document_id: str
+    document_version: int
+    version_id: str
+    record: asset_index.DocumentVersionRecord
+    already_persisted: bool = False
 
 
 # ─── Preview DTOs ──────────────────────────────────────────────────────
@@ -127,6 +134,9 @@ class UserEdits:
     title: str | None = None
     tags: list[str] | str | None = None
     description: str | None = None
+    document_id: str | None = None
+    collection: str | None = None
+    allowed_principals: list[str] | None = None
     rejected: bool = False  # user explicitly skipped this file
 
 
@@ -150,10 +160,8 @@ class AssetPreview:
     # Content-hash of the staged bytes, computed in ``preview()``. Empty
     # string means we haven't hashed yet (e.g. an unsupported file).
     sha256: str = ""
-    # When the content hash matches a non-deleted entry in the asset
-    # index, this is the existing ``asset_id``. ``None`` means "no
-    # duplicate" — the new upload will get a fresh asset.
-    existing_asset_id: str | None = None
+    # A repeated document/content pair can be identified before confirm.
+    existing_document_id: str | None = None
 
     @property
     def is_supported(self) -> bool:
@@ -349,7 +357,9 @@ class UploadPipeline:
                 rejected_reason = _resource_rejected_reason(sniffed)
             sha256 = self._sha256_file(cached_path) if rejected_reason is None else ""
             existing = (
-                asset_index.find_by_sha256(sha256) if sha256 and rejected_reason is None else None
+                asset_index.find_by_content_hash(sha256)
+                if sha256 and rejected_reason is None
+                else None
             )
             preview = AssetPreview(
                 preview_id=preview_id,
@@ -359,7 +369,7 @@ class UploadPipeline:
                 effective_title=sniffed.title,
                 rejected_reason=rejected_reason,
                 sha256=sha256,
-                existing_asset_id=existing.asset_id if existing else None,
+                existing_document_id=existing.document.document_id if existing else None,
             )
             previews.append(preview)
             manifest[preview_id] = {
@@ -367,7 +377,7 @@ class UploadPipeline:
                 "cached_name": cached_path.name,
                 "source_type": sniffed.source_type,
                 "sha256": sha256,
-                "existing_asset_id": preview.existing_asset_id,
+                "existing_document_id": preview.existing_document_id,
             }
 
         # Persist the manifest so confirm() can look files back up.
@@ -498,26 +508,55 @@ class UploadPipeline:
             moved: list[tuple[Path, Path]] = []
             try:
                 for item in prepared:
+                    if item.already_persisted:
+                        continue
                     shutil.move(str(item.source_path), str(item.target_path))
                     moved.append((item.source_path, item.target_path))
             except Exception as exc:
                 self._rollback_moves(moved)
                 raise UploadCommitError(f"failed to move uploaded file into assets: {exc}") from exc
 
-            for item in prepared:
-                try:
-                    asset_index.upsert_entry(
-                        asset_index.AssetIndexEntry(
-                            asset_id=item.asset.asset_id,
-                            sha256=item.sha256,
-                            source_type=item.asset.source_type,
-                            relative_path=item.asset.relative_path,
-                            asset_title=item.asset.title,
-                            tags=list(item.asset.tags),
-                        )
-                    )
-                except OSError as exc:
-                    log.warning("asset_index upsert failed for %s: %s", item.asset.asset_id, exc)
+            new_positions = [
+                index for index, item in enumerate(prepared) if not item.already_persisted
+            ]
+            new_items = [prepared[index] for index in new_positions]
+            try:
+                persisted_records = asset_index.upsert_records([item.record for item in new_items])
+            except Exception as exc:
+                self._rollback_moves(moved)
+                version_id = new_items[0].version_id if new_items else "unknown"
+                raise UploadCommitError(
+                    f"document-version persistence failed for {version_id}: {exc}"
+                ) from exc
+
+            # A concurrent confirm can win the idempotence race after this
+            # process prepared its candidate path. Reconcile to the record's
+            # canonical physical path and discard our duplicate bytes.
+            for position, persisted in zip(new_positions, persisted_records, strict=True):
+                item = prepared[position]
+                if persisted.asset.relative_path == item.asset.relative_path:
+                    continue
+                canonical = self.assets_root / persisted.asset.relative_path
+                candidate = item.target_path
+                if canonical.exists():
+                    if candidate.exists() and candidate != canonical:
+                        candidate.unlink()
+                elif candidate.exists():
+                    canonical.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(candidate), str(canonical))
+                prepared[position] = replace(
+                    item,
+                    asset=Asset(
+                        asset_id=physical_cache_id(persisted.asset.relative_path),
+                        title=item.asset.title,
+                        source_type=item.asset.source_type,
+                        relative_path=persisted.asset.relative_path,
+                        source_url=item.asset.source_url,
+                        tags=list(item.asset.tags),
+                        asset_dir=self.assets_root,
+                        page_count=item.asset.page_count,
+                    ),
+                )
 
             # Preserve the cache when the user rejected every preview: the
             # web UI's 400 response tells them to "re-edit" and we want
@@ -644,18 +683,36 @@ class UploadPipeline:
             # display_title still flows to title_override below for the
             # human-facing name; only the key is pinned to the filename.
             id_stem = _slugify(source_path.stem, max_len=settings.upload_slug_max_len)
-            base_asset_id = f"{id_stem}_{preview_id[:8]}"
+            document_id = edit.document_id if edit and edit.document_id else id_stem
+            if edit is None or edit.collection is None or edit.allowed_principals is None:
+                raise UploadManifestError("collection and allowed_principals are required")
+            source = Source(source_id=f"upload:{document_id}")
+            policy = AccessPolicy(
+                collection=edit.collection,
+                allowed_principals=tuple(edit.allowed_principals),
+            )
+            document = Document(
+                document_id=document_id,
+                title=display_title,
+                source=source,
+                access_policy=policy,
+            )
             suffix = _suffix_for(source_path, sniffed.source_type)
             content_sha = self._sha256_file(source_path)
-            existing = asset_index.find_by_sha256(content_sha)
+            base_asset_id = f"{id_stem}_{content_sha[:8]}"
+            existing = asset_index.find_version(document_id, content_sha)
             if existing is not None:
-                target = self.assets_root / existing.relative_path
-                asset_id = existing.asset_id
-                relative_path = existing.relative_path
+                target = self.assets_root / existing.asset.relative_path
+                relative_path = existing.asset.relative_path
+                document_version = existing.version.version_number
             else:
                 target = _unique_target_path(target_dir, base_asset_id, suffix, reserved)
-                asset_id = target.stem
                 relative_path = str(target.relative_to(self.assets_root))
+                # ``upsert_record`` allocates the version while holding the
+                # index lock. This candidate only supplies a deterministic
+                # in-memory record before the byte move succeeds.
+                document_version = 1
+            asset_id = physical_cache_id(relative_path)
             normalized_edit = None
             if edit is not None:
                 normalized_edit = UserEdits(
@@ -663,6 +720,9 @@ class UploadPipeline:
                     title=edit.title,
                     tags=_parse_tags(edit.tags) if edit.tags is not None else None,
                     description=edit.description,
+                    document_id=edit.document_id,
+                    collection=edit.collection,
+                    allowed_principals=edit.allowed_principals,
                     rejected=edit.rejected,
                 )
             asset = from_sniffed(
@@ -681,6 +741,20 @@ class UploadPipeline:
                     target_path=target,
                     asset=asset,
                     sha256=content_sha,
+                    document_id=document_id,
+                    document_version=document_version,
+                    version_id=DocumentVersion.create(
+                        document, content_sha, version_number=document_version
+                    ).version_id,
+                    record=existing
+                    or asset_index.DocumentVersionRecord(
+                        document=document,
+                        version=DocumentVersion.create(
+                            document, content_sha, version_number=document_version
+                        ),
+                        asset=persisted_asset(asset, content_sha),
+                    ),
+                    already_persisted=existing is not None,
                 )
             )
 

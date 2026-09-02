@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .knowledge_models import Asset as PersistedAsset
 from .paths import get_assets_dir
 
 if TYPE_CHECKING:
@@ -86,4 +87,17 @@ def from_sniffed(
         tags=list(tags),
         asset_dir=asset_dir,
         page_count=sniffed.page_count,
+    )
+
+
+def persisted_asset(asset: Asset, content_hash: str) -> PersistedAsset:
+    """Map transient parse input to the v2 physical-asset record.
+
+    The parser-facing object remains local to the ingest worker during the
+    migration; no field from it is serialized by the knowledge-base stores.
+    """
+    return PersistedAsset(
+        content_hash=content_hash,
+        source_type=asset.source_type,
+        relative_path=asset.relative_path,
     )

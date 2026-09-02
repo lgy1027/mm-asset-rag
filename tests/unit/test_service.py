@@ -7,12 +7,16 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
-from mm_asset_rag.asset_index import AssetIndexEntry
+from mm_asset_rag.asset_index import DocumentVersionRecord, load_records, upsert_record
 from mm_asset_rag.assets import Asset
+from mm_asset_rag.document_store import append_documents, read_documents
+from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, DocumentVersion, Source
+from mm_asset_rag.knowledge_models import Asset as PersistedAsset
+from mm_asset_rag.paths import physical_cache_id
 from mm_asset_rag.service import IngestService, ParseOptions, TaskRecord
 
 
@@ -41,6 +45,65 @@ def _make_asset(tmp_home: Path, name: str = "fish.png") -> Asset:
         relative_path=f"images/{name}",
         source_url="",
         tags=[],
+        asset_dir=tmp_home / "assets",
+    )
+
+
+def _persist_version(
+    tmp_home: Path,
+    *,
+    document_id: str,
+    version_hash: str,
+    name: str,
+    with_caches: bool = True,
+) -> DocumentVersionRecord:
+    asset = _make_asset(tmp_home, name)
+    document = Document(
+        document_id=document_id,
+        title=document_id,
+        source=Source(source_id=f"upload:{document_id}"),
+        access_policy=AccessPolicy(collection="team", allowed_principals=("alice",)),
+    )
+    record = upsert_record(
+        DocumentVersionRecord(
+            document=document,
+            version=DocumentVersion.create(document, version_hash),
+            asset=PersistedAsset(
+                content_hash=version_hash,
+                source_type=asset.source_type,
+                relative_path=asset.relative_path,
+            ),
+        )
+    )
+    append_documents(
+        [
+            Chunk.create(
+                document_version=record.version,
+                asset=record.asset,
+                ordinal=0,
+                text=f"{document_id} {record.version.version_id}",
+                source=record.document.source,
+                access_policy=record.document.access_policy,
+            )
+        ]
+    )
+    if with_caches:
+        cache_key = physical_cache_id(record.asset.relative_path)
+        parsed_dir = tmp_home / "parsed" / cache_key
+        parsed_dir.mkdir(parents=True, exist_ok=True)
+        (parsed_dir / "raw.jsonl").write_text("{}", encoding="utf-8")
+        captions_dir = tmp_home / "captions"
+        captions_dir.mkdir(parents=True, exist_ok=True)
+        (captions_dir / f"{cache_key}.jsonl").write_text("{}\n", encoding="utf-8")
+    return record
+
+
+def _transient_asset(record: DocumentVersionRecord, tmp_home: Path) -> Asset:
+    return Asset(
+        asset_id=physical_cache_id(record.asset.relative_path),
+        title=record.document.title,
+        source_type=record.asset.source_type,
+        relative_path=record.asset.relative_path,
         asset_dir=tmp_home / "assets",
     )
 
@@ -186,84 +249,369 @@ def test_parse_options_serialisation_drops_invalid_values() -> None:
     assert options.image_provider == "lite"
 
 
-# ─── delete_asset ─────────────────────────────────────────────────────
+# ─── document lifecycle ─────────────────────────────────────────────────────
 
 
-def test_delete_asset_removes_file_parsed_captions(tmp_home: Path) -> None:
-
-    from mm_asset_rag.asset_index import upsert_entry
-    from mm_asset_rag.paths import get_captions_dir, get_parsed_dir
-
-    asset = _make_asset(tmp_home, "beach.png")
-    upsert_entry(
-        AssetIndexEntry(
-            asset_id=asset.asset_id,
-            sha256="abc",
-            source_type="image",
-            relative_path=asset.relative_path,
-        )
+def test_delete_document_version_preserves_sibling_versions_and_documents(
+    tmp_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="1" * 64,
+        name="guide-old.png",
     )
-    parsed_dir = get_parsed_dir() / asset.asset_id
-    parsed_dir.mkdir(parents=True)
-    (parsed_dir / "raw.jsonl").write_text("{}", encoding="utf-8")
-    (get_captions_dir() / f"{asset.asset_id}.json").write_text("{}", encoding="utf-8")
-
-    service = IngestService()
-    report = service.delete_asset(asset.asset_id)
-
-    assert report.file_deleted
-    assert report.parsed_deleted
-    assert report.captions_deleted
-    assert not (tmp_home / "assets" / asset.relative_path).exists()
-    assert not parsed_dir.exists()
-
-
-def test_delete_asset_removes_jsonl_captions(tmp_home: Path) -> None:
-    """Documents with embedded figures cache captions as ``.jsonl`` (one JSON
-    per figure), image assets use ``.json``. Delete must clean both — earlier
-    code only looked for ``.json`` and left document caption caches behind."""
-    from mm_asset_rag.asset_index import upsert_entry
-    from mm_asset_rag.paths import get_captions_dir, get_parsed_dir
-
-    asset_id = "doc_test"
-    upsert_entry(
-        AssetIndexEntry(
-            asset_id=asset_id,
-            sha256="abc",
-            source_type="document",
-            relative_path="documents/doc_test.docx",
-        )
+    current = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="2" * 64,
+        name="guide-current.png",
     )
-    parsed_dir = get_parsed_dir() / asset_id
-    parsed_dir.mkdir(parents=True)
-    (parsed_dir / "raw.jsonl").write_text("{}", encoding="utf-8")
-    # The document-embedded-figure caption cache is .jsonl.
-    (get_captions_dir() / f"{asset_id}.jsonl").write_text(
-        '{"key": "images/fig1.png", "context": "caption text"}\n',
-        encoding="utf-8",
+    other = _persist_version(
+        tmp_home,
+        document_id="handbook",
+        version_hash="3" * 64,
+        name="handbook.png",
+    )
+    qdrant = Mock()
+    qdrant.get_collections.return_value = Mock(
+        collections=[
+            type("_Collection", (), {"name": "multimodal_text_4d"})(),
+            type("_Collection", (), {"name": "multimodal_image_4d"})(),
+        ]
+    )
+    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: qdrant)
+
+    report = IngestService().delete_document_version("guide", old.version.version_id)
+
+    assert report.was_known
+    assert report.deleted_version_ids == [old.version.version_id]
+    assert report.versions_removed == 1
+    assert report.chunks_removed == 1
+    assert not report.errors
+    assert {(row.document.document_id, row.version.version_id) for row in load_records()} == {
+        ("guide", current.version.version_id),
+        ("handbook", other.version.version_id),
+    }
+    assert {
+        (chunk.document_id, chunk.document_version.version_id) for chunk in read_documents()
+    } == {
+        ("guide", current.version.version_id),
+        ("handbook", other.version.version_id),
+    }
+    assert not (tmp_home / "assets" / old.asset.relative_path).exists()
+    assert not (tmp_home / "parsed" / physical_cache_id(old.asset.relative_path)).exists()
+    assert (tmp_home / "assets" / current.asset.relative_path).exists()
+    assert (tmp_home / "parsed" / physical_cache_id(current.asset.relative_path)).exists()
+    assert (tmp_home / "assets" / other.asset.relative_path).exists()
+    assert qdrant.delete.call_count == 2
+    for call in qdrant.delete.call_args_list:
+        condition = call.kwargs["points_selector"].filter.must[0]
+        assert condition.key == "version_id"
+        assert condition.match.any == [old.version.version_id]
+
+
+def test_delete_document_removes_all_versions_without_touching_other_document(
+    tmp_home: Path,
+) -> None:
+    first = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="4" * 64,
+        name="guide-v1.png",
+    )
+    second = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="5" * 64,
+        name="guide-v2.png",
+    )
+    survivor = _persist_version(
+        tmp_home,
+        document_id="handbook",
+        version_hash="6" * 64,
+        name="handbook.png",
     )
 
+    report = IngestService().delete_document("guide")
+
+    assert report.was_known
+    assert report.deleted_version_ids == [first.version.version_id, second.version.version_id]
+    assert report.versions_removed == 2
+    assert report.chunks_removed == 2
+    assert not report.errors
+    assert [row.version.version_id for row in load_records()] == [survivor.version.version_id]
+    assert [chunk.document_id for chunk in read_documents()] == ["handbook"]
+    assert (tmp_home / "assets" / survivor.asset.relative_path).exists()
+    assert (tmp_home / "parsed" / physical_cache_id(survivor.asset.relative_path)).exists()
+
+
+def test_document_lifecycle_delete_is_idempotent_for_unknown_identity(tmp_home: Path) -> None:
     service = IngestService()
-    report = service.delete_asset(asset_id)
 
-    assert report.captions_deleted
-    assert not (get_captions_dir() / f"{asset_id}.jsonl").exists()
+    assert not service.delete_document("missing").was_known
+    assert not service.delete_document_version("missing", "missing@1-aaaaaaaaaaaa").was_known
 
 
-def test_delete_asset_is_idempotent(tmp_home: Path) -> None:
-    asset = _make_asset(tmp_home, "fish.png")
+def test_delete_preserves_indexes_when_dependent_cache_cleanup_fails(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="a" * 64,
+        name="guide.png",
+    )
     service = IngestService()
-    report = service.delete_asset(asset.asset_id)
-    assert not report.was_known
-    # Second call with same id remains a no-op.
-    report2 = service.delete_asset(asset.asset_id)
-    assert not report2.was_known
+    qdrant = Mock()
+    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: qdrant)
+    from mm_asset_rag.service import _stage_delete_path
+
+    def fail_parsed(source: Path, *args, **kwargs):
+        if source.parent == tmp_home / "parsed":
+            raise OSError("cache busy")
+        return _stage_delete_path(source, *args, **kwargs)
+
+    monkeypatch.setattr("mm_asset_rag.service._stage_delete_path", fail_parsed, raising=False)
+
+    report = service.delete_document_version("guide", record.version.version_id)
+
+    assert report.errors
+    assert [row.version.version_id for row in load_records()] == [record.version.version_id]
+    assert [chunk.document_version.version_id for chunk in read_documents()] == [
+        record.version.version_id
+    ]
+    assert (tmp_home / "assets" / record.asset.relative_path).is_file()
+    cache_key = physical_cache_id(record.asset.relative_path)
+    assert (tmp_home / "parsed" / cache_key / "raw.jsonl").is_file()
+    assert (tmp_home / "captions" / f"{cache_key}.jsonl").is_file()
+    qdrant.delete.assert_not_called()
+
+
+def test_delete_rolls_back_asset_and_parsed_cache_when_caption_staging_fails(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="b" * 64,
+        name="guide-caption.png",
+    )
+    from mm_asset_rag.service import _stage_delete_path
+
+    def fail_caption(source: Path, *args, **kwargs):
+        if source.parent == tmp_home / "captions":
+            raise OSError("caption busy")
+        return _stage_delete_path(source, *args, **kwargs)
+
+    monkeypatch.setattr("mm_asset_rag.service._stage_delete_path", fail_caption, raising=False)
+
+    report = IngestService().delete_document_version("guide", record.version.version_id)
+
+    assert any("caption" in error for error in report.errors)
+    assert (tmp_home / "assets" / record.asset.relative_path).is_file()
+    cache_key = physical_cache_id(record.asset.relative_path)
+    assert (tmp_home / "parsed" / cache_key / "raw.jsonl").is_file()
+    assert (tmp_home / "captions" / f"{cache_key}.jsonl").is_file()
+    assert [row.version.version_id for row in load_records()] == [record.version.version_id]
+    assert [chunk.document_version.version_id for chunk in read_documents()] == [
+        record.version.version_id
+    ]
+
+
+def test_delete_restores_local_indexes_when_qdrant_delete_fails(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="c" * 64,
+        name="guide-qdrant.png",
+    )
+    qdrant = Mock()
+    from types import SimpleNamespace
+
+    qdrant.get_collections.return_value = SimpleNamespace(
+        collections=[SimpleNamespace(name="multimodal_text_768d")]
+    )
+    qdrant.delete.side_effect = RuntimeError("qdrant unavailable")
+    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: qdrant)
+
+    report = IngestService().delete_document_version("guide", record.version.version_id)
+
+    assert any("qdrant delete failed" in error for error in report.errors)
+    assert [row.version.version_id for row in load_records()] == [record.version.version_id]
+    assert [chunk.document_version.version_id for chunk in read_documents()] == [
+        record.version.version_id
+    ]
+    assert (tmp_home / "assets" / record.asset.relative_path).is_file()
+    cache_key = physical_cache_id(record.asset.relative_path)
+    assert (tmp_home / "parsed" / cache_key / "raw.jsonl").is_file()
+    assert (tmp_home / "captions" / f"{cache_key}.jsonl").is_file()
+
+
+def test_delete_fails_closed_when_qdrant_collection_enumeration_fails(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="d" * 64,
+        name="guide-enumeration.png",
+    )
+    qdrant = Mock()
+    qdrant.get_collections.side_effect = RuntimeError("enumeration unavailable")
+    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: qdrant)
+
+    report = IngestService().delete_document_version("guide", record.version.version_id)
+
+    assert any("enumeration unavailable" in error for error in report.errors)
+    qdrant.delete.assert_not_called()
+    assert (tmp_home / "assets" / record.asset.relative_path).is_file()
+    assert [row.version.version_id for row in load_records()] == [record.version.version_id]
+    assert [chunk.document_version.version_id for chunk in read_documents()] == [
+        record.version.version_id
+    ]
+
+
+def test_delete_preserves_unrecovered_staged_files_when_rollback_fails(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    record = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="1" * 64,
+        name="guide-rollback.png",
+    )
+    qdrant = Mock()
+    from types import SimpleNamespace
+
+    qdrant.get_collections.return_value = SimpleNamespace(
+        collections=[SimpleNamespace(name="multimodal_text_768d")]
+    )
+    qdrant.delete.side_effect = RuntimeError("qdrant unavailable")
+    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: qdrant)
+
+    import mm_asset_rag.service as service_module
+
+    original_replace = service_module.os.replace
+    staging_parent = tmp_home / ".delete-staging"
+
+    def fail_staged_restore(source, destination):
+        if Path(source).is_relative_to(staging_parent):
+            raise OSError("restore target busy")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(service_module.os, "replace", fail_staged_restore)
+
+    report = IngestService().delete_document_version("guide", record.version.version_id)
+
+    assert any("physical rollback failed" in error for error in report.errors)
+    assert any(path.is_file() for path in staging_parent.rglob("*"))
+
+
+def test_delete_scans_all_dimension_collections_even_with_active_overrides(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("QDRANT_ACTIVE_TEXT_COLLECTION", "custom_text")
+    monkeypatch.setenv("QDRANT_ACTIVE_IMAGE_COLLECTION", "custom_image")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    qdrant = Mock()
+    from types import SimpleNamespace
+
+    qdrant.get_collections.return_value = Mock(
+        collections=[
+            SimpleNamespace(name="multimodal_text_768d"),
+            SimpleNamespace(name="multimodal_text_1024d"),
+            SimpleNamespace(name="multimodal_image_512d"),
+        ]
+    )
+    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: qdrant)
+
+    IngestService()._delete_qdrant_versions({"doc@1-hash"})
+
+    assert {call.kwargs["collection_name"] for call in qdrant.delete.call_args_list} == {
+        "custom_text",
+        "custom_image",
+        "multimodal_text_768d",
+        "multimodal_text_1024d",
+        "multimodal_image_512d",
+    }
+
+
+def test_delete_same_stem_path_keeps_other_physical_cache(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = _persist_version(
+        tmp_home,
+        document_id="pdf-shared",
+        version_hash="7" * 64,
+        name="shared.png",
+    )
+    second = _persist_version(
+        tmp_home,
+        document_id="doc-shared",
+        version_hash="8" * 64,
+        name="other.png",
+    )
+    second_cache = physical_cache_id("documents/shared.png")
+    second_asset = tmp_home / "assets" / "documents" / "shared.png"
+    second_asset.parent.mkdir(parents=True)
+    (tmp_home / "assets" / second.asset.relative_path).replace(second_asset)
+    from mm_asset_rag.asset_index import DocumentVersionRecord
+
+    second_record = DocumentVersionRecord(
+        document=second.document,
+        version=second.version,
+        asset=PersistedAsset(second.asset.content_hash, "document", "documents/shared.png"),
+    )
+    from mm_asset_rag.service import _remove_document_version_records
+
+    _remove_document_version_records(second.document.document_id, {second.version.version_id})
+    upsert_record(second_record)
+    old_cache = tmp_home / "parsed" / physical_cache_id(second.asset.relative_path)
+    new_cache = tmp_home / "parsed" / second_cache
+    old_cache.replace(new_cache)
+    qdrant = Mock()
+    from types import SimpleNamespace
+
+    qdrant.get_collections.return_value = SimpleNamespace(collections=[])
+    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: qdrant)
+
+    report = IngestService().delete_document_version(
+        first.document.document_id, first.version.version_id
+    )
+
+    assert not report.errors
+    assert not (tmp_home / "parsed" / physical_cache_id(first.asset.relative_path)).exists()
+    assert (new_cache / "raw.jsonl").is_file()
 
 
 def test_retry_failed_only_uses_recorded_statuses(tmp_home: Path) -> None:
+    ok = _persist_version(
+        tmp_home,
+        document_id="ok1",
+        version_hash="0" * 64,
+        name="ok1.png",
+    )
+    bad = _persist_version(
+        tmp_home,
+        document_id="bad1",
+        version_hash="1" * 64,
+        name="bad1.png",
+    )
     assets = [
-        Asset(asset_id="ok1", title="ok1", source_type="image", relative_path="images/ok1.png"),
-        Asset(asset_id="bad1", title="bad1", source_type="image", relative_path="images/bad1.png"),
+        Asset(
+            asset_id=physical_cache_id(record.asset.relative_path),
+            title=record.document.title,
+            source_type=record.asset.source_type,
+            relative_path=record.asset.relative_path,
+            asset_dir=tmp_home / "assets",
+        )
+        for record in (ok, bad)
     ]
     service = IngestService()
     original = TaskRecord(
@@ -272,7 +620,7 @@ def test_retry_failed_only_uses_recorded_statuses(tmp_home: Path) -> None:
         status="partial",
         total=2,
         uploaded_files=[a.relative_path for a in assets],
-        asset_statuses={"ok1": "ok", "bad1": "failed"},
+        version_statuses={ok.version.version_id: "ok", bad.version.version_id: "failed"},
     )
     service._tasks[original.task_id] = original
     service._rebuild_assets_for_retry = lambda _uploaded: list(assets)  # type: ignore[method-assign]
@@ -283,12 +631,24 @@ def test_retry_failed_only_uses_recorded_statuses(tmp_home: Path) -> None:
     args, _kwargs = spawn.call_args
     target, _rec, options = args
     assert target.__name__ == "_run_parse_task"
-    assert [a.asset_id for a in options.assets] == ["bad1"]
+    assert [a.asset_id for a in options.assets] == [physical_cache_id(bad.asset.relative_path)]
 
 
 def test_retry_failed_only_all_ok_raises(tmp_home: Path) -> None:
+    ok = _persist_version(
+        tmp_home,
+        document_id="ok1",
+        version_hash="2" * 64,
+        name="ok1.png",
+    )
     assets = [
-        Asset(asset_id="ok1", title="ok1", source_type="image", relative_path="images/ok1.png"),
+        Asset(
+            asset_id="ok1",
+            title="ok1",
+            source_type=ok.asset.source_type,
+            relative_path=ok.asset.relative_path,
+            asset_dir=tmp_home / "assets",
+        )
     ]
     service = IngestService()
     original = TaskRecord(
@@ -297,118 +657,59 @@ def test_retry_failed_only_all_ok_raises(tmp_home: Path) -> None:
         status="partial",
         total=1,
         uploaded_files=[a.relative_path for a in assets],
-        asset_statuses={"ok1": "ok"},
+        version_statuses={ok.version.version_id: "ok"},
     )
     service._tasks[original.task_id] = original
     service._rebuild_assets_for_retry = lambda uploaded: list(assets)  # type: ignore[method-assign]
     with pytest.raises(FileNotFoundError, match="no failed or skipped assets"):
         service.retry_task(original.task_id, failed_only=True)
 
-    snap = {"pdf_parser": "bogus", "image_provider": "weird"}
-    options = IngestService._deserialise_options(snap, assets=[])
-    assert options.pdf_parser == "auto"
-    assert options.image_provider == "lite"
-    asset = _make_asset(tmp_home, "fish.png")
+
+def test_retry_rebuild_uses_physical_cache_id_for_parser_cache(tmp_home: Path) -> None:
+    record = _persist_version(
+        tmp_home,
+        document_id="retry-cache",
+        version_hash="9" * 64,
+        name="shared.png",
+    )
+    original = TaskRecord(
+        task_id="retrycache01",
+        kind="parse",
+        status="failed",
+        total=1,
+        uploaded_files=[record.asset.relative_path],
+        version_statuses={record.version.version_id: "failed"},
+    )
     service = IngestService()
-    report = service.delete_asset(asset.asset_id)
-    assert not report.was_known
-    # Second call with same id remains a no-op.
-    report2 = service.delete_asset(asset.asset_id)
-    assert not report2.was_known
+    service._tasks[original.task_id] = original
 
+    with patch.object(service, "_spawn") as spawn:
+        service.retry_task(original.task_id)
 
-def test_delete_asset_dry_run_touches_nothing(tmp_home: Path) -> None:
-    from mm_asset_rag.asset_index import upsert_entry
-    from mm_asset_rag.paths import get_captions_dir, get_documents_jsonl, get_parsed_dir
-
-    asset = _make_asset(tmp_home, "dryrun.png")
-    upsert_entry(
-        AssetIndexEntry(
-            asset_id=asset.asset_id,
-            sha256="hash",
-            source_type="image",
-            relative_path=asset.relative_path,
-        )
-    )
-    parsed_dir = get_parsed_dir() / asset.asset_id
-    parsed_dir.mkdir(parents=True)
-    (parsed_dir / "raw.jsonl").write_text("{}", encoding="utf-8")
-    (get_captions_dir() / f"{asset.asset_id}.json").write_text("{}", encoding="utf-8")
-    docs_path = get_documents_jsonl()
-    docs_path.parent.mkdir(parents=True, exist_ok=True)
-    docs_path.write_text(
-        json.dumps(
-            {
-                "text": "x",
-                "metadata": {
-                    "asset_id": asset.asset_id,
-                    "asset_title": asset.title,
-                },
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-
-    service = IngestService()
-    report = service.delete_asset(asset.asset_id, dry_run=True)
-
-    assert report.dry_run
-    assert report.would_delete_file
-    assert report.would_delete_parsed
-    assert report.would_delete_captions
-    assert report.would_remove_documents == 1
-    assert report.would_tombstone
-    # Nothing should actually be gone.
-    assert (tmp_home / "assets" / asset.relative_path).exists()
-    assert parsed_dir.exists()
-    assert (get_captions_dir() / f"{asset.asset_id}.json").exists()
-
-
-def test_delete_asset_dry_run_reports_existing_collections(tmp_home, monkeypatch):
-    """dry_run now resolves the *actual* dim-suffixed collections from the
-    server and reports the count, instead of always 0. Previously a dry_run
-    reported ``text_collections_scanned: 0`` even when collections existed,
-    hiding the cleanup it would do."""
-    from mm_asset_rag.asset_index import upsert_entry
-
-    asset = _make_asset(tmp_home, "dryrun2.png")
-    upsert_entry(
-        AssetIndexEntry(
-            asset_id=asset.asset_id,
-            sha256="hash",
-            source_type="image",
-            relative_path=asset.relative_path,
-        )
-    )
-    # A fake client that reports two text + one image collection present.
-    fake_client = MagicMock()
-    fake_client.get_collections.return_value = MagicMock(
-        collections=[
-            type("_C", (), {"name": n})()
-            for n in ("multimodal_text_1024d", "multimodal_text_768d", "multimodal_image_512d")
-        ]
-    )
-    # service.py imported get_qdrant_client by name, so patch it on the
-    # service module (not just on qdrant_backend) for the binding to take.
-    monkeypatch.setattr("mm_asset_rag.service.get_qdrant_client", lambda: fake_client)
-
-    service = IngestService()
-    report = service.delete_asset(asset.asset_id, dry_run=True)
-
-    assert report.dry_run
-    assert report.text_collections_scanned == 2  # both dim-suffixed text collections
-    assert report.image_collections_scanned == 1
-    fake_client.delete.assert_not_called()  # dry_run touches nothing
+    _target, _retry_record, options = spawn.call_args.args
+    [rebuilt] = options.assets
+    expected_cache_id = physical_cache_id(record.asset.relative_path)
+    assert rebuilt.asset_id == expected_cache_id
+    assert (tmp_home / "parsed" / rebuilt.asset_id / "raw.jsonl").is_file()
 
 
 def test_force_retry_clears_parsed_cache(tmp_home: Path, monkeypatch) -> None:
     from mm_asset_rag.paths import get_parsed_dir
 
-    asset = _make_asset(tmp_home, "force.png")
+    version = _persist_version(
+        tmp_home,
+        document_id="force",
+        version_hash="d" * 64,
+        name="force.png",
+    )
+    asset = Asset(
+        asset_id=physical_cache_id(version.asset.relative_path),
+        title="force",
+        source_type=version.asset.source_type,
+        relative_path=version.asset.relative_path,
+        asset_dir=tmp_home / "assets",
+    )
     parsed_dir = get_parsed_dir() / asset.asset_id
-    parsed_dir.mkdir(parents=True)
-    (parsed_dir / "raw.jsonl").write_text("{}", encoding="utf-8")
     (parsed_dir / "page_0.md").write_text("# cached", encoding="utf-8")
     assert parsed_dir.exists()
 
@@ -466,30 +767,36 @@ def test_force_retry_clears_parsed_cache(tmp_home: Path, monkeypatch) -> None:
     assert called == [asset.asset_id]
 
 
-def test_force_retry_dedupes_documents_jsonl(tmp_home: Path) -> None:
-    """A force re-parse clears ``parsed/<id>/`` cache *and* drops that
-    asset's old chunk rows from ``documents.jsonl``. Without the drop,
-    the re-parse appends a second set of rows next to the originals
-    (``target.open("a")``), doubling the asset's chunks and dragging
-    down retrieval ranking. The cache clear alone is not enough."""
+def test_force_retry_replaces_only_current_document_version_chunks(tmp_home: Path) -> None:
     import mm_asset_rag.service as svc_mod
-    from mm_asset_rag.paths import get_documents_jsonl, get_parsed_dir
     from mm_asset_rag.schema import ParsedDocument
     from mm_asset_rag.service import ParseOptions, _do_parse
 
-    asset = _make_asset(tmp_home, "force.png")
-    docs_path = get_documents_jsonl()
-    docs_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Pre-existing rows AND parsed/ cache from the *first* parse of this asset.
-    docs_path.write_text(
-        json.dumps({"text": "old chunk", "metadata": {"asset_id": asset.asset_id}}) + "\n",
-        encoding="utf-8",
+    sibling = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="7" * 64,
+        name="guide-v1.png",
     )
-    parsed_dir = get_parsed_dir() / asset.asset_id
-    parsed_dir.mkdir(parents=True)
-    (parsed_dir / "raw.jsonl").write_text("{}", encoding="utf-8")
-    assert docs_path.exists()
+    current = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="8" * 64,
+        name="guide-v2.png",
+    )
+    other = _persist_version(
+        tmp_home,
+        document_id="handbook",
+        version_hash="9" * 64,
+        name="handbook.png",
+    )
+    asset = Asset(
+        asset_id=physical_cache_id(current.asset.relative_path),
+        title="guide",
+        source_type=current.asset.source_type,
+        relative_path=current.asset.relative_path,
+        asset_dir=tmp_home / "assets",
+    )
 
     rec = TaskRecord(
         task_id="force02",
@@ -518,52 +825,70 @@ def test_force_retry_dedupes_documents_jsonl(tmp_home: Path) -> None:
     finally:
         svc_mod.get_parser = orig_parser
 
-    # The old row must be gone; only the fresh row remains → no doubling.
-    rows = [
-        json.loads(line)
-        for line in docs_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+    chunks = read_documents()
+    assert [(chunk.document_id, chunk.document_version.version_id) for chunk in chunks] == [
+        ("guide", sibling.version.version_id),
+        ("handbook", other.version.version_id),
+        ("guide", current.version.version_id),
     ]
-    ours = [r for r in rows if r.get("metadata", {}).get("asset_id") == asset.asset_id]
-    assert len(ours) == 1
-    assert ours[0]["text"] == "fresh chunk"
+    [fresh] = [
+        chunk for chunk in chunks if chunk.document_version.version_id == current.version.version_id
+    ]
+    assert fresh.text == "fresh chunk"
+    assert "asset_id" not in fresh.metadata
 
 
-def test_remove_asset_rows_from_documents_jsonl(tmp_home: Path) -> None:
-    """The shared helper removes exactly the named assets' rows and
-    leaves unrelated rows intact, atomically."""
-    from mm_asset_rag.paths import get_documents_jsonl
-    from mm_asset_rag.service import _remove_asset_rows_from_documents_jsonl
+def test_remove_document_version_rows_is_exactly_scoped(tmp_home: Path) -> None:
+    old = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="a" * 64,
+        name="guide-v1.png",
+    )
+    current = _persist_version(
+        tmp_home,
+        document_id="guide",
+        version_hash="b" * 64,
+        name="guide-v2.png",
+    )
+    other = _persist_version(
+        tmp_home,
+        document_id="handbook",
+        version_hash="c" * 64,
+        name="handbook.png",
+    )
+    from mm_asset_rag.service import _remove_document_version_rows_from_documents_jsonl
 
-    docs_path = get_documents_jsonl()
-    docs_path.parent.mkdir(parents=True, exist_ok=True)
-    docs_path.write_text(
-        json.dumps({"text": "a", "metadata": {"asset_id": "keep_me"}})
-        + "\n"
-        + json.dumps({"text": "b", "metadata": {"asset_id": "drop_me"}})
-        + "\n"
-        + json.dumps({"text": "c", "metadata": {"asset_id": "drop_me_too"}})
-        + "\n",
-        encoding="utf-8",
+    removed = _remove_document_version_rows_from_documents_jsonl(
+        "guide", {current.version.version_id}
     )
 
-    removed = _remove_asset_rows_from_documents_jsonl({"drop_me", "drop_me_too"})
-    assert removed == 2
-    rows = [
-        json.loads(line)
-        for line in docs_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+    assert removed == 1
+    assert [
+        (chunk.document_id, chunk.document_version.version_id) for chunk in read_documents()
+    ] == [
+        ("guide", old.version.version_id),
+        ("handbook", other.version.version_id),
     ]
-    assert [r["metadata"]["asset_id"] for r in rows] == ["keep_me"]
-    # Empty set / missing file → no-op.
-    assert _remove_asset_rows_from_documents_jsonl(set()) == 0
 
 
 def test_ingest_task_records_indexed_status_on_success(tmp_home: Path) -> None:
-    asset = _make_asset(tmp_home, "ing.png")
+    version = _persist_version(
+        tmp_home,
+        document_id="ing",
+        version_hash="5" * 64,
+        name="ing.png",
+    )
+    asset = Asset(
+        asset_id=physical_cache_id(version.asset.relative_path),
+        title=version.document.title,
+        source_type=version.asset.source_type,
+        relative_path=version.asset.relative_path,
+        asset_dir=tmp_home / "assets",
+    )
     rec = TaskRecord(task_id="ingest1", kind="ingest", status="running", total=1)
     rec.uploaded_files = [asset.relative_path]
-    rec.asset_statuses = {asset.asset_id: "ok"}
+    rec.version_statuses = {version.version.version_id: "ok"}
 
     service = IngestService()
     from mm_asset_rag.registry import get_backend as _gb
@@ -589,16 +914,28 @@ def test_ingest_task_records_indexed_status_on_success(tmp_home: Path) -> None:
     finally:
         svc_mod.get_backend = original_get_backend
 
-    assert rec.asset_statuses[asset.asset_id] == "indexed"
+    assert rec.version_statuses[version.version.version_id] == "indexed"
     assert rec.status in {"done", "partial"}
     assert rec.finished_at is not None
 
 
 def test_ingest_task_records_failed_index_on_upsert_crash(tmp_home: Path) -> None:
-    asset = _make_asset(tmp_home, "crash.png")
+    version = _persist_version(
+        tmp_home,
+        document_id="crash",
+        version_hash="6" * 64,
+        name="crash.png",
+    )
+    asset = Asset(
+        asset_id=physical_cache_id(version.asset.relative_path),
+        title=version.document.title,
+        source_type=version.asset.source_type,
+        relative_path=version.asset.relative_path,
+        asset_dir=tmp_home / "assets",
+    )
     rec = TaskRecord(task_id="ingest2", kind="ingest", status="running", total=1)
     rec.uploaded_files = [asset.relative_path]
-    rec.asset_statuses = {asset.asset_id: "ok"}
+    rec.version_statuses = {version.version.version_id: "ok"}
 
     service = IngestService()
     from mm_asset_rag.service import ParseOptions, _run_ingest_task
@@ -619,14 +956,32 @@ def test_ingest_task_records_failed_index_on_upsert_crash(tmp_home: Path) -> Non
     finally:
         svc_mod.get_backend = original_get_backend
 
-    assert rec.asset_statuses[asset.asset_id] == "failed_index"
+    assert rec.version_statuses[version.version.version_id] == "failed_index"
     assert rec.status == "failed"
 
 
 def test_retry_failed_only_includes_failed_index(tmp_home: Path) -> None:
+    ok = _persist_version(
+        tmp_home,
+        document_id="ok1",
+        version_hash="3" * 64,
+        name="ok1.png",
+    )
+    bad = _persist_version(
+        tmp_home,
+        document_id="bad1",
+        version_hash="4" * 64,
+        name="bad1.png",
+    )
     assets = [
-        Asset(asset_id="ok1", title="ok1", source_type="image", relative_path="images/ok1.png"),
-        Asset(asset_id="bad1", title="bad1", source_type="image", relative_path="images/bad1.png"),
+        Asset(
+            asset_id=physical_cache_id(record.asset.relative_path),
+            title=record.document.title,
+            source_type=record.asset.source_type,
+            relative_path=record.asset.relative_path,
+            asset_dir=tmp_home / "assets",
+        )
+        for record in (ok, bad)
     ]
     service = IngestService()
     original = TaskRecord(
@@ -635,7 +990,7 @@ def test_retry_failed_only_includes_failed_index(tmp_home: Path) -> None:
         status="partial",
         total=2,
         uploaded_files=[a.relative_path for a in assets],
-        asset_statuses={"ok1": "indexed", "bad1": "failed_index"},
+        version_statuses={ok.version.version_id: "indexed", bad.version.version_id: "failed_index"},
     )
     service._tasks[original.task_id] = original
     service._rebuild_assets_for_retry = lambda _uploaded: list(assets)  # type: ignore[method-assign]
@@ -644,7 +999,7 @@ def test_retry_failed_only_includes_failed_index(tmp_home: Path) -> None:
     assert spawn.call_count == 1
     args, _kwargs = spawn.call_args
     _target, _rec, options = args
-    assert [a.asset_id for a in options.assets] == ["bad1"]
+    assert [a.asset_id for a in options.assets] == [physical_cache_id(bad.asset.relative_path)]
 
 
 def test_retry_force_and_failed_only_clear_only_failed_cache(
@@ -653,22 +1008,28 @@ def test_retry_force_and_failed_only_clear_only_failed_cache(
 ) -> None:
     from mm_asset_rag.paths import get_parsed_dir
 
-    # Two assets: one healthy (ok1, was 'ok' in original task) and one
-    # broken (bad1, was 'failed' in original task). failed-only filter
-    # will narrow the retry set to bad1; force must then only clear
-    # that asset's cache.
+    healthy = _persist_version(
+        tmp_home,
+        document_id="healthy",
+        version_hash="e" * 64,
+        name="ok1.png",
+    )
+    failed = _persist_version(
+        tmp_home,
+        document_id="failed",
+        version_hash="f" * 64,
+        name="bad1.png",
+    )
     assets = [
-        Asset(asset_id="ok1", title="ok1", source_type="image", relative_path="images/ok1.png"),
-        Asset(asset_id="bad1", title="bad1", source_type="image", relative_path="images/bad1.png"),
+        Asset(
+            asset_id=physical_cache_id(record.asset.relative_path),
+            title=record.document.title,
+            source_type=record.asset.source_type,
+            relative_path=record.asset.relative_path,
+            asset_dir=tmp_home / "assets",
+        )
+        for record in (healthy, failed)
     ]
-
-    # Pre-stage parsed/ cache for both assets.
-    ok_parsed = get_parsed_dir() / "ok1"
-    bad_parsed = get_parsed_dir() / "bad1"
-    ok_parsed.mkdir(parents=True)
-    (ok_parsed / "raw.jsonl").write_text("{}", encoding="utf-8")
-    bad_parsed.mkdir(parents=True)
-    (bad_parsed / "raw.jsonl").write_text("{}", encoding="utf-8")
 
     # Construct a retried task record the same way retry_task would:
     # failed-only already narrowed to bad1, force=True to clear cache.
@@ -680,7 +1041,10 @@ def test_retry_force_and_failed_only_clear_only_failed_cache(
         uploaded_files=["images/bad1.png"],
         force=True,
         failed_only=True,
-        asset_statuses={"bad1": "failed", "ok1": "ok"},
+        version_statuses={
+            failed.version.version_id: "failed",
+            healthy.version.version_id: "ok",
+        },
     )
 
     service = IngestService()
@@ -703,11 +1067,13 @@ def test_retry_force_and_failed_only_clear_only_failed_cache(
     _do_parse(service, rec, ParseOptions(assets=[assets[1]]))  # only bad1
 
     # ok1 cache survives (its parsed/ dir is still present, untouched).
-    assert (get_parsed_dir() / "ok1" / "raw.jsonl").exists()
+    assert (
+        get_parsed_dir() / physical_cache_id(healthy.asset.relative_path) / "raw.jsonl"
+    ).exists()
     # bad1 cache was force-cleared before parse, then parsed again.
-    assert not (get_parsed_dir() / "bad1").exists() or called == ["bad1"]
-    assert called == ["bad1"]
-    assert rec.asset_statuses["bad1"] in {"ok", "skipped", "failed"}
+    assert not (get_parsed_dir() / physical_cache_id(failed.asset.relative_path)).exists()
+    assert called == [physical_cache_id(failed.asset.relative_path)]
+    assert rec.version_statuses[failed.version.version_id] in {"ok", "skipped", "failed"}
 
 
 # ─── stream_task multi-subscriber ───────────────────────────────────────
@@ -920,7 +1286,12 @@ def test_load_history_round_trip(tmp_home: Path) -> None:
     from mm_asset_rag.service import IngestService, TaskRecord
 
     service = IngestService()
-    rec = TaskRecord(task_id="round01", kind="parse", status="done")
+    rec = TaskRecord(
+        task_id="round01",
+        kind="parse",
+        status="done",
+        version_statuses={"guide@2-aaaaaaaaaaaa": "indexed"},
+    )
     service._persist(rec)
 
     fresh = IngestService()
@@ -929,6 +1300,7 @@ def test_load_history_round_trip(tmp_home: Path) -> None:
     assert loaded is not None
     assert loaded.task_id == "round01"
     assert loaded.status == "done"
+    assert loaded.version_statuses == {"guide@2-aaaaaaaaaaaa": "indexed"}
 
 
 def test_persist_surfaces_oserror_on_rec(tmp_home: Path, monkeypatch) -> None:
@@ -1106,10 +1478,22 @@ def test_ingest_task_invalidates_caches_on_success(tmp_home: Path) -> None:
     import mm_asset_rag.service as svc_mod
     from mm_asset_rag.service import IngestService, ParseOptions, TaskRecord, _run_ingest_task
 
-    asset = _make_asset(tmp_home, "ing.png")
+    version = _persist_version(
+        tmp_home,
+        document_id="ing",
+        version_hash="7" * 64,
+        name="ing.png",
+    )
+    asset = Asset(
+        asset_id=physical_cache_id(version.asset.relative_path),
+        title=version.document.title,
+        source_type=version.asset.source_type,
+        relative_path=version.asset.relative_path,
+        asset_dir=tmp_home / "assets",
+    )
     rec = TaskRecord(task_id="ingest-inv", kind="ingest", status="running", total=1)
     rec.uploaded_files = [asset.relative_path]
-    rec.asset_statuses = {asset.asset_id: "ok"}
+    rec.version_statuses = {version.version.version_id: "ok"}
 
     service = IngestService()
 
@@ -1262,9 +1646,17 @@ def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
     from mm_asset_rag.schema import ParsedDocument
     from mm_asset_rag.service import _do_parse
 
-    a1 = _make_asset(tmp_home, "a1.png")
-    a2 = _make_asset(tmp_home, "a2.png")
-    a3 = _make_asset(tmp_home, "a3.png")
+    records = [
+        _persist_version(
+            tmp_home,
+            document_id=f"cancel-{index}",
+            version_hash=str(index) * 64,
+            name=f"a{index}.png",
+            with_caches=False,
+        )
+        for index in (1, 2, 3)
+    ]
+    a1, a2, a3 = [_transient_asset(record, tmp_home) for record in records]
     service = IngestService()
     rec = TaskRecord(task_id="canceltask1", kind="parse", status="running", total=3)
     service._tasks[rec.task_id] = rec
@@ -1305,7 +1697,7 @@ def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
 
 def test_do_parse_keeps_cancelled_when_cancel_during_last_asset(tmp_home: Path) -> None:
     """If the user cancels *during* the last asset's parse (past the
-    per-asset checkpoint at the loop top), ``cancel_task`` has set the
+    per-version checkpoint at the loop top), ``cancel_task`` has set the
     cancel flag but may not have patched status=CANCELLED yet (flag.set
     and the status patch in cancel_task are two non-atomic steps). The
     final ``_patch`` must set status=CANCELLED explicitly — otherwise the
@@ -1317,8 +1709,17 @@ def test_do_parse_keeps_cancelled_when_cancel_during_last_asset(tmp_home: Path) 
     from mm_asset_rag.schema import ParsedDocument
     from mm_asset_rag.service import _do_parse
 
-    a1 = _make_asset(tmp_home, "a1.png")
-    a2 = _make_asset(tmp_home, "a2.png")
+    records = [
+        _persist_version(
+            tmp_home,
+            document_id=f"cancel-last-{index}",
+            version_hash=str(index + 3) * 64,
+            name=f"a{index}.png",
+            with_caches=False,
+        )
+        for index in (1, 2)
+    ]
+    a1, a2 = [_transient_asset(record, tmp_home) for record in records]
     service = IngestService()
     rec = TaskRecord(task_id="canceltask2", kind="parse", status="running", total=2)
     service._tasks[rec.task_id] = rec

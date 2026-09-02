@@ -9,8 +9,8 @@ All data lives under a single directory pointed to by ``MM_ASSET_RAG_HOME``
     │   ├── images/              # images uploaded via /upload/confirm
     │   └── documents/           # office/text (docx/pptx/xlsx/html/md)
     ├── .preview-cache/<id>/     # short-lived cache for /upload/preview
-    ├── parsed/<asset_id>/       # PDF page-level markdown / image OCR JSON
-    ├── captions/<asset_id>.jsonl  # VLM captions (image asset: .json single-object)
+    ├── parsed/<cache_id>/       # PDF page-level markdown / image OCR JSON
+    ├── captions/<cache_id>.jsonl  # VLM captions (image asset: .json single-object)
     ├── indexes/
     │   └── qdrant/              # Qdrant local persistence
     ├── documents.jsonl          # unified ParsedDocument store
@@ -21,10 +21,19 @@ All data lives under a single directory pointed to by ``MM_ASSET_RAG_HOME``
 
 from __future__ import annotations
 
+import hashlib
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 _ENV_VAR = "MM_ASSET_RAG_HOME"
+
+
+def physical_cache_id(relative_path: str) -> str:
+    """Return a stable filesystem-safe identity for the complete asset path."""
+    path = PurePosixPath(relative_path)
+    if not relative_path or path.is_absolute() or ".." in path.parts:
+        raise ValueError("relative_path must be a safe relative POSIX path")
+    return hashlib.sha256(path.as_posix().encode("utf-8")).hexdigest()
 
 
 def get_data_dir() -> Path:

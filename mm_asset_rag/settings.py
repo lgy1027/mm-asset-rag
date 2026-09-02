@@ -31,12 +31,12 @@ class Settings(BaseSettings):
     mm_asset_rag_home: Path | None = None
 
     # ─── API auth / host guard ───────────────────────────────────────────
-    # A static bearer token guarding the destructive + write endpoints
-    # (DELETE /assets/*, /tasks/*/retry, /upload/preview, /upload/confirm,
+    # A static bearer token guarding write endpoints
+    # (/tasks/*/retry, /tasks/*/cancel, /upload/preview, /upload/confirm,
     # /eval). Leave unset to keep the zero-config loopback default (no
     # auth) — only set this when exposing the API beyond localhost. Clients
     # pass it as ``Authorization: Bearer <token>`` or ``X-API-Key: <token>``.
-    # Read endpoints (/search /answer /chat /assets /tasks /health) stay
+    # Read endpoints (/search /answer /chat /documents /tasks /health) stay
     # open so the bundled web UI works without a token.
     mmrag_api_token: str | None = None
     # Comma-separated trusted Host headers for ``TrustedHostMiddleware``.
@@ -538,14 +538,12 @@ class Settings(BaseSettings):
     image_caption_concurrency: int = 4
 
     # ─── Evaluation cases ─────────────────────────────────────────────────
-    # ``mmrag eval`` scores a set of ``query → expected_asset_ids`` cases
-    # against the live index. Cases live in JSON files (``{"version",
-    # "groups": {group: [{query, expected_asset_ids}]}}``). The default
-    # (None) loads the small generic sample shipped with the package at
-    # ``mm_asset_rag/eval_data/<version>_cases.json`` — a text→text-only
-    # template over well-known arxiv papers. Point this at your own file
-    # (e.g. ``examples/eval_cases_chapter11_v1.json``) to score a custom
-    # corpus; the CLI ``--cases`` flag overrides this for one run.
+    # ``mmrag eval`` scores grouped query cases against exact document qrels.
+    # Cases have ``query_id`` + ``query`` entries and one top-level
+    # ``qrels: {query_id: {document_id: relevance}}`` mapping. The default
+    # (None) loads the small qrels sample shipped at
+    # ``mm_asset_rag/eval_data/<version>_cases.json``. Point this at a custom
+    # qrels file to score another corpus; ``--cases`` overrides it for one run.
     eval_cases_path: str | None = None
 
     # ─── Evaluation answer-quality (LLM judge) ────────────────────────────

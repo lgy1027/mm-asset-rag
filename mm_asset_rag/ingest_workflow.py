@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import time
 from typing import TYPE_CHECKING
 
-from .document_store import documents_jsonl_lock
-from .paths import get_documents_jsonl, get_parsed_dir
+from .asset_index import find_by_relative_path
+from .document_store import append_documents
+from .knowledge_models import Chunk
+from .paths import get_documents_jsonl, get_parsed_dir, physical_cache_id
 from .task_store import TaskRecord
 
 if TYPE_CHECKING:
@@ -60,9 +61,9 @@ class IngestWorkflow:
         )
 
         indexed_targets = {
-            asset_id: status
-            for asset_id, status in record.asset_statuses.items()
-            if status in {service_module.AssetStatus.OK, service_module.AssetStatus.SKIPPED}
+            version_id: status
+            for version_id, status in record.version_statuses.items()
+            if status in {"ok", "skipped"}
         }
 
         def _progress(done: int, total: int, phase: str) -> None:
@@ -81,9 +82,9 @@ class IngestWorkflow:
             service._patch(record, current=f"text indexed · {text_name}")
             image_n, _image_name = backend.upsert_image(progress_cb=_progress)
             service._invalidate_search_caches()
-            new_statuses = dict(record.asset_statuses)
-            for asset_id in indexed_targets:
-                new_statuses[asset_id] = "indexed"
+            new_statuses = dict(record.version_statuses)
+            for version_id in indexed_targets:
+                new_statuses[version_id] = "indexed"
             if (
                 service._is_cancelled(record.task_id)
                 or record.status == service_module.TaskStatus.CANCELLED
@@ -93,7 +94,7 @@ class IngestWorkflow:
                     status=service_module.TaskStatus.CANCELLED,
                     finished_at=time.time(),
                     current=f"cancelled after index · text={text_n} image={image_n}",
-                    asset_statuses=new_statuses,
+                    version_statuses=new_statuses,
                 )
                 return
             service._patch(
@@ -101,7 +102,7 @@ class IngestWorkflow:
                 current=f"index built · text={text_n} image={image_n}",
                 status=parse_status,
                 finished_at=time.time(),
-                asset_statuses=new_statuses,
+                version_statuses=new_statuses,
             )
         except _TaskCancelled:
             service._patch(
@@ -112,16 +113,16 @@ class IngestWorkflow:
             )
             print(f"[task {record.task_id}] index cancelled by request")
         except BaseException as exc:
-            new_statuses = dict(record.asset_statuses)
-            for asset_id in indexed_targets:
-                new_statuses[asset_id] = "failed_index"
+            new_statuses = dict(record.version_statuses)
+            for version_id in indexed_targets:
+                new_statuses[version_id] = "failed_index"
             service._patch(
                 record,
                 current=f"index crashed: {type(exc).__name__}: {exc}",
                 error=f"{type(exc).__name__}: {exc}",
                 status="failed",
                 finished_at=time.time(),
-                asset_statuses=new_statuses,
+                version_statuses=new_statuses,
             )
             print(f"[task {record.task_id}] index crashed: {exc!r}")
 
@@ -172,19 +173,34 @@ class IngestWorkflow:
 
         if record.force:
             cleared: list[str] = []
+            versions_by_document: dict[str, set[str]] = {}
             for asset in assets:
-                parsed_dir = get_parsed_dir() / asset.asset_id
+                version_record = find_by_relative_path(asset.relative_path)
+                if version_record is None:
+                    continue
+                cache_key = physical_cache_id(version_record.asset.relative_path)
+                parsed_dir = get_parsed_dir() / cache_key
                 if parsed_dir.exists():
                     shutil.rmtree(parsed_dir, ignore_errors=True)
-                    cleared.append(asset.asset_id)
-            if cleared:
-                removed = service_module._remove_asset_rows_from_documents_jsonl(set(cleared))
+                    cleared.append(version_record.version.version_id)
+                versions_by_document.setdefault(version_record.document.document_id, set()).add(
+                    version_record.version.version_id
+                )
+            if versions_by_document:
+                removed = sum(
+                    service_module._remove_document_version_rows_from_documents_jsonl(
+                        document_id,
+                        version_ids,
+                    )
+                    for document_id, version_ids in versions_by_document.items()
+                )
                 scope = "failed" if record.failed_only else "all"
                 service._patch(
                     record,
                     current=(
-                        f"force: cleared {len(cleared)} {scope} parsed/ cache dir(s) "
-                        f"({removed} documents.jsonl rows) before parse"
+                        f"force: refreshed {sum(map(len, versions_by_document.values()))} "
+                        f"{scope} document version(s), cleared {len(cleared)} cache dir(s) "
+                        f"and removed {removed} chunk row(s) before parse"
                     ),
                 )
 
@@ -197,22 +213,29 @@ class IngestWorkflow:
         target.parent.mkdir(parents=True, exist_ok=True)
         local_statuses: dict[str, str] = {}
         for index, asset in enumerate(assets, start=1):
+            version_record = find_by_relative_path(asset.relative_path)
+            if version_record is None:
+                raise ValueError(
+                    f"no persisted document version for asset path {asset.relative_path!r}"
+                )
+            status_key = version_record.version.version_id
+            cache_key = physical_cache_id(version_record.asset.relative_path)
             if service._is_cancelled(record.task_id):
                 service._patch(
                     record,
                     processed=index - 1,
-                    current=f"cancelled before asset {asset.asset_id}",
+                    current=f"cancelled before version {status_key}",
                 )
                 return
             try:
-                raw_path = get_parsed_dir() / asset.asset_id / "raw.jsonl"
+                raw_path = get_parsed_dir() / cache_key / "raw.jsonl"
                 if raw_path.exists() and raw_path.stat().st_size > 0:
                     skipped += 1
-                    local_statuses[asset.asset_id] = "skipped"
+                    local_statuses[status_key] = "skipped"
                     service._patch(
                         record,
                         processed=index,
-                        current=f"skip cached: {asset.asset_id}",
+                        current=f"skip cached version: {status_key}",
                     )
                     continue
                 try:
@@ -233,12 +256,12 @@ class IngestWorkflow:
                         documents = []
                 except Exception as exc:
                     failed += 1
-                    local_statuses[asset.asset_id] = "failed"
-                    print(f"parse task failed for {asset.asset_id}: {exc}")
+                    local_statuses[status_key] = "failed"
+                    print(f"parse task failed for version {status_key}: {exc}")
                     service._patch(
                         record,
                         processed=index,
-                        current=f"error {asset.asset_id}: {exc}",
+                        current=f"error {status_key}: {exc}",
                     )
                     continue
 
@@ -246,49 +269,48 @@ class IngestWorkflow:
                     from .image_caption import enrich_docs_with_image_captions
                     from .paths import get_captions_dir
 
-                    caption_cache = get_captions_dir() / f"{asset.asset_id}.jsonl"
+                    caption_cache = get_captions_dir() / f"{cache_key}.jsonl"
                     service._patch(
                         record,
-                        current=f"image-caption: {asset.asset_id} ({len(documents)} chunks)",
+                        current=f"image-caption: {status_key} ({len(documents)} chunks)",
                     )
                     enrich_docs_with_image_captions(
                         documents,
-                        asset_id=asset.asset_id,
+                        asset_id=cache_key,
                         cache_path=caption_cache,
                     )
                 if (options.contextual or service._settings.contextual_enabled) and documents:
                     from .contextual import enrich_docs_with_context
 
-                    context_cache = get_parsed_dir() / asset.asset_id / "context.jsonl"
+                    context_cache = get_parsed_dir() / cache_key / "context.jsonl"
                     service._patch(
                         record,
-                        current=f"contextual: {asset.asset_id} ({len(documents)} chunks)",
+                        current=f"contextual: {status_key} ({len(documents)} chunks)",
                     )
                     enrich_docs_with_context(
                         documents,
                         asset_title=asset.title or asset.asset_id,
                         cache_path=context_cache,
                     )
-                with documents_jsonl_lock(target), target.open("a", encoding="utf-8") as file_obj:
-                    for document in documents:
-                        file_obj.write(json.dumps(document.to_json(), ensure_ascii=False) + "\n")
+                chunks = self._to_chunks(asset, documents, version_record=version_record)
+                append_documents(chunks, path=target)
                 parsed += 1
-                local_statuses[asset.asset_id] = "ok"
+                local_statuses[status_key] = "ok"
                 service._patch(
                     record,
                     processed=index,
-                    current=f"parsed {asset.asset_id} ({len(documents)} doc)",
+                    current=f"parsed {status_key} ({len(documents)} chunks)",
                 )
             except Exception as exc:
                 failed += 1
-                local_statuses[asset.asset_id] = "failed"
+                local_statuses[status_key] = "failed"
                 service._patch(
                     record,
                     processed=index,
-                    current=f"error {asset.asset_id}: {exc}",
+                    current=f"error {status_key}: {exc}",
                 )
 
-        merged_statuses = {**record.asset_statuses, **local_statuses}
+        merged_statuses = {**record.version_statuses, **local_statuses}
         if (
             service._is_cancelled(record.task_id)
             or record.status == service_module.TaskStatus.CANCELLED
@@ -298,7 +320,7 @@ class IngestWorkflow:
                 status=service_module.TaskStatus.CANCELLED,
                 finished_at=time.time(),
                 current=f"cancelled: parsed={parsed} skipped={skipped} failed={failed}",
-                asset_statuses=merged_statuses,
+                version_statuses=merged_statuses,
             )
             return
         status = (
@@ -311,5 +333,49 @@ class IngestWorkflow:
             status=status,
             finished_at=time.time(),
             current=f"parse {status}: parsed={parsed} skipped={skipped} failed={failed}",
-            asset_statuses=merged_statuses,
+            version_statuses=merged_statuses,
         )
+
+    def _to_chunks(self, asset, documents: list, *, version_record=None) -> list[Chunk]:
+        """Map transient parser DTOs onto the persisted v2 document record."""
+        from .schema import ParsedDocument
+
+        if not documents:
+            return []
+        record = version_record or find_by_relative_path(asset.relative_path)
+        if record is None:
+            raise ValueError(
+                f"no persisted document version for asset path {asset.relative_path!r}"
+            )
+        chunks: list[Chunk] = []
+        for ordinal, document in enumerate(documents):
+            if isinstance(document, Chunk):
+                chunks.append(document)
+                continue
+            if not isinstance(document, ParsedDocument):
+                raise TypeError("parser output must be ParsedDocument or Chunk")
+            chunks.append(
+                Chunk.create(
+                    document_version=record.version,
+                    asset=record.asset,
+                    ordinal=ordinal,
+                    text=document.text,
+                    source=record.document.source,
+                    access_policy=record.document.access_policy,
+                    metadata=_without_asset_identity(document.metadata),
+                )
+            )
+        return chunks
+
+
+def _without_asset_identity(value):
+    """Remove obsolete physical identity keys before chunk persistence."""
+    if isinstance(value, dict):
+        return {
+            key: _without_asset_identity(item) for key, item in value.items() if key != "asset_id"
+        }
+    if isinstance(value, list):
+        return [_without_asset_identity(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_without_asset_identity(item) for item in value)
+    return value

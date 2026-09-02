@@ -168,7 +168,11 @@ def test_offline_no_llm_runs_gracefully(tmp_home, monkeypatch) -> None:
     )
 
     results = run_answer_eval(
-        cases_path=str(cases_path), search_fn=_stub_search_fn, full_ids=MOCK_FULL_IDS
+        cases_path=str(cases_path),
+        search_fn=_stub_search_fn,
+        full_ids=MOCK_FULL_IDS,
+        collection="team",
+        principal="alice",
     )
 
     assert results, "no cases produced"
@@ -194,6 +198,8 @@ def test_answer_eval_defaults_to_search_service(monkeypatch: pytest.MonkeyPatch)
 
     run_answer_eval(
         search_fn=None,
+        collection="team",
+        principal="alice",
         answer_fn=_stub_answer_fn,
         judge_fn=_stub_judge_fn,
         full_ids=MOCK_FULL_IDS,
@@ -203,6 +209,8 @@ def test_answer_eval_defaults_to_search_service(monkeypatch: pytest.MonkeyPatch)
         query="retrieval augmented generation RAG",
         mode=SearchMode.HYBRID,
         top_k=5,
+        collection="team",
+        principal="alice",
     )
 
 
@@ -412,6 +420,8 @@ def test_full_pipeline_with_mocked_full_stack(tmp_home) -> None:
 
     results = run_answer_eval(
         cases_path=str(cases_path),
+        collection="team",
+        principal="alice",
         search_fn=_stub_search_fn,
         answer_fn=_answer_with_citation,
         judge_fn=_stub_judge_fn,
@@ -440,6 +450,8 @@ def test_back_compat_v1_v2_cases_load_without_new_fields(tmp_home, monkeypatch) 
 
     results = run_answer_eval(
         cases_path=str(v1_path),
+        collection="team",
+        principal="alice",
         search_fn=_stub_search_fn,
         answer_fn=_stub_answer_fn,
         full_ids=MOCK_FULL_IDS,
@@ -471,7 +483,12 @@ def test_image_route_cases_raise(tmp_home) -> None:
     )
 
     with pytest.raises(ValueError, match="text→text only"):
-        run_answer_eval(cases_path=str(bad_path), search_fn=_stub_search_fn)
+        run_answer_eval(
+            cases_path=str(bad_path),
+            search_fn=_stub_search_fn,
+            collection="team",
+            principal="alice",
+        )
 
 
 # ─── 5. Report writer + CLI + API surface ────────────────────────────────
@@ -485,6 +502,8 @@ def test_report_writes_to_eval_report_answer_json(tmp_home) -> None:
     )
     results = run_answer_eval(
         cases_path=str(cases_path),
+        collection="team",
+        principal="alice",
         search_fn=_stub_search_fn,
         answer_fn=_stub_answer_fn,
         judge_fn=_stub_judge_fn,
@@ -527,7 +546,15 @@ def test_cli_eval_answer_quality_flag(tmp_home, monkeypatch, capsys) -> None:
         lambda: _FakeSettings(llm_creds=(None, None, None)),
     )
 
-    args = argparse.Namespace(top_k=5, cases=None, answer_quality=True, v2=False)
+    args = argparse.Namespace(
+        top_k=5,
+        cases=None,
+        answer_quality=True,
+        v2=False,
+        collection="team",
+        principal="alice",
+        metadata_filter=None,
+    )
     command_eval(args)
     captured = capsys.readouterr()
     assert "no LLM creds configured" in captured.out
@@ -541,11 +568,16 @@ def test_api_eval_request_rejects_v2_and_answer_quality_together() -> None:
     from mm_asset_rag.api import EvalRequest
 
     with pytest.raises(ValidationError):
-        EvalRequest(v2=True, answer_quality=True)
+        EvalRequest(
+            v2=True,
+            answer_quality=True,
+            collection="team",
+            principal="alice",
+        )
     # Either flag alone is fine.
-    EvalRequest(v2=True)
-    EvalRequest(answer_quality=True)
-    EvalRequest()
+    EvalRequest(v2=True, collection="team", principal="alice")
+    EvalRequest(answer_quality=True, collection="team", principal="alice")
+    EvalRequest(collection="team", principal="alice")
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ import json
 import time
 import uuid
 from contextlib import asynccontextmanager, suppress
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
@@ -31,6 +31,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response
 
+from . import asset_index
 from .__init__ import __version__
 from .answer import answer_question, stream_answer_chunks
 from .api_models import (
@@ -57,6 +58,7 @@ from .paths import (
     get_assets_dir,
     get_documents_jsonl,
     get_preview_cache_dir,
+    physical_cache_id,
     safe_parsed_image_path,
 )
 from .search_service import get_search_service
@@ -225,9 +227,98 @@ def _run_search(request: _RouteRequest) -> list[object]:
             mode=request.mode,
             image_path=request.image_path,
             top_k=request.top_k,
+            collection=request.collection,
+            metadata_filter=request.metadata_filter,
+            principal=request.principal,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _without_asset_id(value: object) -> object:
+    """Keep the transitional SearchHit cache key out of public transport."""
+    if isinstance(value, dict):
+        return {key: _without_asset_id(item) for key, item in value.items() if key != "asset_id"}
+    if isinstance(value, list):
+        return [_without_asset_id(item) for item in value]
+    return value
+
+
+def _serialize_hit(hit: object) -> dict[str, object]:
+    """Render the stable document/version/chunk retrieval contract."""
+    metadata = getattr(hit, "metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return {
+        "document_id": metadata.get("document_id"),
+        "version_id": metadata.get("version_id"),
+        "chunk_id": metadata.get("chunk_id"),
+        "title": getattr(hit, "title", ""),
+        "source_type": getattr(hit, "source_type", ""),
+        "source_path": getattr(hit, "source_path", ""),
+        "evidence": getattr(hit, "evidence", ""),
+        "score": getattr(hit, "score", 0.0),
+        "routes": metadata.get("routes", [getattr(hit, "route", "")]),
+        "page": metadata.get("page"),
+        "parser": metadata.get("parser") or metadata.get("provider"),
+        "images": _without_asset_id(getattr(hit, "images", []) or metadata.get("images") or []),
+    }
+
+
+def _serialize_document(record: asset_index.DocumentVersionRecord) -> dict[str, object]:
+    """Render public document identity without its server-side policy."""
+    return {
+        "document_id": record.document.document_id,
+        "title": record.document.title,
+        "source": record.document.source.to_record(),
+        "latest_version": record.version.to_record(),
+    }
+
+
+@dataclass(frozen=True)
+class _DocumentAccessContext:
+    """Validated policy context required by every document read route."""
+
+    collection: str
+    principal: str
+    metadata_filter: dict[str, object]
+
+
+def _document_access_context(
+    collection: str = Query(..., min_length=1, max_length=200),
+    principal: str = Query(..., min_length=1, max_length=200),
+    metadata_filter: str | None = Query(None, max_length=4096),
+) -> _DocumentAccessContext:
+    """Parse the query context used to enforce persisted access policies."""
+    if metadata_filter is None or not metadata_filter.strip():
+        parsed: dict[str, object] = {}
+    else:
+        try:
+            value = json.loads(metadata_filter)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=422, detail="metadata_filter must be a JSON object"
+            ) from exc
+        if not isinstance(value, dict):
+            raise HTTPException(status_code=422, detail="metadata_filter must be a JSON object")
+        parsed = value
+    return _DocumentAccessContext(
+        collection=collection,
+        principal=principal,
+        metadata_filter=parsed,
+    )
+
+
+def _record_is_visible(
+    record: asset_index.DocumentVersionRecord, context: _DocumentAccessContext
+) -> bool:
+    """Return whether a persisted document version is visible to this request."""
+    policy = record.access_policy
+    return (
+        policy.collection == context.collection
+        and policy.allows(context.principal)
+        and all(policy.metadata.get(key) == value for key, value in context.metadata_filter.items())
+    )
 
 
 # ─── Endpoints ──────────────────────────────────────────────────────────
@@ -256,7 +347,7 @@ def health(
     payload: dict[str, object] = {
         "status": "ok",
         "version": __version__,
-        "assets": len(asset_files),
+        "files": len(asset_files),
         "documents_jsonl_exists": get_documents_jsonl().exists(),
         "text_index_exists": _qdrant_collection_alive("text"),
         "image_index_exists": _qdrant_collection_alive("image"),
@@ -309,7 +400,7 @@ def _qdrant_collection_alive(kind: str) -> bool:
 @app.post("/search")
 async def search(request: SearchRequest) -> dict[str, object]:
     hits = await asyncio.to_thread(_run_search, request)
-    return {"query": request.query, "mode": request.mode, "hits": [h.__dict__ for h in hits]}
+    return {"query": request.query, "mode": request.mode, "hits": [_serialize_hit(h) for h in hits]}
 
 
 @app.post("/answer")
@@ -322,6 +413,10 @@ async def answer(
         request.question,
         top_k=request.top_k,
         search_service=get_search_service(),
+        collection=request.collection,
+        metadata_filter=request.metadata_filter,
+        principal=request.principal,
+        min_confidence=request.min_confidence,
     )
 
 
@@ -335,7 +430,12 @@ async def eval_endpoint(
         from .answer_evaluation import run_answer_eval, write_answer_eval_report
 
         results = await asyncio.to_thread(
-            run_answer_eval, top_k=request.top_k, cases_path=cases_path
+            run_answer_eval,
+            top_k=request.top_k,
+            cases_path=cases_path,
+            collection=request.collection,
+            metadata_filter=request.metadata_filter,
+            principal=request.principal,
         )
         # Persist to disk so the CLI surface and the API surface share
         # the same report path; the JSON returned below mirrors that.
@@ -344,14 +444,28 @@ async def eval_endpoint(
     if request.v2:
         from .evaluation_v2 import run_eval_v2
 
-        results = await asyncio.to_thread(run_eval_v2, top_k=request.top_k, cases_path=cases_path)
+        results = await asyncio.to_thread(
+            run_eval_v2,
+            top_k=request.top_k,
+            cases_path=cases_path,
+            collection=request.collection,
+            metadata_filter=request.metadata_filter,
+            principal=request.principal,
+        )
         # ``V2Result`` mirrors v1's ``EvalResult`` (same fields:
-        # query / expected_asset_ids / actual_asset_ids / hit / rank /
-        # group), so ``asdict`` produces the same row shape the v1
+        # query_id / query / qrels / actual_document_ids / hit / rank / group),
+        # so ``asdict`` produces the same row shape the v1
         # branch returns; the only addition is a ``version`` tag so
         # clients can tell which set ran.
         return {"results": [asdict(r) for r in results], "version": "v2"}
-    results = await asyncio.to_thread(run_eval, top_k=request.top_k, cases_path=cases_path)
+    results = await asyncio.to_thread(
+        run_eval,
+        top_k=request.top_k,
+        cases_path=cases_path,
+        collection=request.collection,
+        metadata_filter=request.metadata_filter,
+        principal=request.principal,
+    )
     return {"results": [r.__dict__ for r in results]}
 
 
@@ -363,12 +477,19 @@ async def chat(
     """One-call: retrieve + grounded LLM answer in a single response."""
     hits = await asyncio.to_thread(_run_search, request)
     answer = await asyncio.to_thread(
-        answer_question, request.question, top_k=request.top_k, hits=hits
+        answer_question,
+        request.question,
+        top_k=request.top_k,
+        hits=hits,
+        collection=request.collection,
+        metadata_filter=request.metadata_filter,
+        principal=request.principal,
+        min_confidence=request.min_confidence,
     )
     return {
         "question": request.question,
         "answer": answer,
-        "sources": [h.__dict__ for h in hits],
+        "sources": answer.get("sources", []),
     }
 
 
@@ -402,10 +523,18 @@ async def chat_stream(
                 mode=request.mode,
                 image_path=request.image_path,
                 top_k=request.top_k,
+                collection=request.collection,
+                metadata_filter=request.metadata_filter,
+                principal=request.principal,
             )
             yield (
                 json.dumps(
-                    {"event": "sources", "sources": [h.__dict__ for h in hits]},
+                    {
+                        "event": "sources",
+                        "sources": [
+                            _serialize_hit(h) for h in hits if h.score >= request.min_confidence
+                        ],
+                    },
                     ensure_ascii=False,
                 )
                 + "\n"
@@ -418,7 +547,12 @@ async def chat_stream(
             # a client disconnect cancels this coroutine — we then signal
             # the worker to stop instead of letting it run the full LLM
             # response to completion.
-            bridge = await _iter_sync_in_thread(stream_answer_chunks, request.question, hits)
+            bridge = await _iter_sync_in_thread(
+                stream_answer_chunks,
+                request.question,
+                hits,
+                min_confidence=request.min_confidence,
+            )
             while True:
                 item = await asyncio.to_thread(bridge.get)
                 if item is _STREAM_DONE:
@@ -557,6 +691,9 @@ def upload_confirm(
             title=e.title,
             tags=e.tags if isinstance(e.tags, list) else None if e.tags is None else [e.tags],
             description=e.description,
+            document_id=e.document_id,
+            collection=e.collection,
+            allowed_principals=e.allowed_principals,
             rejected=e.rejected,
         )
         for e in request.edits
@@ -637,10 +774,10 @@ def task_stream(task_id: str) -> StreamingResponse:
 @app.post("/tasks/{task_id}/retry")
 def retry_task(
     task_id: str,
-    force: bool = Query(False, description="Clear parsed/<id>/ cache before re-running"),
+    force: bool = Query(False, description="Clear targeted version caches before re-running"),
     failed_only: bool = Query(
         False,
-        description="Only re-run assets whose previous status was failed or skipped",
+        description="Only re-run document versions whose previous status was failed or skipped",
     ),
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
@@ -691,59 +828,52 @@ def cancel_task(
     }
 
 
-@app.get("/assets")
-def list_assets() -> dict[str, object]:
-    """Return every non-deleted asset recorded in the asset index."""
-    entries = get_service().list_assets()
+@app.get("/documents")
+def list_documents(
+    context: _DocumentAccessContext = Depends(_document_access_context),
+) -> dict[str, object]:
+    """Return the latest persisted version visible to the supplied context."""
+    latest: dict[str, asset_index.DocumentVersionRecord] = {}
+    for record in asset_index.load_records():
+        if not _record_is_visible(record, context):
+            continue
+        current = latest.get(record.document.document_id)
+        if current is None or record.version.version_number > current.version.version_number:
+            latest[record.document.document_id] = record
+    return {"documents": [_serialize_document(latest[key]) for key in sorted(latest)]}
+
+
+@app.get("/documents/{document_id}")
+def get_document(
+    document_id: str,
+    context: _DocumentAccessContext = Depends(_document_access_context),
+) -> dict[str, object]:
+    """Return visible immutable versions without exposing their policy."""
+    records = [
+        record
+        for record in asset_index.load_records()
+        if record.document.document_id == document_id and _record_is_visible(record, context)
+    ]
+    if not records:
+        raise HTTPException(status_code=404, detail=f"unknown document {document_id}")
+    records.sort(key=lambda record: record.version.version_number)
+    latest = records[-1]
     return {
-        "assets": [
-            {
-                "asset_id": entry.asset_id,
-                "relative_path": entry.relative_path,
-                "source_type": entry.source_type,
-                "asset_title": entry.asset_title,
-                "ingested_at": entry.ingested_at,
-            }
-            for entry in entries
-        ]
+        "document_id": latest.document.document_id,
+        "title": latest.document.title,
+        "source": latest.document.source.to_record(),
+        "versions": [record.version.to_record() for record in records],
     }
 
 
-@app.delete("/assets/{asset_id}")
-def delete_asset(
-    asset_id: str,
-    _auth: None = Depends(require_token),
-) -> dict[str, object]:
-    """Best-effort cleanup of every trace of ``asset_id``.
-
-    404 if the asset is unknown to the index. 200 with a ``was_known``
-    payload otherwise. ``errors`` lists any cleanup step that failed.
-    """
-    report = get_service().delete_asset(asset_id)
-    if not report.was_known:
-        raise HTTPException(status_code=404, detail=f"unknown asset id: {asset_id}")
-    return asdict(report)
-
-
-@app.get("/assets/{asset_id}")
-def get_asset(asset_id: str) -> dict[str, object]:
-    """Read-only detail for ``asset_id`` (asset_index + on-disk checks).
-
-    404 when the asset is unknown or its relative_path fails the
-    safety check. The response includes the index row plus
-    ``file_exists`` / ``parsed_exists`` / ``captions_exists`` flags so
-    the web drawer can show whether the derived artefacts are still on
-    disk.
-    """
-    detail = get_service().get_asset_detail(asset_id)
-    if detail is None:
-        raise HTTPException(status_code=404, detail=f"unknown asset id: {asset_id}")
-    return detail
-
-
-@app.get("/parsed-image/{asset_id}/{filename}")
-def get_parsed_image(asset_id: str, filename: str) -> FileResponse:
-    """Serve an image extracted from a parsed PDF (``parsed/<id>/images/``).
+@app.get("/parsed-image/{document_id}/{version_id}/{filename}")
+def get_parsed_image(
+    document_id: str,
+    version_id: str,
+    filename: str,
+    context: _DocumentAccessContext = Depends(_document_access_context),
+) -> FileResponse:
+    """Serve an image extracted from one document version.
 
     Used by the web UI ``<img src>`` to render figure thumbnails attached
     to text hits (tier-1 multimodal: the figure path rides in the hit
@@ -751,7 +881,20 @@ def get_parsed_image(asset_id: str, filename: str) -> FileResponse:
     so the endpoint and the tier-3 answer image loader apply identical
     traversal guards.
     """
-    candidate = safe_parsed_image_path(asset_id, filename)
+    record = next(
+        (
+            row
+            for row in asset_index.load_records()
+            if row.document.document_id == document_id and row.version.version_id == version_id
+        ),
+        None,
+    )
+    if record is None or not _record_is_visible(record, context):
+        raise HTTPException(status_code=404, detail="not found")
+    # Parsed-image storage still uses a transient physical cache key. It is
+    # resolved server-side from the version's physical path and never appears
+    # in the public URL or response payload.
+    candidate = safe_parsed_image_path(physical_cache_id(record.asset.relative_path), filename)
     if candidate is None:
         raise HTTPException(status_code=404, detail="not found")
     suffix = candidate.suffix.lower().lstrip(".")

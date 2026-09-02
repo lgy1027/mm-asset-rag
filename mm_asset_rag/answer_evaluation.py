@@ -101,6 +101,9 @@ def run_answer_eval(
     cases_path: str | Path | None = None,
     *,
     top_k: int = 5,
+    collection: str,
+    principal: str,
+    metadata_filter: dict[str, object] | None = None,
     search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
     answer_fn: Callable[[str, list], dict] | None = None,
     judge_fn: Callable[[str, list, str], float] | None = None,
@@ -155,6 +158,9 @@ def run_answer_eval(
                     query=query,
                     mode=SearchMode.HYBRID,
                     top_k=top_k,
+                    collection=collection,
+                    metadata_filter=metadata_filter,
+                    principal=principal,
                 )
             )
 

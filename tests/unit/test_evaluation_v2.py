@@ -1,413 +1,247 @@
-"""Tests for ``mm_asset_rag.evaluation_v2``.
-
-The v2 harness adds 50+ Chinese-primary multi-dimensional cases and a
-prefix-tolerant matcher that has to survive ``_NNN_hash`` variants
-of the same content. These tests pin down the matcher's contract
-without running the full Qdrant-backed eval loop.
-"""
+"""Tests for the qrels-only v2 evaluation runners."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-import pytest
+from fastapi.testclient import TestClient
 
 from mm_asset_rag.evaluation_v2 import (
-    _expand,
-    _match,
-    _title_of,
+    V2Result,
     load_cases,
     run_eval_v2,
     run_image_to_image_eval_v2,
     run_text_to_image_eval_v2,
+    run_text_to_text_eval_v2,
+    write_eval_report_v2,
 )
+from mm_asset_rag.schema import SearchHit
 from mm_asset_rag.search_service import SearchCommand, SearchMode
 
 
-def test_title_of_strips_hash() -> None:
-    assert _title_of("Caltech Airplanes 01_9fe67b3f") == "Caltech Airplanes 01"
-    assert _title_of("联宝 ESG 年度报告_7df7f3f8") == "联宝 ESG 年度报告"
-    # No hash → return as-is
-    assert _title_of("no_hash_here") == "no_hash_here"
-    # Tail not 8 hex chars → keep whole string
-    assert _title_of("foo_longtail") == "foo_longtail"
+def _hit(document_id: str, *, asset_id: str = "physical", title: str = "handbook") -> SearchHit:
+    return SearchHit(
+        route="text",
+        score=1.0,
+        asset_id=asset_id,
+        title=title,
+        source_type="pdf",
+        source_path="doc.pdf",
+        metadata={"document_id": document_id},
+    )
 
 
-def test_match_handles_hash_variants() -> None:
-    """The v2 bug: a single bare id in ``expected`` did not match a
-    different ``_NNN_hash`` of the same content in ``actual``. After
-    the fix, ``_match`` compares titles (hash-stripped) and accepts
-    any variant.
-    """
-    actuals = [
-        "所有深度用 AI 编程的朋友，这篇 Codex 全景指南值得存好，架构生态横评和最佳实践一次讲透_c1cf02d1",
-    ]
-    expected = [
-        "所有深度用 AI 编程的朋友，这篇 Codex 全景指南值得存好，架构生态横评和最佳实践一次讲透_0363cb35",
-    ]
-    assert _match(actuals, expected) == 1
-
-
-def test_match_substring_bare_to_full() -> None:
-    actuals = ["Learning Transferable Visual Models From Natural Language Supervision_79e328a2"]
-    expected = ["Learning Transferable Visual Models From Natural Language Supervision"]
-    assert _match(actuals, expected) == 1
-
-
-def test_match_no_hit_returns_none() -> None:
-    actuals = ["Caltech Panda 01_3443a5d5"]
-    expected = ["Caltech Dolphin"]
-    assert _match(actuals, expected) is None
-
-
-def test_match_returns_first_hit_rank() -> None:
-    actuals = [
-        "Caltech Panda 01_3443a5d5",
-        "Caltech Panda 02_x1234567",
-        "Caltech Dolphin 01_bbd397c6",
-    ]
-    expected = ["Caltech Panda"]
-    # "Caltech Panda 01" is a prefix-tolerant match for "Caltech Panda"
-    # via substring containment — so rank 1 is the correct answer.
-    assert _match(actuals, expected) == 1
-
-
-def test_match_uses_title_stripping_to_avoid_hash_substring() -> None:
-    """Random hex hash tokens should not be confused for title matches."""
-    actuals = ["Caltech Panda 01_3443a5d5"]
-    expected = ["a1b2c3d4"]  # bare hash, not a title
-    # Hash is 8 chars but stripping on actual yields "Caltech Panda 01"
-    # which does not contain "a1b2c3d4" (or vice versa).
-    assert _match(actuals, expected) is None
-
-
-def test_match_slug_normalises_hyphen_and_spaces() -> None:
-    """A filename-style hyphenated id must match the spaced paper title —
-    the real-world case that broke eval self-consistency: ``clip.pdf``
-    uploads as ``attention-is-all-you-need_<hash>`` while the eval expected
-    set uses the spaced title ``Attention Is All You Need``."""
-    actuals = ["attention-is-all-you-need_0c713762"]
-    expected = ["Attention Is All You Need"]
-    assert _match(actuals, expected) == 1
-
-
-def test_match_stacked_hash_collapses_to_bare_title() -> None:
-    """A double-stacked hash suffix (source filename carried its own hash,
-    upload added another) must collapse to the bare title so a bare
-    expected id still matches."""
-    actuals = ["Resnext_69df8de4_903a9c76"]
-    expected = ["Resnext"]
-    assert _match(actuals, expected) == 1
-
-
-def test_match_hits_on_title_when_asset_id_doesnt() -> None:
-    """The CLIP case: the returned asset_id is a filename stem (clip) that
-    never matches the paper-title expected id, but the LLM-derived title
-    does. With AUTO_META on, hit.title carries that canonical title, so
-    passing an (asset_id, title) pair hits where a bare asset_id misses."""
-    actuals = [
-        ("clip_b14b418e", "Learning Transferable Visual Models From Natural Language Supervision")
-    ]
-    expected = ["Learning Transferable Visual Models From Natural Language Supervision"]
-    assert _match(actuals, expected) == 1
-
-
-def test_match_bare_asset_id_still_works_without_title() -> None:
-    """Backwards compat: a bare asset_id str (no title) still matches the
-    way it did before the title pairing was added — image route + old tests."""
-    assert _match(["Caltech Airplanes 01_9fe67b3f"], ["Caltech Airplanes"]) == 1
-
-
-def test_expand_returns_all_hash_variants() -> None:
-    full = {
-        "Codex_a1b2c3d4",
-        "Codex_12345678",
-        "Caltech Panda 01_3443a5d5",
+def _write_cases(path: Path, *, image_path: Path | None = None) -> Path:
+    groups: dict[str, list[dict[str, str]]] = {
+        "zh_on_en": [{"query_id": "q1", "query": "handbook"}],
+        "negative": [{"query_id": "q2", "query": "unknown"}],
+        "text_to_image": [{"query_id": "q3", "query": "diagram"}],
     }
-    assert _expand("Codex", full) == ["Codex_12345678", "Codex_a1b2c3d4"]
-    # No match — fall back to bare id so the strict match still works
-    # for cases that pass a full id directly.
-    assert _expand("Nothing matches", {"x_y1234567"}) == ["Nothing matches"]
+    qrels: dict[str, dict[str, int]] = {
+        "q1": {"doc-handbook": 3},
+        "q2": {},
+        "q3": {"doc-diagram": 2},
+    }
+    if image_path is not None:
+        groups["image_to_image"] = [{"query_id": "q4", "image_path": str(image_path)}]
+        qrels["q4"] = {"doc-image": 1}
+    path.write_text(
+        json.dumps({"version": "v2", "groups": groups, "qrels": qrels}),
+        encoding="utf-8",
+    )
+    return path
 
 
-def test_load_cases_missing_path_raises_file_not_found(tmp_path: Path) -> None:
-    """An explicit ``--cases`` path that doesn't exist raises a clear
-    ``FileNotFoundError`` naming the path, not a bare traceback. Guards
-    the documented contract so a future refactor can't silently fall back
-    to the bundled default on a typo'd ``--cases`` value."""
-    missing = tmp_path / "does-not-exist.json"
-    with pytest.raises(FileNotFoundError, match="not found"):
-        load_cases(str(missing), version="v2")
+def test_load_cases_preserves_graded_qrels(tmp_path: Path) -> None:
+    groups = load_cases(_write_cases(tmp_path / "cases.json"), version="v2")
+
+    assert groups["zh_on_en"][0]["qrels"] == {"doc-handbook": 3}
+    assert groups["negative"][0]["qrels"] == {}
 
 
-def test_load_cases_malformed_json_raises(tmp_path: Path) -> None:
-    """A non-JSON file surfaces a parse error rather than scoring 0 cases
-    with exit 0."""
-    bad = tmp_path / "bad.json"
-    bad.write_text("not json {{{", encoding="utf-8")
-    with pytest.raises(json.JSONDecodeError):
-        load_cases(str(bad), version="v2")
+def test_bundled_v2_default_runs_with_qrels_only() -> None:
+    results = run_eval_v2(search_fn=lambda _command: [], collection="team", principal="alice")
+
+    assert len(results) == 9
+    assert len({result.query_id for result in results}) == 9
+    assert sum(not result.qrels for result in results) == 2
+    assert all(result.actual_document_ids == [] for result in results)
 
 
-def test_load_cases_missing_groups_raises_value_error(tmp_path: Path) -> None:
-    """A file with a valid ``version`` but no ``groups`` object raises
-    ``ValueError`` — this is the guard against silently scoring 0 cases
-    when the file is structurally a case file but empty."""
-    p = tmp_path / "nogroups.json"
-    p.write_text('{"version": "v2"}', encoding="utf-8")
-    with pytest.raises(ValueError, match="groups"):
-        load_cases(str(p), version="v2")
+def test_api_v2_default_uses_bundled_qrels(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from mm_asset_rag.api import app
+
+    monkeypatch.setattr(
+        "mm_asset_rag.evaluation_v2.get_search_service",
+        lambda: SimpleNamespace(execute=lambda _command: []),
+    )
+
+    response = TestClient(app, base_url="http://127.0.0.1").post(
+        "/eval", json={"v2": True, "collection": "team", "principal": "alice"}
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["version"] == "v2"
+    assert len(payload["results"]) == 9
+    assert sum(not row["qrels"] for row in payload["results"]) == 2
 
 
-def test_load_cases_non_dict_top_level_raises_value_error(tmp_path: Path) -> None:
-    """A top-level JSON array isn't a valid case file."""
-    p = tmp_path / "array.json"
-    p.write_text("[]", encoding="utf-8")
-    with pytest.raises(ValueError, match="top-level JSON object"):
-        load_cases(str(p), version="v2")
+def test_text_runner_uses_exact_document_qrels(tmp_path: Path) -> None:
+    results = run_text_to_text_eval_v2(
+        cases_path=_write_cases(tmp_path / "cases.json"),
+        collection="team",
+        principal="alice",
+        search_fn=lambda command: (
+            [_hit("doc-other", asset_id="doc-handbook", title="doc-handbook")]
+            if command.query == "handbook"
+            else []
+        ),
+    )
 
-
-def test_load_cases_version_mismatch_raises(tmp_path: Path) -> None:
-    """Loading a v1 file under v2 (or vice versa) raises instead of
-    silently scoring 0 cases — the cross-version mix-up guard."""
-    p = tmp_path / "mismatch.json"
-    p.write_text('{"version": "v1", "groups": {}}', encoding="utf-8")
-    with pytest.raises(ValueError, match="version mismatch"):
-        load_cases(str(p), version="v2")
-
-
-def test_load_cases_bundled_default_loads(tmp_path: Path) -> None:
-    """No ``path`` + no ``EVAL_CASES_PATH`` → the bundled default loads
-    and is a non-empty dict of group→case-list."""
-    groups = load_cases(None, version="v2")
-    assert isinstance(groups, dict)
-    assert groups, "bundled v2 default case set is empty"
-
-
-def test_match_empty_expected_returns_none() -> None:
-    """Negative samples (expected=[]) should never be marked hit."""
-    assert _match(["Picsum 240", "Caltech Panda 01_3443a5d5"], []) is None
+    assert results[0] == V2Result(
+        query_id="q1",
+        query="handbook",
+        qrels={"doc-handbook": 3},
+        actual_document_ids=["doc-other"],
+        hit=False,
+        rank=None,
+        group="zh_on_en",
+    )
+    assert results[1].qrels == {}
 
 
 def test_run_eval_v2_wraps_text_to_text() -> None:
-    """``run_eval_v2`` is the CLI / API entry point. It must delegate to
-    ``run_text_to_text_eval_v2`` and forward ``top_k`` + ``cases_path``
-    — that is what makes the v2 production path (``mmrag eval --v2`` /
-    ``POST /eval {v2:true}``) work without each caller knowing about
-    the per-group runners. Regression for M11: before this alias the v2
-    functions were only reachable from tests.
-    """
-    with patch(
-        "mm_asset_rag.evaluation_v2.run_text_to_text_eval_v2",
-        return_value=[],
-    ) as stub:
-        out = run_eval_v2(top_k=7, cases_path="cases.json")
-    stub.assert_called_once_with(top_k=7, cases_path="cases.json")
+    with patch("mm_asset_rag.evaluation_v2.run_text_to_text_eval_v2", return_value=[]) as stub:
+        out = run_eval_v2(
+            top_k=7,
+            cases_path="cases.json",
+            collection="team",
+            principal="alice",
+        )
+
+    stub.assert_called_once_with(
+        top_k=7,
+        cases_path="cases.json",
+        collection="team",
+        principal="alice",
+        metadata_filter=None,
+    )
     assert out == []
 
 
-def test_run_eval_v2_passes_hybrid_commands_to_injected_search() -> None:
-    commands: list[SearchCommand] = []
-
-    run_eval_v2(
-        top_k=7,
-        search_fn=lambda command: commands.append(command) or [],
-        cases_path=None,
-    )
-
-    assert commands
-    assert all(command.mode is SearchMode.HYBRID for command in commands)
-    assert all(command.top_k == 7 for command in commands)
-
-
-def test_run_eval_v2_defaults_to_search_service(monkeypatch: pytest.MonkeyPatch) -> None:
-    backend = Mock()
-    backend.execute.return_value = []
-    monkeypatch.setattr("mm_asset_rag.evaluation_v2.get_search_service", lambda: backend)
-
-    run_eval_v2()
-
-    assert backend.execute.call_args_list[0].args[0] == SearchCommand(
-        query="CLIP 模型",
-        mode=SearchMode.HYBRID,
-        top_k=5,
-    )
-
-
-def test_v2_image_eval_runners_pass_typed_search_commands(tmp_path: Path) -> None:
+def test_text_and_image_runners_pass_typed_commands(tmp_path: Path) -> None:
     image_path = tmp_path / "query.png"
     image_path.write_bytes(b"fake image")
-    cases_path = tmp_path / "cases.json"
-    cases_path.write_text(
-        json.dumps(
-            {
-                "version": "v2",
-                "groups": {
-                    "text_to_image": [{"query": "a diagram", "expected_asset_ids": []}],
-                    "image_to_image": [{"image_path": str(image_path), "expected_asset_ids": []}],
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    cases_path = _write_cases(tmp_path / "cases.json", image_path=image_path)
     commands: list[SearchCommand] = []
 
-    def search(command: SearchCommand) -> list:
+    def search(command: SearchCommand) -> list[SearchHit]:
         commands.append(command)
+        if command.mode is SearchMode.TEXT_TO_IMAGE:
+            return [_hit("doc-diagram")]
+        if command.mode is SearchMode.IMAGE_TO_IMAGE:
+            return [_hit("doc-image")]
         return []
 
-    run_text_to_image_eval_v2(search_fn=search, cases_path=cases_path)
-    run_image_to_image_eval_v2(search_fn=search, cases_path=cases_path)
+    text_results = run_text_to_image_eval_v2(
+        search_fn=search, cases_path=cases_path, collection="team", principal="alice"
+    )
+    image_results = run_image_to_image_eval_v2(
+        search_fn=search, cases_path=cases_path, collection="team", principal="alice"
+    )
 
     assert [command.mode for command in commands] == [
         SearchMode.TEXT_TO_IMAGE,
         SearchMode.IMAGE_TO_IMAGE,
     ]
     assert commands[1].image_path == image_path
+    assert text_results[0].actual_document_ids == ["doc-diagram"]
+    assert text_results[0].hit is True
+    assert image_results[0].actual_document_ids == ["doc-image"]
+    assert image_results[0].hit is True
 
 
-def test_image_eval_default_accepts_trusted_external_case_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Evaluator case files are trusted inputs, unlike public API image paths."""
-    image_path = tmp_path / "external-query.png"
-    image_path.write_bytes(b"fake image")
-    cases_path = tmp_path / "cases.json"
-    cases_path.write_text(
-        json.dumps(
-            {
-                "version": "v2",
-                "groups": {
-                    "image_to_image": [{"image_path": str(image_path), "expected_asset_ids": []}]
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    from mm_asset_rag.search_service import SearchService
-
-    service = SearchService(backend=Mock())
-    monkeypatch.setattr("mm_asset_rag.evaluation_v2.get_search_service", lambda: service)
-    legacy_search = Mock(return_value=[])
-    monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant_backend.qdrant_image_to_image_search",
-        legacy_search,
+def test_missing_image_case_keeps_its_qrels(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.png"
+    results = run_image_to_image_eval_v2(
+        cases_path=_write_cases(tmp_path / "cases.json", image_path=missing),
+        collection="team",
+        principal="alice",
     )
 
-    results = run_image_to_image_eval_v2(cases_path=cases_path)
+    assert results == [
+        V2Result(
+            query_id="q4",
+            query="missing.png",
+            qrels={"doc-image": 1},
+            actual_document_ids=[],
+            hit=False,
+            rank=None,
+            group="image_to_image",
+        )
+    ]
 
-    assert len(results) == 1
-    assert results[0].actual_asset_ids == []
-    legacy_search.assert_called_once_with(image_path, top_k=5)
 
+def test_write_v2_report_includes_required_metrics(tmp_path: Path) -> None:
+    path = tmp_path / "report.json"
+    result = V2Result("q1", "handbook", {"doc": 2}, ["doc"], True, 1, "zh_on_en")
 
-def test_image_eval_default_uses_search_service_for_assets_case(
-    tmp_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An in-assets case exercises the normal service policy end to end."""
-    from mm_asset_rag.paths import get_image_assets_dir
-    from mm_asset_rag.search_service import SearchService
+    write_eval_report_v2({"text_to_text": [result]}, path=path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
 
-    image_path = get_image_assets_dir() / "query.png"
-    image_path.write_bytes(b"fake image")
-    cases_path = tmp_home / "cases.json"
-    cases_path.write_text(
-        json.dumps(
-            {
-                "version": "v2",
-                "groups": {
-                    "image_to_image": [{"image_path": str(image_path), "expected_asset_ids": []}]
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    backend = Mock()
-    backend.search_image.return_value = []
-    monkeypatch.setattr(
-        "mm_asset_rag.evaluation_v2.get_search_service",
-        lambda: SearchService(backend=backend),
-    )
-
-    results = run_image_to_image_eval_v2(cases_path=cases_path)
-
-    assert len(results) == 1
-    backend.search_image.assert_called_once_with(image_path=image_path.resolve(), top_k=5)
+    assert set(payload["per_group"]["text_to_text"]["metrics"]) == {
+        "recall",
+        "mrr",
+        "map",
+        "ndcg",
+    }
+    assert payload["per_group"]["text_to_text"]["per_query"][0]["qrels"] == {"doc": 2}
 
 
 @dataclass
 class _FakeV2Result:
+    query_id: str
     query: str
-    expected_asset_ids: list[str]
-    actual_asset_ids: list[str]
+    qrels: dict[str, int]
+    actual_document_ids: list[str]
     hit: bool
     rank: int | None
     group: str
 
 
-def test_eval_endpoint_v2_path_routes_to_run_eval_v2() -> None:
-    """``POST /eval`` with ``v2: true`` must invoke ``run_eval_v2`` and
-    return the same ``{"results": [...]}`` shape as v1, with a
-    ``version: "v2"`` tag so clients can tell which set ran.
-    """
-    from fastapi.testclient import TestClient
-
+def test_eval_endpoint_v2_returns_document_qrels_shape() -> None:
     from mm_asset_rag.api import app
 
-    fake = [
-        _FakeV2Result(
-            query="CLIP 模型",
-            expected_asset_ids=["Learning Transferable Visual Models"],
-            actual_asset_ids=["Learning Transferable Visual Models_79e328a2"],
-            hit=True,
-            rank=1,
-            group="zh_on_en",
-        )
-    ]
+    fake = [_FakeV2Result("q1", "handbook", {"doc": 2}, ["doc"], True, 1, "zh_on_en")]
     with patch("mm_asset_rag.evaluation_v2.run_eval_v2", return_value=fake):
-        # The endpoint imports ``run_eval_v2`` lazily inside the handler
-        # (``from .evaluation_v2 import run_eval_v2``), so patching the
-        # attribute on the module is enough.
-        client = TestClient(app, base_url="http://127.0.0.1")
-        response = client.post("/eval", json={"v2": True, "top_k": 5})
+        response = TestClient(app, base_url="http://127.0.0.1").post(
+            "/eval",
+            json={
+                "v2": True,
+                "top_k": 5,
+                "collection": "team",
+                "principal": "alice",
+            },
+        )
 
     assert response.status_code == 200
-    body = response.json()
-    assert body["version"] == "v2"
-    assert isinstance(body["results"], list)
-    assert len(body["results"]) == 1
-    row = body["results"][0]
-    assert row["query"] == "CLIP 模型"
-    assert row["hit"] is True
-    assert row["rank"] == 1
-    assert row["group"] == "zh_on_en"
-    # Shape parity with v1: same keys.
-    assert set(row.keys()) == {
-        "query",
-        "expected_asset_ids",
-        "actual_asset_ids",
-        "hit",
-        "rank",
-        "group",
+    assert response.json() == {
+        "version": "v2",
+        "results": [
+            {
+                "query_id": "q1",
+                "query": "handbook",
+                "qrels": {"doc": 2},
+                "actual_document_ids": ["doc"],
+                "hit": True,
+                "rank": 1,
+                "group": "zh_on_en",
+            }
+        ],
     }
-
-
-def test_eval_endpoint_v1_default_unchanged() -> None:
-    """``POST /eval`` without ``v2`` keeps the v1 path and does not
-    include a ``version`` field (so existing clients are unaffected).
-    """
-    from fastapi.testclient import TestClient
-
-    from mm_asset_rag.api import app
-
-    with patch("mm_asset_rag.api.run_eval", return_value=[]):
-        client = TestClient(app, base_url="http://127.0.0.1")
-        response = client.post("/eval", json={})
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body == {"results": []}
-    assert "version" not in body

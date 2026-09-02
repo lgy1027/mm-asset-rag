@@ -12,12 +12,13 @@ JSON endpoints return `application/json`. The streaming endpoints return `applic
 
 ## `GET /health`
 
-Returns service liveness + asset / index state.
+Returns service liveness plus file and index state.
 
 ```json
 {
   "status": "ok",
-  "assets": 12,
+  "version": "0.1.0",
+  "files": 12,
   "documents_jsonl_exists": true,
   "text_index_exists": true,
   "image_index_exists": true,
@@ -96,6 +97,9 @@ Applies user edits to preview cards, moves confirmed files into `assets/pdfs/`, 
       "title": "User-corrected title",
       "tags": ["custom", "tag"],
       "description": "Optional corrected description",
+      "document_id": "rag-paper",
+      "collection": "team-knowledge",
+      "allowed_principals": ["alice", "engineering"],
       "rejected": false
     }
   ]
@@ -129,6 +133,9 @@ Returns the latest snapshot of a background task.
   "current": "index built · text=10 image=4",
   "error": null,
   "uploaded_files": ["pdfs/paper.pdf", "images/photo.jpg"],
+  "version_statuses": {
+    "rag-paper@1-a1b2c3d4e5f6": "indexed"
+  },
   "elapsed_sec": 27.6,
   "progress": 1.0
 }
@@ -157,7 +164,7 @@ Companion to `/tasks/{task_id}` polling — the web UI uses this to drive the li
 
 ## `POST /tasks/{task_id}/cancel`
 
-Cooperative cancellation: sets a per-task stop flag the worker checks between assets; the task ends as `status="cancelled"` (terminal). A task already at a terminal state is returned unchanged. Cancellation is cooperative — a task mid-asset finishes that asset first.
+Cooperative cancellation: sets a per-task stop flag the worker checks between document versions; the task ends as `status="cancelled"` (terminal). A task already at a terminal state is returned unchanged. Cancellation is cooperative — a task mid-version finishes that version first.
 
 ```json
 // response
@@ -173,8 +180,8 @@ Re-run a previously failed, partial, or interrupted task. The original task's `k
 
 Query parameters:
 
-- `force=true` — clear `parsed/<asset_id>/raw.jsonl` cache before re-running so every asset is re-parsed.
-- `failed_only=true` — only re-run assets whose previous status was failed or skipped. Only meaningful for tasks that have per-asset outcome data (`asset_statuses`).
+- `force=true` — clear the targeted document-version caches and chunk rows before re-parsing.
+- `failed_only=true` — only re-run document versions whose previous status was failed, skipped, or failed during indexing. Only meaningful for tasks with per-version outcome data (`version_statuses`).
 
 ```json
 // response
@@ -192,78 +199,47 @@ Query parameters:
 Status codes:
 
 - `200` — retry task created.
-- `400` — original task is not in a retryable state, or no assets are available.
+- `400` — original task is not in a retryable state, or no document versions are available.
 - `404` — `task_id` is unknown.
-- `400` — `force` and `failed_only` are mutually exclusive.
 
-## `GET /assets`
+## `GET /documents`
 
-Return every non-deleted asset recorded in the content-hash index.
+Returns the latest visible version of each document. Every request must supply
+`collection` and `principal` query parameters; an optional JSON
+`metadata_filter` further restricts the persisted access policy.
 
 ```json
 {
-  "assets": [
+  "documents": [
     {
-      "asset_id": "Beach_d7e16fe3",
-      "relative_path": "images/Beach_d7e16fe3.png",
-      "source_type": "image",
-      "asset_title": "Beach",
-      "ingested_at": 1782048987.4
+      "document_id": "rag-paper",
+      "title": "RAG Paper",
+      "source": {"source_id": "upload:rag-paper"},
+      "latest_version": {
+        "document_id": "rag-paper",
+        "version_id": "rag-paper@2-b1c2d3e4f5a6",
+        "version_number": 2,
+        "content_hash": "b1c2d3e4f5a6..."
+      }
     }
   ]
 }
 ```
 
-## `DELETE /assets/{asset_id}`
+## `GET /documents/{document_id}`
 
-Best-effort cleanup of every trace of `asset_id`. Removes the source file, `parsed/<id>/`, `captions/<id>.{jsonl,json}` (document embedded-figure captions use `.jsonl`; image assets use `.json`), the matching `documents.jsonl` rows, the Qdrant text + image points, and tombstone the asset index entry.
+Returns the visible immutable version history for one document using the same
+required access-context query parameters as `/documents`. Returns `404` when
+the document is unknown or no version is visible to that context.
 
-```json
-// response
-{
-  "asset_id": "Beach_d7e16fe3",
-  "file_deleted": true,
-  "parsed_deleted": true,
-  "captions_deleted": true,
-  "documents_removed": 1,
-  "text_collections_scanned": 1,
-  "image_collections_scanned": 1,
-  "errors": [],
-  "was_known": true
-}
-```
+## `GET /parsed-image/{document_id}/{version_id}/{filename}`
 
-Status codes:
-
-- `200` — report returned (even when nothing remained to delete).
-- `404` — `asset_id` is unknown to the asset index.
-
-## `GET /assets/{asset_id}`
-
-Read-only detail for one asset: the asset-index row plus on-disk existence flags for the source file, the `parsed/<id>/` directory, and the captions file.
-
-```json
-{
-  "asset_id": "Beach_d7e16fe3",
-  "relative_path": "images/Beach_d7e16fe3.png",
-  "source_type": "image",
-  "asset_title": "Beach",
-  "ingested_at": 1782048987.4,
-  "file_exists": true,
-  "parsed_exists": false,
-  "captions_exists": true
-}
-```
-
-- `200` — detail returned.
-- `404` — `asset_id` is unknown or its `relative_path` fails the safety check.
-
-## `GET /parsed-image/{asset_id}/{filename}`
-
-Serves one image extracted from `parsed/<asset_id>/images/` (figures pulled out of PDFs by `pdf_images.extract_page_images` when `PDF_EXTRACT_IMAGES=true`). The web UI's `<img src>` tags and the tier-3 answer image loader both go through this endpoint so path traversal guards stay consistent.
+Serves one image extracted for a visible document version. The server resolves
+the internal physical cache key from the persisted version record; that key is
+not part of the public URL.
 
 - `200` — image bytes (`image/<ext>`).
-- `404` — `asset_id` / `filename` does not resolve, or the resolved path fails the safety check.
+- `404` — the document version or filename is unknown, inaccessible, or unsafe.
 
 ## `POST /search`
 
@@ -273,7 +249,9 @@ Serves one image extracted from `parsed/<asset_id>/images/` (figures pulled out 
   "query": "retrieval augmented generation",
   "mode": "hybrid",
   "image_path": null,
-  "top_k": 5
+  "top_k": 5,
+  "collection": "team-knowledge",
+  "principal": "alice"
 }
 
 // response
@@ -282,14 +260,18 @@ Serves one image extracted from `parsed/<asset_id>/images/` (figures pulled out 
   "mode": "hybrid",
   "hits": [
     {
-      "route": "qdrant_text",
       "score": 0.91,
-      "asset_id": "paper",
+      "document_id": "rag-paper",
+      "version_id": "rag-paper@2-b1c2d3e4f5a6",
+      "chunk_id": "rag-paper@2-b1c2d3e4f5a6:3",
       "title": "Paper Title",
       "source_type": "pdf",
       "source_path": "pdfs/paper.pdf",
       "evidence": "...",
-      "metadata": {}
+      "routes": ["qdrant_text"],
+      "page": 4,
+      "parser": "pymupdf",
+      "images": []
     }
   ]
 }
@@ -355,7 +337,7 @@ Reasoning-model note: `<think>...</think>` blocks emitted by reasoning models ar
 
 ## `POST /eval`
 
-Runs the retrieval regression set. Each case reports whether any of the top-`top_k` hits matched an expected `asset_id`.
+Runs the retrieval regression set. Each case reports whether an exact positively judged `document_id` appears in the top-`top_k` results.
 
 | Field | Default | Notes |
 | --- | --- | --- |
@@ -364,15 +346,24 @@ Runs the retrieval regression set. Each case reports whether any of the top-`top
 | `cases_path` | `null` | Optional path to a case JSON overriding the default (`EVAL_CASES_PATH` → the bundled `mm_asset_rag/eval_data/<version>_cases.json`). Same schema as `mmrag eval --cases`. |
 
 ```json
-{ "results": [{ "query": "...", "expected_asset_ids": [...], "actual_asset_ids": [...], "hit": true }] }
+{
+  "results": [{
+    "query_id": "q1",
+    "query": "...",
+    "qrels": {"document-id": 3},
+    "actual_document_ids": ["document-id"],
+    "hit": true,
+    "rank": 1,
+    "group": "en"
+  }]
+}
 ```
 
-Cases live in JSON files (`{"version","groups":{group:[{query,expected_asset_ids}]}}`); the bundled default is a small text→text generic sample. Ship your own (or use `examples/eval_cases_chapter11_v{1,2}.json`) and point `cases_path` / `EVAL_CASES_PATH` at it. Without matching assets ingested, every case returns `hit: false`.
+Cases live in JSON files with grouped `{query_id, query}` objects and top-level `qrels: {query_id: {document_id: relevance}}`; the bundled default is a small text→text sample. Point `cases_path` / `EVAL_CASES_PATH` at your own qrels file to override it. Without documents ingested under the exact judged IDs, every positive case returns `hit: false`.
 
-Cases with one or more expected asset IDs are **positive** retrieval cases:
-their hit-rate and ranking metrics measure whether expected evidence was
-retrieved. Cases with `expected_asset_ids: []` are **negative** rejection
-cases: they report empty-result and false-retrieval rates separately and do
-not lower positive retrieval hit-rate. These measurements describe the chosen
-corpus and cases; they do not establish a universal retrieval-quality
-threshold.
+Cases with positive qrel grades are **positive** retrieval cases: Recall, MRR,
+MAP, and graded NDCG measure whether judged documents were retrieved. Cases
+with an explicit empty qrels mapping are **negative** rejection cases: they
+report empty-result and false-retrieval rates separately and do not lower
+positive retrieval metrics. These measurements describe the chosen corpus and
+cases; they do not establish a universal retrieval-quality threshold.

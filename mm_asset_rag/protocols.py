@@ -17,6 +17,8 @@ No central dispatch table needs editing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -118,17 +120,37 @@ class ImageEmbedderProtocol(Protocol):
 # ─── Backend capabilities ────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class SearchFilter:
+    """Policy predicates that a vector backend applies before ranking."""
+
+    collection: str = "default"
+    metadata: Mapping[str, object] = field(default_factory=dict)
+    principal: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.collection:
+            raise ValueError("collection is required")
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
 @runtime_checkable
 class SearchBackend(Protocol):
     """Backend capability required by the retrieval application service."""
 
     name: str
 
-    def search_text(self, *, query: str, top_k: int) -> list[object]: ...
+    def search_text(
+        self, *, query: str, top_k: int, search_filter: SearchFilter | None = None
+    ) -> list[object]: ...
 
-    def search_text_to_image(self, *, query: str, top_k: int) -> list[object]: ...
+    def search_text_to_image(
+        self, *, query: str, top_k: int, search_filter: SearchFilter | None = None
+    ) -> list[object]: ...
 
-    def search_image(self, *, image_path: Path, top_k: int) -> list[object]: ...
+    def search_image(
+        self, *, image_path: Path, top_k: int, search_filter: SearchFilter | None = None
+    ) -> list[object]: ...
 
 
 @runtime_checkable

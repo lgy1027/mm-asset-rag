@@ -181,19 +181,25 @@ See [`.env.example`](.env.example) and [`docs/configuration.md`](docs/configurat
 
 ## Evaluation
 
-`mmrag eval` runs a set of `query → expected_asset_ids` cases against the live index and reports hit-rate / MRR. Cases live in a JSON file (`{"version","groups":{group:[{query,expected_asset_ids}]}}`). The **default** is a small generic sample shipped with the package (`mm_asset_rag/eval_data/`) — a text→text template over well-known arxiv papers. It needs the expected assets to be **already ingested** first; otherwise every case returns `hit: false`.
+`mmrag eval` scores grouped query cases against exact logical document IDs and reports document-level Recall, MRR, MAP, and graded NDCG. Each case has a `query_id` and `query`; one top-level `qrels` object maps every query ID to `{document_id: relevance}`. The **default** is a small qrels sample shipped in `mm_asset_rag/eval_data/`. Matching documents must already be ingested under those exact, case-sensitive document IDs; otherwise the cases are reported as misses.
+
+```json
+{
+  "version": "v1",
+  "groups": {"en": [{"query_id": "q1", "query": "..."}]},
+  "qrels": {"q1": {"document-id": 3}}
+}
+```
 
 To score your own corpus, author a case file and pass `--cases` (or set `EVAL_CASES_PATH`):
 
 ```bash
-# 1. Ingest your eval corpus (cases reference asset titles/ids — point
-#    mmrag parse at whatever you want to evaluate against).
+# 1. Ingest your eval corpus with document IDs matching the qrels.
 mmrag parse ./my_eval_corpus/*.pdf
 # 2. Run the evaluation
 mmrag eval                              # bundled default sample
 mmrag eval --cases my_cases.json        # your own case set
 mmrag eval --v2                         # v2: multi-dimensional, Chinese-primary
-mmrag eval --v2 --cases examples/eval_cases_chapter11_v2.json   # internal baseline
 ```
 
 When no LLM is configured, the eval still runs (it measures retrieval only); `/answer`-dependent cases degrade gracefully.

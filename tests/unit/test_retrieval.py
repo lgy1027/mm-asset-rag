@@ -25,6 +25,7 @@ def _make_hit(asset_id: str, route: str, score: float, source_type: str = "pdf")
         source_type=source_type,
         source_path=f"{asset_id}.pdf",
         evidence=f"evidence-for-{asset_id}",
+        metadata={"document_id": asset_id},
     )
 
 
@@ -57,6 +58,52 @@ def test_merge_hits_rrf_combines_routes_for_same_asset() -> None:
     assert sorted(merged[0].metadata["routes"]) == ["text", "text_to_image"]
     # rank=1 in each route: 0.6/(60+1) + 0.4/(60+1) = 1.0/61
     assert merged[0].score == pytest.approx(1.0 / (RRF_K + 1))
+
+
+def test_merge_hits_aggregates_versions_and_chunks_by_document_id() -> None:
+    """A document result retains the best representative version/chunk evidence."""
+    version_one = _make_hit("old-asset", "text", 0.6)
+    version_one.metadata.update(
+        {"document_id": "report", "version_id": "report@1-old", "chunk_id": "old"}
+    )
+    version_two = _make_hit("new-asset", "text_to_image", 0.9)
+    version_two.evidence = "new representative evidence"
+    version_two.metadata.update(
+        {"document_id": "report", "version_id": "report@2-new", "chunk_id": "new"}
+    )
+
+    merged = retrieval.merge_hits([[version_one], [version_two]], [0.5, 0.5], top_k=5)
+
+    assert len(merged) == 1
+    assert merged[0].metadata["document_id"] == "report"
+    assert merged[0].metadata["version_id"] == "report@2-new"
+    assert merged[0].metadata["chunk_id"] == "new"
+    assert merged[0].evidence == "new representative evidence"
+
+
+def test_merge_hits_preserves_internal_cache_id_for_answer_images() -> None:
+    hit = _make_hit("public-document", "text", 0.9)
+    hit.cache_id = "physical-cache-key"
+    hit.images = [{"path": "images/figure.png"}]
+
+    [merged] = retrieval.merge_hits([[hit]], [1.0], top_k=5)
+
+    assert merged.cache_id == "physical-cache-key"
+    assert merged.images == [{"path": "images/figure.png"}]
+
+
+def test_merge_hits_drops_missing_or_empty_document_identity() -> None:
+    """Fusion must never group a v2 hit by its physical asset ID fallback."""
+    missing = _make_hit("physical-asset", "text", 1.0)
+    missing.metadata.pop("document_id")
+    empty = _make_hit("another-asset", "text", 0.9)
+    empty.metadata["document_id"] = ""
+    valid = _make_hit("compatibility-slot", "text", 0.8)
+    valid.metadata["document_id"] = "report"
+
+    merged = retrieval.merge_hits([[missing, empty, valid]], [1.0], top_k=5)
+
+    assert [hit.asset_id for hit in merged] == ["report"]
 
 
 def test_merge_hits_preserves_raw_score_for_reranker() -> None:

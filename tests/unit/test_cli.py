@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from mm_asset_rag.cli import build_parser
+from mm_asset_rag.schema import SearchHit
 
 
 def test_cli_help_lists_all_subcommands(capsys) -> None:
@@ -18,21 +20,47 @@ def test_cli_help_lists_all_subcommands(capsys) -> None:
 
 def test_cli_parse_subcommand_defaults() -> None:
     parser = build_parser()
-    args = parser.parse_args(["parse", "paper.pdf", "image.png"])
+    args = parser.parse_args(
+        ["parse", "paper.pdf", "image.png", "--collection", "team", "--principal", "alice"]
+    )
     assert args.command == "parse"
     assert args.files == ["paper.pdf", "image.png"]
     assert args.pdf_parser == "auto"
     assert args.document_parser == "markitdown"
     assert args.ocr is False
     assert args.vlm is False
+    assert args.collection == "team"
+    assert args.principals == ["alice"]
 
 
 def test_cli_parse_subcommand_accepts_document_parser_choice() -> None:
     parser = build_parser()
-    args = parser.parse_args(["parse", "doc.docx", "--document-parser", "docling"])
+    args = parser.parse_args(
+        [
+            "parse",
+            "doc.docx",
+            "--document-parser",
+            "docling",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
     assert args.document_parser == "docling"
     with pytest.raises(SystemExit):
-        parser.parse_args(["parse", "doc.docx", "--document-parser", "bogus"])
+        parser.parse_args(
+            [
+                "parse",
+                "doc.docx",
+                "--document-parser",
+                "bogus",
+                "--collection",
+                "team",
+                "--principal",
+                "alice",
+            ]
+        )
 
 
 def test_cli_index_subcommand_removed() -> None:
@@ -48,13 +76,17 @@ def test_cli_index_subcommand_removed() -> None:
 def test_cli_search_subcommand_modes() -> None:
     parser = build_parser()
     for mode in ("text", "text-to-image", "image-to-image", "hybrid"):
-        args = parser.parse_args(["search", "q", "--mode", mode])
+        args = parser.parse_args(
+            ["search", "q", "--mode", mode, "--collection", "team", "--principal", "alice"]
+        )
         assert args.mode == mode
 
 
 def test_cli_search_image_flag() -> None:
     parser = build_parser()
-    args = parser.parse_args(["search", "q", "--image", "/tmp/img.png"])
+    args = parser.parse_args(
+        ["search", "q", "--image", "/tmp/img.png", "--collection", "team", "--principal", "alice"]
+    )
     assert args.image == "/tmp/img.png"
 
 
@@ -70,7 +102,18 @@ def test_cli_search_translates_invalid_image_path_to_system_exit(
 
     monkeypatch.setattr(service_mod, "get_search_service", lambda: SearchService(_Backend()))
     args = build_parser().parse_args(
-        ["search", "q", "--mode", "hybrid", "--image", "../outside.png"]
+        [
+            "search",
+            "q",
+            "--mode",
+            "hybrid",
+            "--image",
+            "../outside.png",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
     )
 
     with pytest.raises(SystemExit, match="error: image_path resolves outside assets/"):
@@ -85,17 +128,69 @@ def test_cli_search_preserves_runtime_errors(monkeypatch: pytest.MonkeyPatch) ->
         raise RuntimeError("qdrant unavailable")
 
     monkeypatch.setattr(cli_mod, "dispatch_search", fail_search)
-    args = build_parser().parse_args(["search", "q"])
+    args = build_parser().parse_args(
+        ["search", "q", "--collection", "team", "--principal", "alice"]
+    )
 
     with pytest.raises(RuntimeError, match="qdrant unavailable"):
         args.func(args)
 
 
+def test_cli_search_serializes_only_public_hit_fields(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import mm_asset_rag.cli as cli_mod
+
+    hit = SearchHit(
+        route="text",
+        score=0.9,
+        asset_id="private-cache-key",
+        title="Handbook",
+        source_type="pdf",
+        source_path="pdfs/handbook.pdf",
+        evidence="body",
+        metadata={
+            "document_id": "handbook",
+            "version_id": "handbook@1-fullhash",
+            "chunk_id": "handbook@1-fullhash:0",
+            "access_policy": {"allowed_principals": ["alice"]},
+        },
+    )
+    monkeypatch.setattr(cli_mod, "dispatch_search", lambda **_kwargs: [hit])
+
+    cli_mod.command_search(
+        build_parser().parse_args(["search", "q", "--collection", "team", "--principal", "alice"])
+    )
+
+    row = json.loads(capsys.readouterr().out)[0]
+    assert row["document_id"] == "handbook"
+    assert row["version_id"] == "handbook@1-fullhash"
+    assert row["chunk_id"] == "handbook@1-fullhash:0"
+    assert "asset_id" not in json.dumps(row)
+    assert "access_policy" not in json.dumps(row)
+
+
 def test_cli_answer_subcommand() -> None:
     parser = build_parser()
-    args = parser.parse_args(["answer", "why?", "--top-k", "3"])
+    args = parser.parse_args(
+        [
+            "answer",
+            "why?",
+            "--top-k",
+            "3",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+            "--min-confidence",
+            "0.5",
+        ]
+    )
     assert args.question == "why?"
     assert args.top_k == 3
+    assert args.collection == "team"
+    assert args.principal == "alice"
+    assert args.min_confidence == 0.5
 
 
 def test_cli_answer_supplies_the_search_service(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,24 +202,53 @@ def test_cli_answer_supplies_the_search_service(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(
         cli_mod,
         "answer_json",
-        lambda question, top_k, *, search_service: (
+        lambda question, top_k, *, search_service, collection, metadata_filter, principal, min_confidence: (
             calls.update(
                 question=question,
                 top_k=top_k,
                 search_service=search_service,
+                collection=collection,
+                metadata_filter=metadata_filter,
+                principal=principal,
+                min_confidence=min_confidence,
             )
             or "{}"
         ),
     )
 
-    cli_mod.command_answer(build_parser().parse_args(["answer", "why?", "--top-k", "3"]))
+    cli_mod.command_answer(
+        build_parser().parse_args(
+            [
+                "answer",
+                "why?",
+                "--top-k",
+                "3",
+                "--collection",
+                "team",
+                "--principal",
+                "alice",
+                "--min-confidence",
+                "0.5",
+            ]
+        )
+    )
 
-    assert calls == {"question": "why?", "top_k": 3, "search_service": service}
+    assert calls == {
+        "question": "why?",
+        "top_k": 3,
+        "search_service": service,
+        "collection": "team",
+        "metadata_filter": None,
+        "principal": "alice",
+        "min_confidence": 0.5,
+    }
 
 
 def test_cli_eval_subcommand() -> None:
     parser = build_parser()
-    args = parser.parse_args(["eval", "--top-k", "10"])
+    args = parser.parse_args(
+        ["eval", "--top-k", "10", "--collection", "team", "--principal", "alice"]
+    )
     assert args.top_k == 10
     # v2 is opt-in; default is v1 so existing scripts keep their numbers.
     assert args.v2 is False
@@ -134,7 +258,9 @@ def test_cli_eval_subcommand() -> None:
 
 def test_cli_eval_subcommand_cases_flag() -> None:
     parser = build_parser()
-    args = parser.parse_args(["eval", "--cases", "my_cases.json"])
+    args = parser.parse_args(
+        ["eval", "--cases", "my_cases.json", "--collection", "team", "--principal", "alice"]
+    )
     assert args.cases == "my_cases.json"
 
 
@@ -154,7 +280,7 @@ def test_cli_eval_v1_passes_cases_path(monkeypatch: pytest.MonkeyPatch, tmp_path
 
     calls: dict[str, object] = {}
 
-    def fake_run_eval(top_k, *, cases_path=None):
+    def fake_run_eval(top_k, *, cases_path=None, collection, principal, metadata_filter=None):
         calls["top_k"] = top_k
         calls["cases_path"] = cases_path
         return []
@@ -166,7 +292,19 @@ def test_cli_eval_v1_passes_cases_path(monkeypatch: pytest.MonkeyPatch, tmp_path
     monkeypatch.setattr(cli_mod, "run_eval", fake_run_eval)
     monkeypatch.setattr(cli_mod, "write_eval_report", fake_write_v1)
 
-    args = build_parser().parse_args(["eval", "--cases", "my_cases.json", "--top-k", "3"])
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--cases",
+            "my_cases.json",
+            "--top-k",
+            "3",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
     cli_mod.command_eval(args)
 
     assert calls.get("top_k") == 3
@@ -195,7 +333,7 @@ def test_cli_eval_cases_path_falls_back_to_examples(monkeypatch: pytest.MonkeyPa
 
     calls: dict[str, object] = {}
 
-    def fake_run_eval(top_k, *, cases_path=None):
+    def fake_run_eval(top_k, *, cases_path=None, collection, principal, metadata_filter=None):
         calls["cases_path"] = cases_path
         return []
 
@@ -204,7 +342,17 @@ def test_cli_eval_cases_path_falls_back_to_examples(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(cli_mod, "write_eval_report", lambda *a, **kw: None)
 
     # Bare name → eval_cases/ miss → examples/ fallback.
-    args = build_parser().parse_args(["eval", "--cases", "eval_cases_chapter11_v1.json"])
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--cases",
+            "eval_cases_chapter11_v1.json",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
     cli_mod.command_eval(args)
 
     forwarded = calls.get("cases_path")
@@ -222,7 +370,7 @@ def test_cli_eval_cases_path_accepts_examples_prefix(monkeypatch: pytest.MonkeyP
 
     calls: dict[str, object] = {}
 
-    def fake_run_eval(top_k, *, cases_path=None):
+    def fake_run_eval(top_k, *, cases_path=None, collection, principal, metadata_filter=None):
         calls["cases_path"] = cases_path
         return []
 
@@ -230,7 +378,17 @@ def test_cli_eval_cases_path_accepts_examples_prefix(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(cli_mod, "run_eval", fake_run_eval)
     monkeypatch.setattr(cli_mod, "write_eval_report", lambda *a, **kw: None)
 
-    args = build_parser().parse_args(["eval", "--cases", "examples/eval_cases_chapter11_v1.json"])
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--cases",
+            "examples/eval_cases_chapter11_v1.json",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
     cli_mod.command_eval(args)
 
     forwarded = calls.get("cases_path")
@@ -248,7 +406,17 @@ def test_cli_eval_cases_path_rejects_missing_in_both_dirs(monkeypatch: pytest.Mo
     monkeypatch.setattr(cli_mod, "run_eval", lambda *a, **kw: [])
     monkeypatch.setattr(cli_mod, "write_eval_report", lambda *a, **kw: None)
 
-    args = build_parser().parse_args(["eval", "--cases", "definitely_missing.json"])
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--cases",
+            "definitely_missing.json",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
     with pytest.raises(SystemExit, match="not found"):
         cli_mod.command_eval(args)
 
@@ -264,7 +432,17 @@ def test_cli_eval_cases_path_rejects_traversal(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(cli_mod, "run_eval", lambda *a, **kw: [])
     monkeypatch.setattr(cli_mod, "write_eval_report", lambda *a, **kw: None)
 
-    args = build_parser().parse_args(["eval", "--cases", "../../etc/passwd.json"])
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--cases",
+            "../../etc/passwd.json",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
     with pytest.raises(SystemExit, match="relative path"):
         cli_mod.command_eval(args)
 
@@ -277,16 +455,55 @@ def test_cli_eval_cases_path_rejects_non_json(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(cli_mod, "run_eval", lambda *a, **kw: [])
     monkeypatch.setattr(cli_mod, "write_eval_report", lambda *a, **kw: None)
 
-    args = build_parser().parse_args(["eval", "--cases", "secret.txt"])
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--cases",
+            "secret.txt",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
     with pytest.raises(SystemExit, match=r"\.json"):
         cli_mod.command_eval(args)
 
 
 def test_cli_eval_subcommand_v2_flag() -> None:
     parser = build_parser()
-    args = parser.parse_args(["eval", "--v2", "--top-k", "7"])
+    args = parser.parse_args(
+        ["eval", "--v2", "--top-k", "7", "--collection", "team", "--principal", "alice"]
+    )
     assert args.v2 is True
     assert args.top_k == 7
+
+
+def test_cli_eval_default_uses_bundled_qrels(
+    tmp_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The real default CLI path loads and serializes the bundled qrels cases."""
+    from types import SimpleNamespace
+
+    import mm_asset_rag.cli as cli_mod
+    import mm_asset_rag.evaluation as evaluation_mod
+
+    monkeypatch.setattr(cli_mod, "load_env", lambda: None)
+    monkeypatch.setattr(
+        evaluation_mod,
+        "get_search_service",
+        lambda: SimpleNamespace(execute=lambda _command: []),
+    )
+
+    cli_mod.command_eval(
+        build_parser().parse_args(["eval", "--collection", "team", "--principal", "alice"])
+    )
+
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 8
+    assert all(set(row) >= {"query_id", "qrels", "actual_document_ids"} for row in rows)
+    assert not any("expected_asset_ids" in row for row in rows)
+    assert (tmp_home / "eval_report.json").is_file()
 
 
 def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -300,16 +517,19 @@ def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> Non
 
     @dataclass
     class _FakeV2Result:
+        query_id: str = "q1"
         query: str = "q"
-        expected_asset_ids: list[str] = field(default_factory=list)
-        actual_asset_ids: list[str] = field(default_factory=list)
+        qrels: dict[str, int] = field(default_factory=dict)
+        actual_document_ids: list[str] = field(default_factory=list)
         hit: bool = False
         rank: int | None = None
         group: str = "zh_on_en"
 
     calls: dict[str, object] = {}
 
-    def fake_run_eval_v2(top_k: int, *, cases_path=None):
+    def fake_run_eval_v2(
+        top_k: int, *, cases_path=None, collection, principal, metadata_filter=None
+    ):
         calls["top_k"] = top_k
         calls["cases_path"] = cases_path
         calls["v2_called"] = True
@@ -337,7 +557,18 @@ def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     monkeypatch.setattr(cli_mod, "write_eval_report", fake_write_v1)
 
-    args = build_parser().parse_args(["eval", "--v2", "--top-k", "4"])
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--v2",
+            "--top-k",
+            "4",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
     cli_mod.command_eval(args)
 
     assert calls.get("v2_called") is True
@@ -376,16 +607,62 @@ def test_cli_retry_subcommand_force_and_failed_only_compose() -> None:
     assert args.failed_only is True
 
 
-def test_cli_delete_subcommand_parses() -> None:
+def test_cli_document_lifecycle_subcommand_replaces_asset_delete() -> None:
     parser = build_parser()
-    args = parser.parse_args(["delete", "abc123def456"])
-    assert args.command == "delete"
-    assert args.asset_id == "abc123def456"
-    assert args.yes is False
-    assert args.dry_run is False
-    args = parser.parse_args(["delete", "abc123def456", "--yes", "--dry-run"])
-    assert args.yes is True
-    assert args.dry_run is True
+    with pytest.raises(SystemExit):
+        parser.parse_args(["documents"])
+    args = parser.parse_args(["documents", "--collection", "team", "--principal", "alice"])
+    assert args.command == "documents"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["delete", "physical-asset-id"])
+
+
+def test_cli_documents_enforces_acl_and_hides_policy(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import mm_asset_rag.cli as cli_mod
+    from mm_asset_rag.asset_index import DocumentVersionRecord
+    from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, DocumentVersion, Source
+
+    def record(document_id: str, principal: str) -> DocumentVersionRecord:
+        document = Document(
+            document_id,
+            document_id.title(),
+            Source(source_id=f"upload:{document_id}"),
+            AccessPolicy(
+                collection="team",
+                allowed_principals=(principal,),
+                metadata={"department": "research", "secret": principal},
+            ),
+        )
+        return DocumentVersionRecord(
+            document=document,
+            version=DocumentVersion.create(document, principal * 64),
+            asset=Asset(principal * 64, "pdf", f"pdfs/{document_id}.pdf"),
+        )
+
+    monkeypatch.setattr(
+        "mm_asset_rag.asset_index.load_records",
+        lambda: [record("visible", "a"), record("hidden", "b")],
+    )
+    args = build_parser().parse_args(
+        [
+            "documents",
+            "--collection",
+            "team",
+            "--principal",
+            "a",
+            "--metadata-filter",
+            '{"department":"research"}',
+        ]
+    )
+
+    cli_mod.command_documents(args)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["document_id"] for row in payload] == ["visible"]
+    assert "access_policy" not in json.dumps(payload)
+    assert "secret" not in json.dumps(payload)
 
 
 def test_cli_reindex_subcommand_yes_flag() -> None:

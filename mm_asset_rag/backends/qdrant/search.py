@@ -13,6 +13,7 @@ from ...embedders import (
     get_default_image_embedder,
     get_default_text_embedder,
 )
+from ...protocols import SearchFilter
 from ...retrieval import RRF_K
 from ...schema import SearchHit
 from ...settings import get_settings
@@ -33,6 +34,44 @@ from .indexing import (
 )
 
 HYBRID_PREFETCH_LIMIT = get_settings().qdrant_hybrid_prefetch_limit
+
+
+def _native_policy_filter(search_filter: SearchFilter | None) -> models.Filter:
+    """Translate document policy predicates into one Qdrant filter."""
+    policy = search_filter or SearchFilter()
+    must = [
+        models.FieldCondition(key="collection", match=models.MatchValue(value=policy.collection))
+    ]
+    must.extend(
+        models.FieldCondition(key=f"metadata.{key}", match=models.MatchValue(value=value))
+        for key, value in policy.metadata.items()
+    )
+    public = models.Filter(
+        must=[
+            models.FieldCondition(key="allowed_principals", values_count=models.ValuesCount(lte=0))
+        ]
+    )
+    should: list[models.Condition] = [public]
+    if policy.principal:
+        should.append(
+            models.FieldCondition(
+                key="allowed_principals", match=models.MatchAny(any=[policy.principal])
+            )
+        )
+    return models.Filter(must=must, should=should)
+
+
+def _merge_filters(
+    policy_filter: models.Filter, extra: models.Filter | None = None
+) -> models.Filter:
+    """Combine policy predicates with a route-specific source predicate."""
+    if extra is None:
+        return policy_filter
+    return models.Filter(
+        must=[*(policy_filter.must or []), *(extra.must or [])],
+        should=policy_filter.should,
+        must_not=extra.must_not,
+    )
 
 
 def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
@@ -194,6 +233,7 @@ def qdrant_text_search(
     top_k: int = 5,
     *,
     include_image_sources: bool = False,
+    search_filter: SearchFilter | None = None,
 ) -> list[SearchHit]:
     """Hybrid text→text search.
 
@@ -240,7 +280,7 @@ def qdrant_text_search(
             except Exception:
                 embed_colbert_query = None
 
-    text_filter: models.Filter | None = None
+    source_filter: models.Filter | None = None
     if not include_image_sources:
         # Exclude image-source chunks only — they carry placeholder text
         # ("图片标题: …") that pollutes text→text recall. The earlier
@@ -248,12 +288,13 @@ def qdrant_text_search(
         # non-PDF source_type (document, …), so a freshly uploaded docx
         # was indexed but never returned by search. ``must_not`` keeps
         # pdf + document and only filters out image.
-        text_filter = models.Filter(
+        source_filter = models.Filter(
             must_not=[
                 models.FieldCondition(key="source_type", match=models.MatchValue(value="image"))
             ]
         )
 
+    text_filter = _merge_filters(_native_policy_filter(search_filter), source_filter)
     # Determine the active collection name (Qdrant active-text env var wins).
     try:
         results = _hybrid_text_query(
@@ -317,7 +358,9 @@ def _is_collection_missing(exc: BaseException) -> bool:
     )
 
 
-def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
+def qdrant_text_to_image_search(
+    query: str, top_k: int = 5, *, search_filter: SearchFilter | None = None
+) -> list[SearchHit]:
     try:
         provider = get_default_image_embedder()
     except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
@@ -338,6 +381,7 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
         results = client.query_points(
             collection_name=image_collection(len(query_vector)),
             query=query_vector,
+            query_filter=_native_policy_filter(search_filter),
             limit=top_k,
             with_payload=True,
         ).points
@@ -350,7 +394,9 @@ def qdrant_text_to_image_search(query: str, top_k: int = 5) -> list[SearchHit]:
     return [_point_to_hit("qdrant_text_to_image", point) for point in results]
 
 
-def qdrant_image_to_image_search(image_path: Path, top_k: int = 5) -> list[SearchHit]:
+def qdrant_image_to_image_search(
+    image_path: Path, top_k: int = 5, *, search_filter: SearchFilter | None = None
+) -> list[SearchHit]:
     try:
         provider = get_default_image_embedder()
     except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
@@ -368,6 +414,7 @@ def qdrant_image_to_image_search(image_path: Path, top_k: int = 5) -> list[Searc
         results = client.query_points(
             collection_name=image_collection(len(query_vector)),
             query=query_vector,
+            query_filter=_native_policy_filter(search_filter),
             limit=top_k,
             with_payload=True,
         ).points
@@ -386,9 +433,12 @@ def _point_to_hit(route: str, point) -> SearchHit:
 
 
 def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> SearchHit:
-    images = payload.get("images")
-    title = str(payload.get("asset_title") or payload.get("title") or "")
-    section = str(payload.get("section") or "")
+    chunk_metadata = payload.get("chunk_metadata")
+    if not isinstance(chunk_metadata, dict):
+        chunk_metadata = {}
+    images = chunk_metadata.get("images")
+    title = str(payload.get("title") or "")
+    section = str(chunk_metadata.get("section") or "")
     body = str(payload.get("text", ""))
     # Build a richer evidence snippet: "<title> [<section>] <body[:N]>".
     # The previous 1000-char truncation dropped context the reranker
@@ -401,13 +451,14 @@ def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> Sea
     return SearchHit(
         route=route,
         score=score,
-        asset_id=str(payload.get("asset_id", "")),
+        asset_id=str(payload.get("document_id", "")),
         title=title,
         source_type=str(payload.get("source_type", "")),
         source_path=str(payload.get("source_path", "")),
         evidence=evidence,
-        metadata=dict(payload),
+        metadata={**dict(payload), "document_id": str(payload.get("document_id", ""))},
         images=list(images) if isinstance(images, list) else [],
+        cache_id=str(payload.get("cache_id", "")),
     )
 
 

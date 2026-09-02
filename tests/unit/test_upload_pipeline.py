@@ -59,7 +59,11 @@ def home(tmp_path: Path) -> Path:
 
 
 @pytest.fixture()
-def pipeline(home: Path) -> UploadPipeline:
+def pipeline(home: Path, monkeypatch: pytest.MonkeyPatch) -> UploadPipeline:
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
+    get_settings.cache_clear()
     return UploadPipeline(home)
 
 
@@ -208,6 +212,16 @@ def _get_cache_id(home: Path) -> str:
     return next(iter((home / ".preview-cache").iterdir())).name
 
 
+def _confirmed_edit(preview_id: str, **overrides: object) -> UserEdits:
+    values: dict[str, object] = {
+        "preview_id": preview_id,
+        "collection": "team",
+        "allowed_principals": ["alice"],
+    }
+    values.update(overrides)
+    return UserEdits(**values)  # type: ignore[arg-type]
+
+
 def test_confirm_moves_files_into_assets(
     monkeypatch: pytest.MonkeyPatch,
     pipeline: UploadPipeline,
@@ -224,7 +238,7 @@ def test_confirm_moves_files_into_assets(
 
     manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
     preview_id = next(iter(manifest))
-    edits.append(UserEdits(preview_id=preview_id))
+    edits.append(_confirmed_edit(preview_id))
 
     assets = pipeline.confirm(cache_id, edits)
     assert len(assets) == 1
@@ -266,7 +280,7 @@ def test_confirm_moves_document_into_assets_documents(
 
     manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
     preview_id = next(iter(manifest))
-    assets = pipeline.confirm(cache_id, [UserEdits(preview_id=preview_id)])
+    assets = pipeline.confirm(cache_id, [_confirmed_edit(preview_id)])
 
     assert len(assets) == 1
     a = assets[0]
@@ -292,7 +306,7 @@ def test_confirm_with_user_edits(
     manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
     preview_id = next(iter(manifest))
     edits = [
-        UserEdits(
+        _confirmed_edit(
             preview_id=preview_id,
             title="My Edited Title",
             tags="custom, manual, tags",
@@ -310,8 +324,8 @@ def test_confirm_asset_id_pinned_to_filename_not_auto_title(
     home: Path,
     png_file: Path,
 ) -> None:
-    """asset_id derives from the *original filename stem*, not the
-    LLM-generated auto title, so the stable key doesn't drift when
+    """asset_id derives from the complete physical path, not the
+    LLM-generated auto title, so the cache key doesn't drift when
     auto_meta re-guesses a different title on re-parse. Regression: a
     doc "责任联宝 ESG年度答卷" had its asset_id become an inner-page
     heading ("ESG与可持续发展…") after the LLM plucked that as the
@@ -332,12 +346,11 @@ def test_confirm_asset_id_pinned_to_filename_not_auto_title(
 
     manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
     preview_id = next(iter(manifest))
-    assets = pipeline.confirm(cache_id, [UserEdits(preview_id=preview_id)])
+    assets = pipeline.confirm(cache_id, [_confirmed_edit(preview_id)])
     a = assets[0]
-    # asset_id starts with the filename stem ("beach"), not the LLM title.
-    assert a.asset_id.startswith("beach"), (
-        f"asset_id {a.asset_id!r} should derive from filename, not LLM title"
-    )
+    from mm_asset_rag.paths import physical_cache_id
+
+    assert a.asset_id == physical_cache_id(a.relative_path)
     # The LLM title still reaches the human-facing title field.
     assert a.title == "Auto Title From LLM"
 
@@ -394,7 +407,7 @@ def test_confirm_dedupes_repeat_upload(
             if e != "__meta__"
         )
     )
-    assets_1 = pipeline.confirm(cache_id_1, [UserEdits(preview_id=preview_id_1)])
+    assets_1 = pipeline.confirm(cache_id_1, [_confirmed_edit(preview_id_1)])
     first_relative = assets_1[0].relative_path
     first_asset_id = assets_1[0].asset_id
 
@@ -405,7 +418,7 @@ def test_confirm_dedupes_repeat_upload(
         for e in _json.loads((home / ".preview-cache" / cache_id_2 / "manifest.json").read_text())
         if e != "__meta__"
     )
-    assets_2 = pipeline.confirm(cache_id_2, [UserEdits(preview_id=preview_id_2)])
+    assets_2 = pipeline.confirm(cache_id_2, [_confirmed_edit(preview_id_2)])
     # Content-hash dedup: same asset_id and relative_path.
     assert assets_2[0].asset_id == first_asset_id
     assert assets_2[0].relative_path == first_relative
@@ -432,7 +445,7 @@ def test_confirm_collision_with_different_content(
         for e in _json.loads((home / ".preview-cache" / cache_id_1 / "manifest.json").read_text())
         if e != "__meta__"
     )
-    assets_1 = pipeline.confirm(cache_id_1, [UserEdits(preview_id=preview_id_1)])
+    assets_1 = pipeline.confirm(cache_id_1, [_confirmed_edit(preview_id_1)])
 
     pipeline.preview([(other.name, other)])
     cache_id_2 = _get_cache_id(home)
@@ -441,7 +454,7 @@ def test_confirm_collision_with_different_content(
         for e in _json.loads((home / ".preview-cache" / cache_id_2 / "manifest.json").read_text())
         if e != "__meta__"
     )
-    assets_2 = pipeline.confirm(cache_id_2, [UserEdits(preview_id=preview_id_2)])
+    assets_2 = pipeline.confirm(cache_id_2, [_confirmed_edit(preview_id_2)])
     assert assets_2[0].relative_path != assets_1[0].relative_path
 
 
@@ -587,39 +600,40 @@ def test_cleanup_skips_unversioned_cache(
     assert bad.exists()
 
 
-def test_preview_returns_sha256_and_existing_id(
+def test_preview_returns_sha256_and_existing_document_id(
     monkeypatch: pytest.MonkeyPatch,
     pipeline: UploadPipeline,
     home: Path,
     png_file: Path,
 ) -> None:
-    from mm_asset_rag import asset_index
-    from mm_asset_rag.asset_index import AssetIndexEntry
+    from mm_asset_rag.asset_index import DocumentVersionRecord, upsert_record
+    from mm_asset_rag.knowledge_models import AccessPolicy, Document, DocumentVersion, Source
+    from mm_asset_rag.knowledge_models import Asset as PersistedAsset
 
-    asset_index.upsert_entry(
-        AssetIndexEntry(
-            asset_id="prior-asset",
-            sha256="x" * 64,
-            source_type="image",
-            relative_path="images/prior.png",
-        )
-    )
     _stub_vlm_image(monkeypatch, {"title": "X"})
     # Compute the real hash using the same helper.
     from mm_asset_rag.upload_pipeline import UploadPipeline as _UP
 
     digest = _UP._sha256_file(pipeline, png_file)
-    asset_index.upsert_entry(
-        AssetIndexEntry(
-            asset_id="prior-asset",
-            sha256=digest,
-            source_type="image",
-            relative_path="images/prior.png",
+    source = Source(source_id="upload:prior")
+    document = Document(
+        document_id="prior",
+        title="Prior",
+        source=source,
+        access_policy=AccessPolicy(collection="team", allowed_principals=("alice",)),
+    )
+    upsert_record(
+        DocumentVersionRecord(
+            document=document,
+            version=DocumentVersion.create(document, digest),
+            asset=PersistedAsset(
+                content_hash=digest, source_type="image", relative_path="images/prior.png"
+            ),
         )
     )
     previews = pipeline.preview([(png_file.name, png_file)])
     assert previews[0].sha256 == digest
-    assert previews[0].existing_asset_id == "prior-asset"
+    assert previews[0].existing_document_id == "prior"
 
 
 def test_cleanup_uses_created_at_not_mtime(
@@ -784,7 +798,7 @@ def test_confirm_second_call_on_already_consumed_cache_returns_empty(
 
     manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
     preview_id = next(iter(manifest))
-    edits = [UserEdits(preview_id=preview_id)]
+    edits = [_confirmed_edit(preview_id)]
 
     first = pipeline.confirm(cache_id, edits)
     assert len(first) == 1
@@ -815,7 +829,7 @@ def test_confirm_concurrent_same_cache_id_serializes(
 
     manifest = _json.loads((home / ".preview-cache" / cache_id / "manifest.json").read_text())
     preview_id = next(iter(manifest))
-    edits = [UserEdits(preview_id=preview_id)]
+    edits = [_confirmed_edit(preview_id)]
 
     results: list[list] = []
     errors: list[BaseException] = []
@@ -864,3 +878,139 @@ def test_discard_cache_clears_done_marker(
     pipeline.discard_cache(cache_id)
     assert not (home / ".confirm-state" / f"{cache_id}.done").exists()
     assert not (home / ".confirm-state" / f"{cache_id}.lock").exists()
+
+
+def test_confirm_persists_document_version_with_explicit_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    """Confirm records logical identity and never writes an asset-only row."""
+    from mm_asset_rag.asset_index import load_records
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
+    get_settings.cache_clear()
+
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    previews = pipeline.preview([(png_file.name, png_file)])
+    pipeline.confirm(
+        previews[0].cache_id,
+        [
+            UserEdits(
+                preview_id=previews[0].preview_id,
+                collection="team",
+                allowed_principals=["alice"],
+            )
+        ],
+    )
+
+    [record] = load_records()
+    assert record.document.document_id == "beach"
+    assert record.version.version_number == 1
+    assert record.access_policy.collection == "team"
+    assert record.access_policy.allowed_principals == ("alice",)
+
+
+def test_confirm_rejects_missing_access_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    png_file: Path,
+) -> None:
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    [preview] = pipeline.preview([(png_file.name, png_file)])
+
+    with pytest.raises(UploadManifestError, match="collection and allowed_principals are required"):
+        pipeline.confirm(preview.cache_id, [UserEdits(preview_id=preview.preview_id)])
+
+
+def test_confirm_same_document_and_content_reuses_persisted_relative_path(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
+    get_settings.cache_clear()
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    [first_preview] = pipeline.preview([(png_file.name, png_file)])
+    first = pipeline.confirm(
+        first_preview.cache_id,
+        [_confirmed_edit(first_preview.preview_id, document_id="beach-doc")],
+    )
+
+    alternate_name = home / "renamed.png"
+    alternate_name.write_bytes(png_file.read_bytes())
+    [second_preview] = pipeline.preview([(alternate_name.name, alternate_name)])
+    second = pipeline.confirm(
+        second_preview.cache_id,
+        [_confirmed_edit(second_preview.preview_id, document_id="beach-doc")],
+    )
+
+    assert second[0].relative_path == first[0].relative_path
+    assert len((home / "asset_index.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_confirm_persistence_failure_can_retry_without_losing_file(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    from mm_asset_rag import asset_index
+    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.upload_pipeline import UploadCommitError
+
+    monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
+    get_settings.cache_clear()
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    [preview] = pipeline.preview([(png_file.name, png_file)])
+
+    original = asset_index.upsert_record
+
+    def fail_after_persist(record, path=None):
+        original(record, path=path)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(asset_index, "upsert_record", fail_after_persist)
+    with pytest.raises(UploadCommitError, match="document-version persistence failed"):
+        pipeline.confirm(preview.cache_id, [_confirmed_edit(preview.preview_id)])
+
+    assert list((home / "assets" / "images").glob("*")) == []
+    assert asset_index.load_records() == []
+
+    monkeypatch.setattr(asset_index, "upsert_record", original)
+    [asset] = pipeline.confirm(preview.cache_id, [_confirmed_edit(preview.preview_id)])
+    assert (home / "assets" / asset.relative_path).exists()
+    assert len(asset_index.load_records()) == 1
+
+
+def test_confirm_rolls_back_files_when_document_version_persistence_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    from mm_asset_rag import asset_index
+    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.upload_pipeline import UploadCommitError
+
+    monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
+    get_settings.cache_clear()
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    [preview] = pipeline.preview([(png_file.name, png_file)])
+    monkeypatch.setattr(
+        asset_index,
+        "upsert_record",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(UploadCommitError, match="document-version persistence failed"):
+        pipeline.confirm(preview.cache_id, [_confirmed_edit(preview.preview_id)])
+
+    assert (home / ".preview-cache" / preview.cache_id).exists()
+    assert not (home / ".confirm-state" / f"{preview.cache_id}.done").exists()
+    assert list((home / "assets" / "images").glob("*")) == []

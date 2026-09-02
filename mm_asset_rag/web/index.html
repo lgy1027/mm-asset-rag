@@ -100,21 +100,18 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     .kpi { display: flex; gap: 12px; }
     .kpi .v { font-size: 18px; font-weight: 600; color: var(--accent); }
     .kpi .l { font-size: 11px; color: var(--muted); text-transform: uppercase; }
-    #assetDrawer {
+    #documentDrawer {
       position: fixed; top: 0; right: 0; width: 420px; max-width: 92vw;
       height: 100vh; background: var(--panel); border-left: 1px solid var(--border);
       transform: translateX(100%); transition: transform 0.2s ease;
       z-index: 50; overflow-y: auto; padding: 16px; box-sizing: border-box;
       display: flex; flex-direction: column; gap: 12px;
     }
-    #assetDrawer.open { transform: translateX(0); }
-    #assetDrawer .drawer-head { display: flex; align-items: center; justify-content: space-between; }
-    #assetDrawer .drawer-body { font-size: 12px; line-height: 1.5; }
-    #assetDrawer .drawer-body dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
-    #assetDrawer .drawer-body dd { margin: 0 0 4px 0; }
-    #assetDrawer .drawer-body button { padding: 4px 10px; font-size: 12px; }
-    #assetDrawer .drawer-body a.scroll-link { color: var(--accent); cursor: pointer; }
-    #assetDrawer .drawer-body a.scroll-link:hover { text-decoration: underline; }
+    #documentDrawer.open { transform: translateX(0); }
+    #documentDrawer .drawer-head { display: flex; align-items: center; justify-content: space-between; }
+    #documentDrawer .drawer-body { font-size: 12px; line-height: 1.5; }
+    #documentDrawer .drawer-body dt { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    #documentDrawer .drawer-body dd { margin: 0 0 4px 0; }
     .task-row-highlight {
       animation: taskRowFlash 1.4s ease-out;
     }
@@ -151,11 +148,23 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     <aside>
       <h2>Health</h2>
       <div class="panel" id="healthPanel">
-        <div class="kpi"><div><div class="v" id="kpiAssets">–</div><div class="l">assets</div></div></div>
+        <div class="kpi"><div><div class="v" id="kpiFiles">–</div><div class="l">files</div></div></div>
         <div class="kpi" style="margin-top:8px">
           <div><div class="v" id="kpiDocs">–</div><div class="l">docs</div></div>
           <div><div class="v" id="kpiIndex">–</div><div class="l">index</div></div>
         </div>
+      </div>
+
+      <h2>Access context</h2>
+      <div class="panel">
+        <label>Collection</label>
+        <input type="text" id="accessCollection" value="default" autocomplete="off">
+        <label>Principal</label>
+        <input type="text" id="accessPrincipal" placeholder="required" autocomplete="off">
+        <label>Policy metadata filter (JSON object, optional)</label>
+        <textarea id="accessMetadata" placeholder='{"department":"research"}'></textarea>
+        <label>Minimum confidence</label>
+        <input type="text" id="minConfidence" value="0.50" inputmode="decimal">
       </div>
 
       <h2>Upload</h2>
@@ -191,18 +200,18 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         <div class="empty">no tasks yet</div>
       </div>
 
-      <h2>Assets</h2>
-      <div class="panel panel-tight" id="assetsList">
-        <div class="empty">no assets yet</div>
+      <h2>Documents</h2>
+      <div class="panel panel-tight" id="documentsList">
+        <div class="empty">enter an access context to list documents</div>
       </div>
     </aside>
 
-    <aside id="assetDrawer" aria-hidden="true">
+    <aside id="documentDrawer" aria-hidden="true">
       <div class="drawer-head">
-        <strong id="assetDrawerTitle">asset</strong>
-        <button class="ghost" id="assetDrawerClose" aria-label="close">×</button>
+        <strong id="documentDrawerTitle">document</strong>
+        <button class="ghost" id="documentDrawerClose" aria-label="close">×</button>
       </div>
-      <div class="drawer-body" id="assetDrawerBody">loading…</div>
+      <div class="drawer-body" id="documentDrawerBody">loading…</div>
     </aside>
 
     <section>
@@ -260,6 +269,10 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     const messages = $("messages");
     const queryInput = $("queryInput");
     const askBtn = $("askBtn");
+    const accessCollection = $("accessCollection");
+    const accessPrincipal = $("accessPrincipal");
+    const accessMetadata = $("accessMetadata");
+    const minConfidence = $("minConfidence");
 
     let pickedFiles = [];
     let activeTaskId = null;
@@ -268,7 +281,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     let previewSubmitted = false;
 
     // Single-flight gate: when ``refreshHealth`` / ``refreshTasksList`` /
-    // ``refreshAssetsList`` are called back-to-back (e.g. the user
+    // ``refreshDocumentsList`` are called back-to-back (e.g. the user
     // hits upload → confirm → retry in quick succession) we don't
     // want N parallel ``fetch``s each racing to overwrite the same
     // DOM with stale results. ``singleFlight`` reuses the in-flight
@@ -301,7 +314,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     }
 
     // Cache-bust wrapper: most SPA routes are JSON, and a stale
-    // 200-from-disk-cache response would show wrong asset counts or a
+    // 200-from-disk-cache response would show wrong file counts or a
     // missing task. We pin one ``?v=`` query for the lifetime of the
     // tab and re-key only when the page reloads. The version comes
     // from ``/health`` so a deploy that bumps ``__version__`` invalidates
@@ -335,15 +348,38 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       $("statusDot").style.background = `var(--${dotClass})`;
     }
 
+    function readAccessContext() {
+      const collection = accessCollection.value.trim();
+      const principal = accessPrincipal.value.trim();
+      const confidence = Number(minConfidence.value);
+      if (!collection || !principal) throw new Error("collection and principal are required");
+      if (!(confidence > 0 && confidence <= 1)) throw new Error("minimum confidence must be between 0 and 1");
+      let metadataFilter = {};
+      const rawMetadata = accessMetadata.value.trim();
+      if (rawMetadata) {
+        try { metadataFilter = JSON.parse(rawMetadata); } catch { throw new Error("policy metadata must be valid JSON"); }
+        if (!metadataFilter || Array.isArray(metadataFilter) || typeof metadataFilter !== "object") {
+          throw new Error("policy metadata must be a JSON object");
+        }
+      }
+      return { collection, principal, metadata_filter: metadataFilter, min_confidence: confidence };
+    }
+
+    function accessQuery(context) {
+      const query = new URLSearchParams({ collection: context.collection, principal: context.principal });
+      if (Object.keys(context.metadata_filter).length) query.set("metadata_filter", JSON.stringify(context.metadata_filter));
+      return query.toString();
+    }
+
     async function _refreshHealthOnce() {
       try {
         const r = await apiFetch("/health");
         const d = await r.json();
-        $("kpiAssets").textContent = d.assets ?? "–";
+        $("kpiFiles").textContent = d.files ?? "–";
         $("kpiDocs").textContent = d.documents_jsonl_exists ? "✓" : "✗";
         $("kpiIndex").textContent = d.text_index_exists ? "✓" : "✗";
         if (d.model) llmModel = d.model;
-        setStatus(`${d.assets ?? 0} assets · index ${d.text_index_exists ? "ready" : "missing"} · ${llmModel || "no LLM"}`);
+        setStatus(`${d.files ?? 0} files · index ${d.text_index_exists ? "ready" : "missing"} · ${llmModel || "no LLM"}`);
       } catch (e) {
         setStatus("backend unreachable", "err");
       }
@@ -416,8 +452,8 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
           : sn.source_type === "image" ? `${sn.width || "?"}×${sn.height || "?"}`
           : sn.source_type === "document" ? _docLabel(sn.relative_path)
           : (p.rejected_reason || "unsupported");
-        const dupBadge = p.existing_asset_id
-          ? `<span class="pill warn" style="margin-left:6px">已存在 asset ${escapeHtml(p.existing_asset_id)}</span>`
+        const dupBadge = p.existing_document_id
+          ? `<span class="pill warn" style="margin-left:6px">existing document ${escapeHtml(p.existing_document_id)}</span>`
           : "";
         return `
           <div class="preview-card ${sn.source_type === "unknown" ? "unsupported" : ""}" data-preview-id="${escapeHtml(p.preview_id)}">
@@ -439,6 +475,13 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
 
     confirmBtn.addEventListener("click", async () => {
       if (!currentPreview?.cache_id) return;
+      let context;
+      try {
+        context = readAccessContext();
+      } catch (e) {
+        setStatus(`confirm blocked: ${e.message}`, "err");
+        return;
+      }
       // Mark as submitted before the fetch leaves the browser: even on
       // a network failure we don't want the user to re-click and post a
       // second confirm with the same ``cache_id`` (the server may have
@@ -452,6 +495,8 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         tags: card.querySelector(".preview-tags").value.split(/[,，;；\n]+/).map(s => s.trim()).filter(Boolean),
         description: card.querySelector(".preview-desc").value.trim(),
         rejected: card.querySelector(".preview-reject").checked,
+        collection: context.collection,
+        allowed_principals: [context.principal],
       }));
       try {
         const r = await apiFetch("/upload/confirm", {
@@ -510,6 +555,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       if (d.status === "done") {
         setStatus(`task done · ${d.processed}/${d.total}`, "ok");
         refreshHealth();
+        refreshDocumentsList();
       } else if (d.status === "failed") {
         setStatus(`task failed: ${d.error || "unknown"}`, "err");
       } else if (d.status === "partial") {
@@ -740,42 +786,40 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       }
     });
 
-    async function _refreshAssetsListOnce() {
-      const list = document.getElementById("assetsList");
+    async function _refreshDocumentsListOnce() {
+      const list = document.getElementById("documentsList");
+      let context;
+      try { context = readAccessContext(); } catch {
+        list.innerHTML = '<div class="empty">enter a valid access context to list documents</div>';
+        return;
+      }
       try {
-        const r = await apiFetch("/assets");
+        const r = await apiFetch(`/documents?${accessQuery(context)}`);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const d = await r.json();
-        const items = d.assets || [];
+        const items = d.documents || [];
         if (!items.length) {
-          list.innerHTML = '<div class="empty">no assets yet</div>';
+          list.innerHTML = '<div class="empty">no visible documents</div>';
           return;
         }
-        list.innerHTML = items
-          .map(
-            (a) => `
-            <div data-asset-id="${escapeHtml(a.asset_id)}" style="padding:4px 0;border-bottom:1px solid var(--border);cursor:pointer">
-              <div style="display:flex;align-items:center;gap:6px">
-                <span class="pill">${escapeHtml(a.source_type || "?")}</span>
-                <span style="font-size:11px">${escapeHtml(a.asset_id)}</span>
-                <button class="shrink ghost" data-delete="${escapeHtml(a.asset_id)}" style="margin-left:auto">Delete</button>
-              </div>
-              <div style="font-size:11px;color:var(--muted);margin-top:2px">
-                ${escapeHtml(a.asset_title || "")} · ${escapeHtml(a.relative_path || "")}
-              </div>
-            </div>`,
-          )
-          .join("");
+        list.innerHTML = items.map((document) => `
+          <div data-document-id="${escapeHtml(document.document_id)}" style="padding:4px 0;border-bottom:1px solid var(--border);cursor:pointer">
+            <div style="font-size:12px">${escapeHtml(document.title || document.document_id)}</div>
+            <div style="font-size:11px;color:var(--muted);margin-top:2px">
+              ${escapeHtml(document.document_id)} · ${escapeHtml(document.latest_version?.version_id || "")}
+            </div>
+          </div>`).join("");
       } catch (e) {
-        /* ignore */
+        list.innerHTML = '<div class="empty">could not load documents</div>';
       }
     }
-    function refreshAssetsList() {
-      return singleFlight("assets", _refreshAssetsListOnce);
+    function refreshDocumentsList() {
+      return singleFlight("documents", _refreshDocumentsListOnce);
     }
 
-    const assetDrawer = document.getElementById("assetDrawer");
-    const assetDrawerBody = document.getElementById("assetDrawerBody");
-    const assetDrawerTitle = document.getElementById("assetDrawerTitle");
+    const documentDrawer = document.getElementById("documentDrawer");
+    const documentDrawerBody = document.getElementById("documentDrawerBody");
+    const documentDrawerTitle = document.getElementById("documentDrawerTitle");
 
     // ─── In-page confirm modal ─────────────────────────────────────
     // Replaces window.confirm so the page stays CSP-friendly and
@@ -792,7 +836,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     // Modal focus trap: while the modal is up, mark the rest of the
     // body (header, main, drawer) as inert so Tab can't escape the
     // dialog. The confirm modal is the topmost layer, so it traps
-    // everything *including* an open asset drawer.
+    // everything including an open document drawer.
     const _MODAL_FOCUS_TRAP_TARGETS = () =>
       Array.from(document.querySelectorAll("body > *:not(#confirmModal)"));
 
@@ -900,227 +944,70 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       });
     }
 
-    function openAssetDrawer() {
-      assetDrawer.classList.add("open");
-      assetDrawer.setAttribute("aria-hidden", "false");
+    function openDocumentDrawer() {
+      documentDrawer.classList.add("open");
+      documentDrawer.setAttribute("aria-hidden", "false");
       _setDrawerTrapActive(true);
     }
 
-    function closeAssetDrawer() {
-      assetDrawer.classList.remove("open");
-      assetDrawer.setAttribute("aria-hidden", "true");
-      assetDrawerBody.innerHTML = "";
+    function closeDocumentDrawer() {
+      documentDrawer.classList.remove("open");
+      documentDrawer.setAttribute("aria-hidden", "true");
+      documentDrawerBody.innerHTML = "";
       _setDrawerTrapActive(false);
     }
 
-    async function openAssetDetail(assetId) {
-      assetDrawerTitle.textContent = assetId;
-      assetDrawerBody.innerHTML = '<div style="color:var(--muted)">loading…</div>';
-      openAssetDrawer();
+    async function openDocumentDetail(documentId) {
+      let context;
+      try { context = readAccessContext(); } catch (e) { setStatus(`document blocked: ${e.message}`, "err"); return; }
+      documentDrawerTitle.textContent = documentId;
+      documentDrawerBody.innerHTML = '<div style="color:var(--muted)">loading…</div>';
+      openDocumentDrawer();
       try {
-        const r = await apiFetch(`/assets/${encodeURIComponent(assetId)}`);
+        const r = await apiFetch(`/documents/${encodeURIComponent(documentId)}?${accessQuery(context)}`);
         if (r.status === 404) {
-          assetDrawerBody.innerHTML = `<div style="color:var(--err)">asset not found: ${escapeHtml(assetId)}</div>`;
+          documentDrawerBody.innerHTML = `<div style="color:var(--err)">document not found or not visible: ${escapeHtml(documentId)}</div>`;
           return;
         }
         if (!r.ok) {
-          assetDrawerBody.innerHTML = `<div style="color:var(--err)">failed to load (HTTP ${r.status})</div>`;
+          documentDrawerBody.innerHTML = `<div style="color:var(--err)">failed to load (HTTP ${r.status})</div>`;
           return;
         }
         const d = await r.json();
-        const tags = (d.tags || []).length
-          ? (d.tags || []).map((t) => `<span class="pill" style="margin-right:4px">${escapeHtml(t)}</span>`).join("")
-          : '<span style="color:var(--muted)">(none)</span>';
-        const fmtBytes = (n) => (n > 0 ? `${(n / 1024).toFixed(1)} KB` : "0 B");
-        const dot = (ok) => (ok ? "🟢" : "🔴");
-        assetDrawerBody.innerHTML = `
+        const versions = (d.versions || []).map((version) => `
+          <li><code>${escapeHtml(version.version_id || "")}</code> · version ${escapeHtml(version.version_number || "")}</li>`).join("");
+        documentDrawerBody.innerHTML = `
           <dl style="margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:12px">
             <dt style="color:var(--muted)">title</dt><dd>${escapeHtml(d.title || "")}</dd>
-            <dt style="color:var(--muted)">type</dt><dd>${escapeHtml(d.source_type || "")}</dd>
-            <dt style="color:var(--muted)">tags</dt><dd>${tags}</dd>
-            <dt style="color:var(--muted)">relative path</dt><dd style="word-break:break-all">${escapeHtml(d.relative_path || "")}</dd>
-            <dt style="color:var(--muted)">ingested at</dt><dd>${new Date((d.ingested_at || 0) * 1000).toLocaleString()}</dd>
-            <dt style="color:var(--muted)">last task</dt><dd>${
-              d.last_task_id
-                ? `<a href="#" class="scroll-link" data-scroll-task="${escapeHtml(d.last_task_id)}">${escapeHtml(d.last_task_id)}</a>`
-                : "—"
-            }</dd>
-            <dt style="color:var(--muted)">file</dt><dd>${dot(d.file_exists)} ${fmtBytes(d.file_size || 0)}</dd>
-            <dt style="color:var(--muted)">parsed</dt><dd>${dot(d.parsed_exists)} ${fmtBytes(d.parsed_size || 0)} <span style="color:var(--muted)">· ${escapeHtml(d.parsed_dir || "")}</span></dd>
-            <dt style="color:var(--muted)">captions</dt><dd>${dot(d.captions_exists)} <span style="color:var(--muted)">· ${escapeHtml(d.captions_path || "")}</span></dd>
-            <dt style="color:var(--muted)">sha256</dt><dd style="word-break:break-all;font-family:ui-monospace,monospace;font-size:11px">${escapeHtml(d.sha256 || "")}</dd>
+            <dt style="color:var(--muted)">document ID</dt><dd><code>${escapeHtml(d.document_id || "")}</code></dd>
+            <dt style="color:var(--muted)">source</dt><dd>${escapeHtml(d.source?.uri || d.source?.source_id || "")}</dd>
+            <dt style="color:var(--muted)">versions</dt><dd><ul style="margin:0;padding-left:16px">${versions || "<li>none</li>"}</ul></dd>
           </dl>
-          <div style="margin-top:14px;display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-            <select data-asset-retry-mode="${escapeHtml(assetId)}" style="font-size:11px;width:auto;flex:0 0 auto" title="retry mode">
-              <option value="">normal</option>
-              <option value="force">--force</option>
-              <option value="failed-only">--failed-only</option>
-            </select>
-            <button class="ghost" data-asset-retry="${escapeHtml(assetId)}">Retry last task</button>
-            <button class="ghost" data-asset-delete="${escapeHtml(assetId)}">Delete</button>
-          </div>
         `;
       } catch (err) {
-        assetDrawerBody.innerHTML = `<div style="color:var(--err)">load error: ${escapeHtml(err.message)}</div>`;
+        documentDrawerBody.innerHTML = `<div style="color:var(--err)">load error: ${escapeHtml(err.message)}</div>`;
       }
     }
 
-    document.getElementById("assetDrawerClose").addEventListener("click", closeAssetDrawer);
+    document.getElementById("documentDrawerClose").addEventListener("click", closeDocumentDrawer);
     document.addEventListener("keydown", (e) => {
       if (e.key !== "Escape") return;
       if (confirmModalEl.classList.contains("open")) {
         closeConfirmModal(false);
         return;
       }
-      if (assetDrawer.classList.contains("open")) {
-        closeAssetDrawer();
+      if (documentDrawer.classList.contains("open")) {
+        closeDocumentDrawer();
       }
     });
-    assetDrawer.addEventListener("click", (e) => {
-      if (e.target === assetDrawer) closeAssetDrawer();
+    documentDrawer.addEventListener("click", (e) => {
+      if (e.target === documentDrawer) closeDocumentDrawer();
     });
 
-    document.getElementById("assetsList").addEventListener("click", async (e) => {
-      const btn = e.target.closest("button[data-delete]");
-      if (btn) {
-        const assetId = btn.dataset.delete;
-        if (!(await confirmModal(
-          `Delete asset ${assetId}? This removes its file, parsed/, captions/, Qdrant points and asset index entry.`,
-          { title: "Delete asset", confirmLabel: "Delete" },
-        ))) {
-          return;
-        }
-        btn.disabled = true;
-        try {
-          const r = await apiFetch(`/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
-          if (r.status === 404) {
-            setStatus(`asset not found: ${assetId}`, "err");
-            btn.disabled = false;
-            await refreshAssetsList();
-            return;
-          }
-          if (!r.ok) {
-            const body = await r.json().catch(() => ({}));
-            setStatus(`delete failed: ${body.detail || r.status}`, "err");
-            btn.disabled = false;
-            return;
-          }
-          setStatus(`asset ${assetId} deleted`, "ok");
-          closeAssetDrawer();
-          await refreshAssetsList();
-          await refreshHealth();
-        } catch (err) {
-          setStatus(`delete failed: ${err.message}`, "err");
-          btn.disabled = false;
-        }
-        return;
-      }
-      const row = e.target.closest("[data-asset-id]");
+    document.getElementById("documentsList").addEventListener("click", (e) => {
+      const row = e.target.closest("[data-document-id]");
       if (row) {
-        openAssetDetail(row.dataset.assetId);
-      }
-    });
-
-    assetDrawerBody.addEventListener("click", (e) => {
-      const link = e.target.closest("a.scroll-link[data-scroll-task]");
-      if (link) {
-        e.preventDefault();
-        const taskId = link.dataset.scrollTask;
-        const row = document.querySelector(`#tasksList [data-task-id="${CSS.escape(taskId)}"]`);
-        if (!row) {
-          setStatus(`task ${taskId} not in history (may be > 200 kept)`, "warn");
-          return;
-        }
-        row.scrollIntoView({ behavior: "smooth", block: "center" });
-        // Re-trigger the animation if the row already has the class.
-        row.classList.remove("task-row-highlight");
-        // Force reflow so removing + re-adding actually replays the keyframes.
-        void row.offsetWidth;
-        row.classList.add("task-row-highlight");
-        setTimeout(() => row.classList.remove("task-row-highlight"), 1500);
-        return;
-      }
-    });
-
-    assetDrawerBody.addEventListener("click", async (e) => {
-      const retry = e.target.closest("button[data-asset-retry]");
-      if (retry) {
-        const assetId = retry.dataset.assetRetry;
-        const modeSel = assetDrawerBody.querySelector(
-          `select[data-asset-retry-mode="${assetId}"]`
-        );
-        const mode = modeSel ? modeSel.value : "";
-        const params = new URLSearchParams();
-        if (mode === "force") params.set("force", "true");
-        if (mode === "failed-only") params.set("failed_only", "true");
-        const qs = params.toString();
-        const label =
-          mode === "force" ? " (force)"
-            : mode === "failed-only" ? " (failed-only)"
-            : "";
-        retry.disabled = true;
-        try {
-          const list = (await (await apiFetch("/tasks")).json()).tasks || [];
-          const target = list.find(
-            (t) => (t.uploaded_files || []).some((p) => p.includes(assetId)),
-          );
-          if (!target) {
-            setStatus(`no recent task found for ${assetId}`, "err");
-            retry.disabled = false;
-            return;
-          }
-          const r = await apiFetch(
-            `/tasks/${target.task_id}/retry${qs ? "?" + qs : ""}`,
-            { method: "POST" },
-          );
-          const body = await r.json().catch(() => ({}));
-          if (!r.ok) {
-            setStatus(`retry failed: ${body.detail || r.status}`, "err");
-            retry.disabled = false;
-            return;
-          }
-          activeTaskId = body.task_id;
-          taskPanel.style.display = "block";
-          taskStatusPill.textContent = "pending";
-          taskStatusPill.className = "pill pending";
-          taskBar.style.width = "0%";
-          const flags = [body.force ? "force" : "", body.failed_only ? "failed-only" : ""]
-            .filter(Boolean)
-            .join("+");
-          taskDetail.textContent = `retry task ${body.task_id}${flags ? " [" + flags + "]" : ""} · origin ${body.origin_task_id || target.task_id}`;
-          setStatus(`retry ${body.task_id} started${label}`, "ok");
-          closeAssetDrawer();
-          await refreshTasksList();
-          await streamWithBackoff(body.task_id);
-        } catch (err) {
-          setStatus(`retry failed: ${err.message}`, "err");
-          retry.disabled = false;
-        }
-        return;
-      }
-      const del = e.target.closest("button[data-asset-delete]");
-      if (del) {
-        const assetId = del.dataset.assetDelete;
-        if (!(await confirmModal(
-          `Delete asset ${assetId}? This removes its file, parsed/, captions/, Qdrant points and asset index entry.`,
-          { title: "Delete asset", confirmLabel: "Delete" },
-        ))) {
-          return;
-        }
-        try {
-          const r = await apiFetch(`/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" });
-          if (!r.ok) {
-            const body = await r.json().catch(() => ({}));
-            setStatus(`delete failed: ${body.detail || r.status}`, "err");
-            return;
-          }
-          setStatus(`asset ${assetId} deleted`, "ok");
-          closeAssetDrawer();
-          await refreshAssetsList();
-          await refreshHealth();
-        } catch (err) {
-          setStatus(`delete failed: ${err.message}`, "err");
-        }
+        openDocumentDetail(row.dataset.documentId);
       }
     });
 
@@ -1136,6 +1023,13 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     async function askQuestion() {
       const q = queryInput.value.trim();
       if (!q) return;
+      let context;
+      try {
+        context = readAccessContext();
+      } catch (e) {
+        setStatus(`answer blocked: ${e.message}`, "err");
+        return;
+      }
       queryInput.value = "";
       askBtn.disabled = true;
       const mode = document.querySelector('input[name="mode"]:checked').value;
@@ -1155,10 +1049,10 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       let answerBuf = "";
 
       try {
-        const r = await fetch("/chat/stream", {
+        const r = await apiFetch("/chat/stream", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: q, mode, top_k: 5 }),
+          body: JSON.stringify({ question: q, mode, top_k: 5, ...context }),
         });
         if (!r.ok || !r.body) throw new Error(`HTTP ${r.status}`);
         const reader = r.body.getReader();
@@ -1204,6 +1098,9 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
 
     function renderSources(sources) {
       if (!sources.length) return "";
+      let context;
+      try { context = readAccessContext(); } catch { return ""; }
+      const imageQuery = accessQuery(context);
       const head = `<div style="font-size:11px;color:var(--muted);margin-bottom:4px">SOURCES (${sources.length})</div>`;
       const body = sources
         .map((s, i) => {
@@ -1211,14 +1108,14 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
           const thumbs = imgs
             .map(
               (img) => `
-              <a href="/parsed-image/${encodeURIComponent(s.asset_id || "")}/${encodeURIComponent(
+              <a href="/parsed-image/${encodeURIComponent(s.document_id || "")}/${encodeURIComponent(s.version_id || "")}/${encodeURIComponent(
                 (img && img.path) || "",
-              )}" target="_blank" rel="noopener" title="${escapeHtml(
+              )}?${imageQuery}" target="_blank" rel="noopener" title="${escapeHtml(
                 (img && (img.caption || "")) || "",
               )}">
-                <img class="src-thumb" src="/parsed-image/${encodeURIComponent(
-                  s.asset_id || "",
-                )}/${encodeURIComponent((img && img.path) || "")}" alt="${escapeHtml(
+                <img class="src-thumb" src="/parsed-image/${encodeURIComponent(s.document_id || "")}/${encodeURIComponent(
+                  s.version_id || "",
+                )}/${encodeURIComponent((img && img.path) || "")}?${imageQuery}" alt="${escapeHtml(
                   (img && (img.caption || `图${img.figure_id || ""}`)) || "图",
                 )}" loading="lazy" />
               </a>`,
@@ -1231,8 +1128,12 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
           <div class="source">
             <div class="head">
               <span class="score">#${i + 1}</span>
-              <span class="route">${escapeHtml(s.route || "")}</span>
-              <span style="color:var(--accent)">${escapeHtml(s.asset_id || "")}</span>
+              <span class="route">${escapeHtml((s.routes || []).join(", "))}</span>
+              <span style="color:var(--accent)">${escapeHtml(s.document_id || "")}</span>
+              <span style="color:var(--muted)">·</span>
+              <span style="color:var(--muted)">${escapeHtml(s.version_id || "")}</span>
+              <span style="color:var(--muted)">·</span>
+              <span style="color:var(--muted)">${escapeHtml(s.chunk_id || "")}</span>
               <span style="color:var(--muted)">·</span>
               <span style="color:var(--muted)">score ${(s.score || 0).toFixed(3)}</span>
             </div>
@@ -1251,6 +1152,9 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         askQuestion();
       }
     });
+    [accessCollection, accessPrincipal, accessMetadata].forEach((input) => {
+      input.addEventListener("change", refreshDocumentsList);
+    });
 
     // Bootstrap
     // ``primeAppVersion`` runs first so the first ``apiFetch`` after
@@ -1259,7 +1163,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     primeAppVersion().finally(() => {
       refreshHealth();
       refreshTasksList();
-      refreshAssetsList();
+      refreshDocumentsList();
     });
     // Background poll: when the tab is hidden we *skip* the fetch
     // (no point hammering the API while the page isn't visible) and

@@ -71,27 +71,26 @@ def qdrant_text_search(
     top_k: int = 5,
     *,
     include_image_sources: bool = False,
+    search_filter=None,
 ):
+    kwargs = {"top_k": top_k}
+    if search_filter is not None:
+        kwargs["search_filter"] = search_filter
     if include_image_sources:
-        return search.text_search(query, top_k=top_k, include_image_sources=True)
-    return search.text_search(query, top_k=top_k)
+        return search.text_search(query, include_image_sources=True, **kwargs)
+    return search.text_search(query, **kwargs)
 
 
-def qdrant_text_to_image_search(query: str, top_k: int = 5):
-    return search.text_to_image_search(query, top_k=top_k)
+def qdrant_text_to_image_search(query: str, top_k: int = 5, *, search_filter=None):
+    if search_filter is None:
+        return search.text_to_image_search(query, top_k=top_k)
+    return search.text_to_image_search(query, top_k=top_k, search_filter=search_filter)
 
 
-def qdrant_image_to_image_search(image_path: Path, top_k: int = 5):
-    return search.image_to_image_search(image_path, top_k=top_k)
-
-
-def delete_points_by_asset_id(
-    asset_id: str,
-    *,
-    text: bool = True,
-    image: bool = True,
-):
-    return collections.delete_points_by_asset_id(asset_id, text=text, image=image)
+def qdrant_image_to_image_search(image_path: Path, top_k: int = 5, *, search_filter=None):
+    if search_filter is None:
+        return search.image_to_image_search(image_path, top_k=top_k)
+    return search.image_to_image_search(image_path, top_k=top_k, search_filter=search_filter)
 
 
 # Private compatibility aliases retained for existing in-repository callers
@@ -102,6 +101,7 @@ _lock_holder_pid = client._lock_holder_pid
 _pid_alive = client._pid_alive
 _create_collection = collections._create_collection
 _existing_collections_for = collections._existing_collections_for
+_strict_existing_collections_for = collections._strict_existing_collections_for
 _bm25_embedder = indexing._bm25_embedder
 _embed_bm25 = indexing._embed_bm25
 _load_bm25_zh_idf = indexing._load_bm25_zh_idf
@@ -147,7 +147,6 @@ __all__ = [
     "QdrantLockHeldError",
     "build_qdrant_image_index",
     "build_qdrant_text_index",
-    "delete_points_by_asset_id",
     "get_qdrant_client",
     "image_collection",
     "invalidate_bm25_zh_idf_cache",

@@ -13,14 +13,14 @@ $MM_ASSET_RAG_HOME/
 │   ├── images/              # confirmed uploaded images
 │   └── documents/           # confirmed office/text (docx/pptx/xlsx/html/md/txt)
 ├── .preview-cache/<id>/     # short-lived upload preview files
-├── parsed/<asset_id>/       # PDF page markdown / image OCR JSON
-├── captions/<asset_id>.jsonl # VLM captions
+├── parsed/<cache_key>/      # internal cache resolved from a document version
+├── captions/<cache_key>.jsonl # internal VLM-caption cache
 ├── indexes/qdrant/          # local Qdrant persistence
 ├── documents.jsonl          # ParsedDocument store
 └── tasks.db                  # background task history (SQLite)
 ```
 
-There is no `asset_manifest.json`; uploaded files are auto-sniffed and converted into `Asset` objects during `/upload/confirm`.
+There is no `asset_manifest.json`; `/upload/confirm` creates a logical `Document`, an immutable `DocumentVersion`, and its physical file record. Public lifecycle and retrieval interfaces use `document_id` and `version_id`; physical assets and cache keys remain internal implementation details.
 
 ## Core variables
 
@@ -46,7 +46,7 @@ When neither triple is complete, `/answer` and `/chat` return evidence-summary f
 The HTTP API ships with two independent security layers, both with safe loopback defaults so a developer's `mmrag-api` works zero-config:
 
 - **TrustedHostMiddleware** locks the API to loopback (`127.0.0.1`, `localhost`, `[::1]`) by default. A malicious web page cannot reach the API via DNS rebinding — the browser SOP preflight blocks cross-origin JSON POST, but multipart `/upload/preview` is a simple request, and the rebinding trick can read GET responses without it. Set `MMRAG_TRUSTED_HOSTS` to your public hostname(s) when deploying behind a reverse proxy, or `*` to disable the check (unsafe without a token).
-- **Bearer token** guards the destructive + write endpoints (`DELETE /assets/*`, `POST /tasks/*/retry`, `POST /upload/preview`, `POST /upload/confirm`, `POST /eval`). Leave `MMRAG_API_TOKEN` unset to keep the zero-config default (no auth); set it when exposing the API beyond localhost. Clients pass it as `Authorization: Bearer <token>` or `X-API-Key: <token>`. Read endpoints (`/search`, `/answer`, `/chat`, `/assets`, `/tasks`, `/health`, `/`) stay open regardless so the bundled web UI's same-origin fetches keep working without a token.
+- **Bearer token** guards the destructive + write endpoints (`POST /tasks/*/retry`, `POST /upload/preview`, `POST /upload/confirm`, `POST /eval`). Leave `MMRAG_API_TOKEN` unset to keep the zero-config default (no auth); set it when exposing the API beyond localhost. Clients pass it as `Authorization: Bearer <token>` or `X-API-Key: <token>`. Read endpoints (`/search`, `/answer`, `/chat`, `/documents`, `/tasks`, `/health`, `/`) stay open regardless so the bundled web UI's same-origin fetches keep working without a token. The obsolete public asset list/detail/delete lifecycle has been removed.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -182,7 +182,7 @@ After heading-based splitting, each section body is recursively split to a token
 
 ## PDF embedded-image extraction
 
-PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXTRACT_IMAGES` is on, the parser pulls every image a page references into `parsed/<id>/images/` and attaches the figures a chunk references (or sits next to) to that chunk's `metadata["images"]`. The figures ride in the text hit's payload — surfaced to the LLM (a `关联图片` hint citing the figure caption) and the web UI (a thumbnail served by `GET /parsed-image/{asset_id}/{filename}`). Images are **not** embedded into the vector index (that is tier 2); they are an attachment of the text hit. `PDF_IMAGE_MIN_DIM` filters logos / icons. Requires `mmrag reindex` (or a fresh `mmrag parse`) to populate `images` on existing chunks.
+PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXTRACT_IMAGES` is on, the parser pulls every image a page references into the version's internal `parsed/<cache_key>/images/` directory and attaches the figures a chunk references (or sits next to) to that chunk's `metadata["images"]`. The figures ride in the text hit's payload — surfaced to the LLM (a `关联图片` hint citing the figure caption) and the web UI (a thumbnail served by `GET /parsed-image/{document_id}/{version_id}/{filename}`). Images are **not** embedded into the vector index (that is tier 2); they are an attachment of the text hit. `PDF_IMAGE_MIN_DIM` filters logos / icons. Requires `mmrag reindex` (or a fresh `mmrag parse`) to populate `images` on existing chunks.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
@@ -202,7 +202,7 @@ When `ANSWER_WITH_IMAGES` is on, `/answer` and `/chat/stream` inject each hit's 
 
 ## Contextual Retrieval
 
-Anthropic-style chunk context: each chunk gets a short LLM-generated preamble situating it within its document, prepended to the embedding/BM25 input so dense + sparse channels can disambiguate generic terms. **Enabled by default** — it costs ~1 LLM call per chunk, generated at parse time and cached under `parsed/<id>/context.jsonl` so `mmrag reindex` reuses it without re-calling the LLM. Disable with `CONTEXTUAL_ENABLED=false` (or `mmrag parse --no-contextual` on the CLI) when no LLM is configured or to skip the per-chunk calls.
+Anthropic-style chunk context: each chunk gets a short LLM-generated preamble situating it within its document, prepended to the embedding/BM25 input so dense + sparse channels can disambiguate generic terms. **Enabled by default** — it costs ~1 LLM call per chunk, generated at parse time and cached under the version's internal `parsed/<cache_key>/context.jsonl` path so `mmrag reindex` reuses it without re-calling the LLM. Disable with `CONTEXTUAL_ENABLED=false` (or `mmrag parse --no-contextual` on the CLI) when no LLM is configured or to skip the per-chunk calls.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
@@ -216,7 +216,7 @@ Anthropic-style chunk context: each chunk gets a short LLM-generated preamble si
 
 Document-embedded figures (docx/pptx pictures via markitdown/docling, PDF figures via PyMuPDF) are saved to `parsed/<id>/images/` and associated with chunks, but their *content* is otherwise invisible to the text index — a slide whose only payload is a diagram is unsearchable. When enabled, each embedded figure with no existing caption gets a VLM-generated Chinese description appended to its chunk's text so the figure's semantics enter the dense + BM25 channels. The caption is also recorded in `metadata["images"][*]["caption"]` so the answer layer can cite it.
 
-This is the **text-route** path only: embedded figures are *not* sent to the CLIP image index — that channel stays reserved for standalone `images/` uploads (`source_type=image`). Works with any OpenAI-compatible VLM via `VLM_*`. Cost: ~1 VLM call per embedded figure at parse time. Generated before Contextual Retrieval so the contextual LLM sees caption-enriched chunks. Cached under `captions/<id>.jsonl` keyed by image path so `mmrag reindex` and force re-parse reuse it without re-calling the VLM (figure bytes are stable across re-parses). When `VLM_*` is unconfigured the step degrades to a no-op — safe to leave on.
+This is the **text-route** path only: embedded figures are *not* sent to the CLIP image index — that channel stays reserved for standalone image uploads (`source_type=image`). Works with any OpenAI-compatible VLM via `VLM_*`. Cost: ~1 VLM call per embedded figure at parse time. Generated before Contextual Retrieval so the contextual LLM sees caption-enriched chunks. Cached under the version's internal `captions/<cache_key>.jsonl` path so `mmrag reindex` and force re-parse reuse it without re-calling the VLM (figure bytes are stable across re-parses). When `VLM_*` is unconfigured the step degrades to a no-op — safe to leave on.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
@@ -282,28 +282,31 @@ RERANKER_API_KEY=sk-xxx           # DASHSCOPE_API_KEY value
 
 ## Evaluation cases
 
-`mmrag eval` (and `POST /eval`) score a set of `query → expected_asset_ids` cases against the live index. Cases live in a JSON file:
+`mmrag eval` (and `POST /eval`) score grouped queries against exact logical document IDs. Each case declares a `query_id`; the top-level qrels mapping supplies graded relevance:
 
 ```json
-{"version": "v1", "groups": {"en": [{"query": "...", "expected_asset_ids": ["..."]}]}}
+{
+  "version": "v1",
+  "groups": {"en": [{"query_id": "q1", "query": "..."}]},
+  "qrels": {"q1": {"document-id": 3}}
+}
 ```
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `EVAL_CASES_PATH` | unset | Path to a case JSON overriding the bundled default |
 
-The default (unset) loads the small generic sample shipped with the package (`mm_asset_rag/eval_data/<version>_cases.json`) — a **text→text-only** template over well-known arxiv papers, so it runs out of the box once you ingest matching assets. The CLI `--cases` flag overrides `EVAL_CASES_PATH` for one run; `--cases` and `POST /eval {cases_path}` take the same path.
+The default (unset) loads the small qrels sample shipped with the package (`mm_asset_rag/eval_data/<version>_cases.json`) — a **text→text-only** template over well-known arxiv papers. It runs once those papers are ingested with the exact document IDs named by the qrels. The CLI `--cases` flag overrides `EVAL_CASES_PATH` for one run; `--cases` and `POST /eval {cases_path}` take the same path.
 
 The file's `version` field is checked (`v1` vs `v2`): loading a v2 file under `mmrag eval` (or vice versa) raises an error instead of silently scoring 0 cases.
 
-A larger internal baseline ships at `examples/eval_cases_chapter11_v{1,2}.json` (load with `--cases`) for reproducibility, but it references assets not in this repo — see `examples/eval_cases_README.md`. Without matching assets ingested, every case returns `hit: false`.
-
-Use non-empty `expected_asset_ids` for **positive** retrieval cases. Their
-hit-rate and rank-based metrics measure retrieval of expected evidence. Use
-an empty list for a **negative** rejection case: it is reported separately as
-empty-result rate and false-retrieval rate, and is not counted as a missed
-positive retrieval. Reported values apply only to the selected corpus and
-case set; they are not a retrieval-quality threshold.
+Use one or more positive integer qrel grades for a **positive** retrieval case.
+Recall, MRR, and MAP treat every positive grade as relevant; NDCG preserves the
+grade. Use an explicit empty qrels mapping for a **negative** rejection case:
+it is reported separately as empty-result rate and false-retrieval rate and is
+not counted as a missed positive retrieval. Every case must have a qrels entry,
+including negatives. Reported values apply only to the selected corpus and case
+set; they are not a retrieval-quality threshold.
 
 ## Answer-quality eval (LLM judge)
 

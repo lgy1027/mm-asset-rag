@@ -43,14 +43,16 @@ class QdrantBackend:
             force_recreate=force_recreate,
         )
 
-    def search_text(self, *, query, top_k):
-        return search.text_search(query, top_k=top_k)
+    def search_text(self, *, query, top_k, search_filter=None):
+        return search.text_search(query, top_k=top_k, search_filter=search_filter)
 
-    def search_text_to_image(self, *, query, top_k):
-        return search.text_to_image_search(query, top_k=top_k)
+    def search_text_to_image(self, *, query, top_k, search_filter=None):
+        return search.text_to_image_search(query, top_k=top_k, search_filter=search_filter)
 
-    def search_image(self, *, image_path, top_k):
-        return search.image_to_image_search(Path(image_path), top_k=top_k)
+    def search_image(self, *, image_path, top_k, search_filter=None):
+        return search.image_to_image_search(
+            Path(image_path), top_k=top_k, search_filter=search_filter
+        )
 
     # Compatibility with the pre-capability aggregate VectorBackend port.
     def search_points(

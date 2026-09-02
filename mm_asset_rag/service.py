@@ -21,24 +21,24 @@ from typing import Any
 
 from . import asset_index
 from . import parsers as _parsers  # noqa: F401  # register built-in parsers
-from .asset_index import AssetIndexEntry
 from .assets import Asset, from_sniffed
 from .backends.qdrant_backend import (
     IMAGE_COLLECTION_BASE,
     TEXT_COLLECTION_BASE,
-    _existing_collections_for,
-    delete_points_by_asset_id,
+    _strict_existing_collections_for,
     get_qdrant_client,
 )
 from .config import load_env
 from .document_store import documents_jsonl_lock
 from .ingest_workflow import IngestWorkflow
 from .paths import (
+    get_asset_index_path,
     get_assets_dir,
     get_captions_dir,
     get_data_dir,
     get_documents_jsonl,
     get_parsed_dir,
+    physical_cache_id,
 )
 from .registry import get_backend
 from .registry import get_parser as get_parser
@@ -82,6 +82,9 @@ def dispatch_search(
     mode: str,
     image_path: str | Path | None,
     top_k: int,
+    collection: str | None = None,
+    metadata_filter: dict[str, object] | None = None,
+    principal: str | None = None,
 ) -> list:
     """Adapt the legacy primitive arguments into one typed search command."""
     return get_search_service().execute(
@@ -90,6 +93,9 @@ def dispatch_search(
             mode=coerce_search_mode(mode),
             image_path=image_path,
             top_k=top_k,
+            collection=collection,
+            metadata_filter=metadata_filter,
+            principal=principal,
         )
     )
 
@@ -121,28 +127,7 @@ class TaskStatus(str, Enum):
         return {cls.DONE, cls.PARTIAL, cls.FAILED, cls.INTERRUPTED, cls.CANCELLED}
 
 
-class AssetStatus(str, Enum):
-    """Per-asset progress in a task's ``asset_statuses`` map.
-
-    Parse stage: ``OK`` / ``SKIPPED`` / ``FAILED``.
-    Index stage: ``INDEXED`` / ``FAILED_INDEX``.
-    """
-
-    OK = "ok"
-    SKIPPED = "skipped"
-    FAILED = "failed"
-    INDEXED = "indexed"
-    FAILED_INDEX = "failed_index"
-
-    @classmethod
-    def retry_eligible(cls) -> set[AssetStatus | None]:
-        """The status values ``retry_task(failed_only=True)`` matches.
-
-        ``None`` (an asset that was added to the task after the per-asset
-        status map was introduced) is treated the same as ``FAILED`` to
-        keep the retry path honest about uncertainty.
-        """
-        return {cls.FAILED, cls.SKIPPED, cls.FAILED_INDEX, None}
+_RETRY_ELIGIBLE_VERSION_STATUSES = {"failed", "skipped", "failed_index", None}
 
 
 # ─── Data types ─────────────────────────────────────────────────────────
@@ -172,31 +157,21 @@ class ParseOptions:
 
 
 @dataclass
-class DeleteAssetReport:
-    """Per-asset cleanup outcome returned by ``IngestService.delete_asset``.
+class DocumentLifecycleReport:
+    """Outcome of deleting a logical document or one immutable version."""
 
-    All counts default to zero; ``errors`` collects human-readable
-    descriptions of any cleanup step that failed. The report is meant to
-    be JSON-serialised for the API and CLI. ``would_*`` flags are only
-    meaningful when ``dry_run=True``.
-    """
-
-    asset_id: str
-    file_deleted: bool = False
-    parsed_deleted: bool = False
-    captions_deleted: bool = False
-    documents_removed: int = 0
+    document_id: str
+    requested_version_id: str | None = None
+    deleted_version_ids: list[str] = field(default_factory=list)
+    versions_removed: int = 0
+    chunks_removed: int = 0
+    files_deleted: int = 0
+    parsed_caches_deleted: int = 0
+    caption_caches_deleted: int = 0
     text_collections_scanned: int = 0
     image_collections_scanned: int = 0
     errors: list[str] = field(default_factory=list)
     was_known: bool = True
-    dry_run: bool = False
-    would_delete_file: bool = False
-    would_delete_parsed: bool = False
-    would_delete_captions: bool = False
-    would_remove_documents: int = 0
-    would_tombstone: bool = False
-    qdrant_note: str = ""
 
 
 # ─── Task bookkeeping ────────────────────────────────────────────────────
@@ -295,12 +270,12 @@ class IngestService:
 
         ``force=True`` clears cached ``parsed/<id>/raw.jsonl`` before
         the retry so the parse loop re-reads from disk. ``failed_only=True``
-        narrows the retry set to assets whose status is missing,
+        narrows the retry set to document versions whose status is missing,
         ``failed`` or ``skipped``. The two flags compose: with both set,
-        only the failed assets are re-parsed and only their caches are
+        only the failed versions are re-parsed and only their caches are
         cleared — useful after upgrading the parser without touching
-        already-indexed assets. Legacy tasks without ``asset_statuses``
-        fall back to running every uploaded asset and emit a warning.
+        already-indexed versions. Tasks without ``version_statuses`` fall
+        back to running every uploaded version and emit a warning.
         """
         with self._TASKS_LOCK:
             original = self._tasks.get(task_id)
@@ -308,26 +283,27 @@ class IngestService:
             raise KeyError(f"unknown task {task_id}")
         if original.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL, TaskStatus.INTERRUPTED}:
             raise ValueError(f"task {task_id} cannot be retried (status={original.status})")
-        if failed_only and not original.asset_statuses:
+        if failed_only and not original.version_statuses:
             print(
-                f"[retry] task {task_id} has no per-asset statuses; treating failed_only as force"
+                f"[retry] task {task_id} has no per-version statuses; treating failed_only as force"
             )
             force = True
             failed_only = False
         assets = self._rebuild_assets_for_retry(original.uploaded_files)
         if not assets:
             raise FileNotFoundError(f"no assets available to retry for task {task_id}")
-        if failed_only and original.asset_statuses:
+        if failed_only and original.version_statuses:
             assets = [
                 a
                 for a in assets
-                if original.asset_statuses.get(a.asset_id) in AssetStatus.retry_eligible()
+                if original.version_statuses.get(self._version_status_key(a))
+                in _RETRY_ELIGIBLE_VERSION_STATUSES
             ]
             if not assets:
                 raise FileNotFoundError(f"no failed or skipped assets to retry for task {task_id}")
         options = self._deserialise_options(original.parse_options, assets)
         uploaded = [a.relative_path for a in assets]
-        preserved_statuses = dict(original.asset_statuses) if original.asset_statuses else {}
+        preserved_statuses = dict(original.version_statuses)
         if original.kind == "parse":
             rec = self._new_task(
                 kind="parse",
@@ -339,7 +315,7 @@ class IngestService:
                 force=force,
                 failed_only=failed_only,
             )
-            rec.asset_statuses = preserved_statuses
+            rec.version_statuses = preserved_statuses
             self._patch(rec)
             self._spawn(_run_parse_task, rec, options)
         elif original.kind == "ingest":
@@ -353,7 +329,7 @@ class IngestService:
                 force=force,
                 failed_only=failed_only,
             )
-            rec.asset_statuses = preserved_statuses
+            rec.version_statuses = preserved_statuses
             self._patch(rec)
             self._spawn(self._workflow.run, rec, options)
         else:
@@ -513,228 +489,214 @@ class IngestService:
         """Build a ``TaskRecord`` from a JSONL row, tolerating legacy records."""
         return task_from_dict(obj)
 
-    def list_assets(self) -> list[AssetIndexEntry]:
-        """Return the non-deleted rows from the asset index, newest first."""
-        return asset_index.list_active()
-
-    def get_asset_detail(self, asset_id: str) -> dict[str, object] | None:
-        """Return a read-only detail snapshot for ``asset_id``.
-
-        Combines the asset_index row with on-disk existence checks
-        (file, parsed/, captions/) so the web drawer can show whether
-        each derived artefact still exists. Returns ``None`` when the
-        asset is unknown or its relative_path is unsafe.
-        """
-        entry = asset_index.find_active_by_asset_id(asset_id)
-        if entry is None:
-            return None
-        relative_path = Path(entry.relative_path)
-        if (
-            relative_path.is_absolute()
-            or ".." in relative_path.parts
-            or len(relative_path.parts) < 1
-        ):
-            return None
-
-        assets_dir = get_assets_dir().resolve()
-        try:
-            file_path = (assets_dir / relative_path).resolve()
-        except OSError:
-            return None
-        file_exists = file_path.is_file() and file_path.is_relative_to(assets_dir)
-
-        parsed_dir = get_parsed_dir() / asset_id
-        parsed_raw = parsed_dir / "raw.jsonl"
-        # Captions are cached per asset. Image assets use a single-object
-        # ``.json`` (one VLM caption); documents with embedded figures use
-        # ``.jsonl`` (one JSON-per-figure, written by image_caption). Check
-        # both so the detail view reports the path that actually exists.
-        captions_candidates = [
-            get_captions_dir() / f"{asset_id}.jsonl",
-            get_captions_dir() / f"{asset_id}.json",
+    def delete_document(self, document_id: str) -> DocumentLifecycleReport:
+        """Delete every immutable version belonging to one logical document."""
+        records = [
+            record
+            for record in asset_index.load_records()
+            if record.document.document_id == document_id
         ]
-        captions_path = next(
-            (p for p in captions_candidates if p.exists()),
-            captions_candidates[0],
+        return self._delete_document_records(document_id, records)
+
+    def delete_document_version(
+        self,
+        document_id: str,
+        version_id: str,
+    ) -> DocumentLifecycleReport:
+        """Delete one exact version while retaining its sibling versions."""
+        records = [
+            record
+            for record in asset_index.load_records()
+            if record.document.document_id == document_id
+            and record.version.version_id == version_id
+        ]
+        return self._delete_document_records(
+            document_id,
+            records,
+            requested_version_id=version_id,
         )
 
-        try:
-            parsed_size = parsed_raw.stat().st_size if parsed_raw.exists() else 0
-        except OSError:
-            parsed_size = 0
-
-        return {
-            "asset_id": entry.asset_id,
-            "sha256": entry.sha256,
-            "source_type": entry.source_type,
-            "relative_path": entry.relative_path,
-            "title": entry.asset_title,
-            "ingested_at": entry.ingested_at,
-            "last_task_id": entry.last_task_id,
-            "tags": list(entry.tags),
-            "file_exists": file_exists,
-            "file_size": file_path.stat().st_size if file_exists else 0,
-            "parsed_exists": parsed_raw.exists(),
-            "parsed_size": parsed_size,
-            "parsed_dir": str(parsed_dir.relative_to(get_data_dir())),
-            "captions_exists": captions_path.exists(),
-            "captions_path": str(captions_path.relative_to(get_data_dir())),
-        }
-
-    def delete_asset(self, asset_id: str, *, dry_run: bool = False) -> DeleteAssetReport:
-        """Best-effort cleanup of every trace of ``asset_id``.
-
-        The function is idempotent: missing pieces are reported as
-        ``False``/``0`` rather than raising. The asset_index is only
-        tombstoned once per ``asset_id``; subsequent calls return a
-        ``was_known=False`` report so the API can choose to 404.
-
-        ``dry_run=True`` resolves every target but performs no writes:
-        file/parsed/captions are not removed, ``documents.jsonl`` is not
-        rewritten (only counted), Qdrant is not contacted, and the asset
-        index is not tombstoned. The Qdrant row counts in
-        ``text_collections_scanned`` / ``image_collections_scanned``
-        are reported as zero in dry-run with a note, because the
-        server cannot pre-flight point counts cheaply.
-        """
-        report = DeleteAssetReport(asset_id=asset_id, dry_run=dry_run)
-        if not asset_id:
-            report.was_known = False
-            report.errors.append("empty asset_id")
-            return report
-
-        index_entry = asset_index.find_active_by_asset_id(asset_id)
-        if index_entry is None:
+    def _delete_document_records(
+        self,
+        document_id: str,
+        records: list[asset_index.DocumentVersionRecord],
+        *,
+        requested_version_id: str | None = None,
+    ) -> DocumentLifecycleReport:
+        report = DocumentLifecycleReport(
+            document_id=document_id,
+            requested_version_id=requested_version_id,
+        )
+        if not document_id or not records:
             report.was_known = False
             return report
 
+        records = sorted(records, key=lambda record: record.version.version_number)
+        version_ids = {record.version.version_id for record in records}
+        report.deleted_version_ids = [record.version.version_id for record in records]
+        all_records = asset_index.load_records()
+        survivors = [
+            record for record in all_records if record.version.version_id not in version_ids
+        ]
+        docs_path = get_documents_jsonl()
+        index_path = get_asset_index_path()
+        docs_snapshot = docs_path.read_bytes() if docs_path.exists() else None
+        index_snapshot = index_path.read_bytes() if index_path.exists() else None
+
+        survivor_paths = {record.asset.relative_path for record in survivors}
+        survivor_cache_keys = {physical_cache_id(path) for path in survivor_paths}
         assets_dir = get_assets_dir().resolve()
-        relative_path = Path(index_entry.relative_path)
-        if (
-            relative_path.is_absolute()
-            or ".." in relative_path.parts
-            or len(relative_path.parts) < 1
-        ):
-            report.errors.append(f"unsafe relative_path in asset_index: {relative_path}")
+        staging_root = get_data_dir() / ".delete-staging" / uuid.uuid4().hex
+        staged: list[tuple[Path, Path]] = []
+        for record in records:
+            relative_path = Path(record.asset.relative_path)
+            if relative_path.is_absolute() or ".." in relative_path.parts:
+                report.errors.append(f"unsafe relative_path in document index: {relative_path}")
+                continue
+            if record.asset.relative_path not in survivor_paths:
+                try:
+                    file_path = (assets_dir / relative_path).resolve()
+                    if not file_path.is_relative_to(assets_dir):
+                        raise OSError(f"asset path escapes asset root: {relative_path}")
+                    if _stage_delete_path(file_path, staging_root, staged):
+                        report.files_deleted += 1
+                except OSError as exc:
+                    report.errors.append(
+                        f"file delete failed for {record.version.version_id}: {exc}"
+                    )
+
+            cache_key = physical_cache_id(record.asset.relative_path)
+            if cache_key in survivor_cache_keys:
+                continue
+            parsed_dir = get_parsed_dir() / cache_key
+            try:
+                if _stage_delete_path(parsed_dir, staging_root, staged):
+                    report.parsed_caches_deleted += 1
+            except OSError as exc:
+                report.errors.append(
+                    f"parsed cache delete failed for {record.version.version_id}: {exc}"
+                )
+            for suffix in (".jsonl", ".json"):
+                caption_path = get_captions_dir() / f"{cache_key}{suffix}"
+                try:
+                    if _stage_delete_path(caption_path, staging_root, staged):
+                        report.caption_caches_deleted += 1
+                except OSError as exc:
+                    report.errors.append(
+                        f"caption cache delete failed for {record.version.version_id}: {exc}"
+                    )
+
+        if report.errors:
+            report.errors.extend(_rollback_staged_paths(staged))
+            _remove_empty_staging_root(staging_root)
+            report.files_deleted = 0
+            report.parsed_caches_deleted = 0
+            report.caption_caches_deleted = 0
+            report.errors.append(
+                "document index retained because cleanup reported errors; fix and retry"
+            )
             return report
 
-        # 1. file on disk
         try:
-            file_path = (assets_dir / relative_path).resolve()
-            if file_path.is_relative_to(assets_dir) and file_path.is_file():
-                if dry_run:
-                    report.would_delete_file = True
-                else:
-                    file_path.unlink()
-                    report.file_deleted = True
-        except OSError as exc:
-            report.errors.append(f"file delete failed: {exc}")
-
-        # 2. parsed/<asset_id>/
-        try:
-            parsed_dir = get_parsed_dir() / asset_id
-            if parsed_dir.exists():
-                if dry_run:
-                    report.would_delete_parsed = True
-                else:
-                    shutil.rmtree(parsed_dir, ignore_errors=True)
-                    report.parsed_deleted = True
-        except OSError as exc:
-            report.errors.append(f"parsed delete failed: {exc}")
-
-        # 3. captions/<asset_id>.{jsonl,json} — document embedded figures
-        #    use .jsonl (one JSON per figure), image assets use .json. Clean
-        #    both so no caption cache is left behind on delete.
-        for cap_name in (f"{asset_id}.jsonl", f"{asset_id}.json"):
-            try:
-                captions_path = get_captions_dir() / cap_name
-                if captions_path.exists():
-                    if dry_run:
-                        report.would_delete_captions = True
-                    else:
-                        captions_path.unlink()
-                        report.captions_deleted = True
-            except OSError as exc:
-                report.errors.append(f"captions delete failed: {exc}")
-
-        # 4. documents.jsonl rewrite (filter rows whose metadata.asset_id matches)
-        try:
-            docs_path = get_documents_jsonl()
-            if docs_path.exists():
-                removed = 0
-                with docs_path.open("r", encoding="utf-8") as src:
-                    for line in src:
-                        stripped = line.strip()
-                        if not stripped:
-                            continue
-                        try:
-                            obj = json.loads(stripped)
-                        except json.JSONDecodeError:
-                            continue
-                        meta = obj.get("metadata") if isinstance(obj, dict) else None
-                        if isinstance(meta, dict) and str(meta.get("asset_id", "")) == asset_id:
-                            removed += 1
-                if dry_run:
-                    report.would_remove_documents = removed
-                else:
-                    removed = _remove_asset_rows_from_documents_jsonl({asset_id})
-                    report.documents_removed = removed
+            report.chunks_removed = _remove_document_version_rows_from_documents_jsonl(
+                document_id,
+                version_ids,
+            )
         except OSError as exc:
             report.errors.append(f"documents.jsonl rewrite failed: {exc}")
+            report.errors.extend(_rollback_staged_paths(staged))
+            _remove_empty_staging_root(staging_root)
+            report.files_deleted = 0
+            report.parsed_caches_deleted = 0
+            report.caption_caches_deleted = 0
+            return report
 
-        # 5. Qdrant text + image collections
-        if dry_run:
-            # Preview which collections would be scanned. Resolved from the
-            # live server (not the active-cache) so the count is accurate even
-            # in a process that never ingested — previously dry_run always
-            # reported 0, hiding the points that would be left behind.
-            try:
-                client = get_qdrant_client()
-                tcols = (
-                    [self._settings.qdrant_active_text_collection]
-                    if (self._settings.qdrant_active_text_collection)
-                    else _existing_collections_for(client, TEXT_COLLECTION_BASE)
-                )
-                icols = (
-                    [self._settings.qdrant_active_image_collection]
-                    if (self._settings.qdrant_active_image_collection)
-                    else _existing_collections_for(client, IMAGE_COLLECTION_BASE)
-                )
-                report.text_collections_scanned = len(tcols)
-                report.image_collections_scanned = len(icols)
-                report.qdrant_note = (
-                    f"would scan {len(tcols)} text + {len(icols)} image collection(s)"
-                )
-            except Exception as exc:
-                report.qdrant_note = f"would scan text+image collections (listing failed: {exc})"
-        else:
-            try:
-                counts = delete_points_by_asset_id(asset_id)
-                report.text_collections_scanned = counts.get("text", 0)
-                report.image_collections_scanned = counts.get("image", 0)
-            except Exception as exc:
-                report.errors.append(f"qdrant delete failed: {exc}")
+        try:
+            report.versions_removed = _remove_document_version_records(document_id, version_ids)
+        except OSError as exc:
+            report.errors.append(f"document index rewrite failed: {exc}")
+            _restore_file_snapshot(docs_path, docs_snapshot)
+            report.errors.extend(_rollback_staged_paths(staged))
+            _remove_empty_staging_root(staging_root)
+            report.chunks_removed = 0
+            report.files_deleted = 0
+            report.parsed_caches_deleted = 0
+            report.caption_caches_deleted = 0
+            return report
 
-        # 6. asset_index tombstone — only if the destructive steps above
-        # all succeeded. Otherwise we would leave "Qdrant still has the
-        # point but the index says it's gone", and the leftover point
-        # is unreachable for any future cleanup. The caller can still
-        # inspect ``report.errors`` to decide whether to retry the
-        # tombstone separately.
-        if dry_run:
-            report.would_tombstone = True
-        elif not report.errors:
-            try:
-                asset_index.mark_deleted(asset_id)
-            except OSError as exc:
-                report.errors.append(f"asset_index mark_deleted failed: {exc}")
-        else:
-            report.errors.append(
-                "skipping tombstone: destructive steps reported errors; "
-                "fix and re-run delete_asset to retry."
-            )
-
+        try:
+            counts = self._delete_qdrant_versions(version_ids)
+            report.text_collections_scanned = counts["text"]
+            report.image_collections_scanned = counts["image"]
+        except Exception as exc:
+            report.errors.append(f"qdrant delete failed: {exc}")
+            _restore_file_snapshot(docs_path, docs_snapshot)
+            _restore_file_snapshot(index_path, index_snapshot)
+            report.errors.extend(_rollback_staged_paths(staged))
+            _remove_empty_staging_root(staging_root)
+            report.chunks_removed = 0
+            report.versions_removed = 0
+            report.files_deleted = 0
+            report.parsed_caches_deleted = 0
+            report.caption_caches_deleted = 0
+            return report
+        try:
+            if staging_root.exists():
+                shutil.rmtree(staging_root)
+        except OSError as exc:
+            report.errors.append(f"staged physical cleanup failed: {exc}")
+        self._invalidate_search_caches()
         return report
+
+    def _delete_qdrant_versions(self, version_ids: set[str]) -> dict[str, int]:
+        """Delete exact version payloads from every active dimension collection."""
+        if not version_ids:
+            return {"text": 0, "image": 0}
+        from qdrant_client.http import models
+
+        client = get_qdrant_client()
+        groups = {
+            "text": list(
+                dict.fromkeys(
+                    [
+                        *(
+                            [self._settings.qdrant_active_text_collection]
+                            if self._settings.qdrant_active_text_collection
+                            else []
+                        ),
+                        *_strict_existing_collections_for(client, TEXT_COLLECTION_BASE),
+                    ]
+                )
+            ),
+            "image": list(
+                dict.fromkeys(
+                    [
+                        *(
+                            [self._settings.qdrant_active_image_collection]
+                            if self._settings.qdrant_active_image_collection
+                            else []
+                        ),
+                        *_strict_existing_collections_for(client, IMAGE_COLLECTION_BASE),
+                    ]
+                )
+            ),
+        }
+        selector = models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="version_id",
+                        match=models.MatchAny(any=sorted(version_ids)),
+                    )
+                ]
+            )
+        )
+        counts = {"text": 0, "image": 0}
+        for kind, collections in groups.items():
+            for collection in collections:
+                client.delete(collection_name=collection, points_selector=selector)
+                counts[kind] += 1
+        return counts
 
     # ─── Internals ─────────────────────────────────────────────────────
 
@@ -1018,9 +980,19 @@ class IngestService:
                     sniffed,
                     rel_path.as_posix(),
                     asset_dir=assets_dir,
+                    asset_id_override=physical_cache_id(rel_path.as_posix()),
                 )
             )
         return rebuilt
+
+    @staticmethod
+    def _version_status_key(asset: Asset) -> str:
+        record = asset_index.find_by_relative_path(asset.relative_path)
+        if record is None:
+            raise ValueError(
+                f"no persisted document version for asset path {asset.relative_path!r}"
+            )
+        return record.version.version_id
 
 
 # ─── Worker functions (module-level so threading can call them) ────────
@@ -1031,17 +1003,92 @@ def _run_parse_task(service: IngestService, rec: TaskRecord, options: ParseOptio
     service._workflow.run_parse(service, rec, options)
 
 
-def _remove_asset_rows_from_documents_jsonl(asset_ids: set[str]) -> int:
-    """Drop every ``documents.jsonl`` row whose ``metadata.asset_id`` is in ``asset_ids``.
+def _remove_document_version_records(document_id: str, version_ids: set[str]) -> int:
+    """Atomically remove exact versions without losing concurrent appends."""
+    target = get_asset_index_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    with asset_index._index_guard(target, exclusive=True):
+        current = asset_index._load_records_unlocked(target)
+        records = [
+            record
+            for record in current
+            if not (
+                record.document.document_id == document_id
+                and record.version.version_id in version_ids
+            )
+        ]
+        removed = len(current) - len(records)
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                for record in records:
+                    handle.write(json.dumps(record.to_record(), ensure_ascii=False) + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+    return removed
 
-    Atomic (tmp file + ``os.replace``), returns the number of rows removed.
-    Robust to a missing file (returns 0) and to per-line JSON decode errors
-    (those lines are kept as-is rather than aborting the rewrite). Shared by
-    ``delete_asset`` (one asset) and the force-retry parse path (the assets
-    whose ``parsed/<id>/`` cache was just cleared, so the re-parse does not
-    append duplicate chunk rows next to the originals).
-    """
-    if not asset_ids:
+
+def _restore_file_snapshot(target: Path, snapshot: bytes | None) -> None:
+    """Atomically restore a local index after a later delete step fails."""
+    if snapshot is None:
+        target.unlink(missing_ok=True)
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.rollback")
+    try:
+        temporary.write_bytes(snapshot)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _stage_delete_path(
+    source: Path,
+    staging_root: Path,
+    staged: list[tuple[Path, Path]],
+) -> bool:
+    """Atomically move one physical deletion target into reversible staging."""
+    if not source.exists():
+        return False
+    staging_root.mkdir(parents=True, exist_ok=True)
+    destination = staging_root / f"{len(staged):04d}"
+    os.replace(source, destination)
+    staged.append((source, destination))
+    return True
+
+
+def _rollback_staged_paths(staged: list[tuple[Path, Path]]) -> list[str]:
+    """Restore staged files/directories in reverse order and report failures."""
+    errors: list[str] = []
+    for source, staged_path in reversed(staged):
+        try:
+            if not staged_path.exists():
+                continue
+            source.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(staged_path, source)
+        except OSError as exc:
+            errors.append(f"physical rollback failed for {source}: {exc}")
+    return errors
+
+
+def _remove_empty_staging_root(staging_root: Path) -> None:
+    """Remove only empty staging directories, preserving unrecovered originals."""
+    with suppress(FileNotFoundError, OSError):
+        staging_root.rmdir()
+    with suppress(FileNotFoundError, OSError):
+        staging_root.parent.rmdir()
+
+
+def _remove_document_version_rows_from_documents_jsonl(
+    document_id: str,
+    version_ids: set[str],
+) -> int:
+    """Remove exact document-version chunks while preserving every sibling scope."""
+    if not document_id or not version_ids:
         return 0
     docs_path = get_documents_jsonl()
     if not docs_path.exists():
@@ -1070,8 +1117,12 @@ def _remove_asset_rows_from_documents_jsonl(asset_ids: set[str]) -> int:
                     except json.JSONDecodeError:
                         dst.write(line)
                         continue
-                    meta = obj.get("metadata") if isinstance(obj, dict) else None
-                    if isinstance(meta, dict) and str(meta.get("asset_id", "")) in asset_ids:
+                    version = obj.get("document_version") if isinstance(obj, dict) else None
+                    if (
+                        isinstance(version, dict)
+                        and version.get("document_id") == document_id
+                        and version.get("version_id") in version_ids
+                    ):
                         removed += 1
                         continue
                     dst.write(line)

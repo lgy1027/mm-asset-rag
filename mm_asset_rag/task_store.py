@@ -2,7 +2,7 @@
 
 SQLite remains the source of truth.  The legacy ``tasks.jsonl`` migration
 and the best-effort ``tasks.jsonl.last`` debug tail live here because they
-are persistence details; asset files and ``documents.jsonl`` deliberately do
+are persistence details; document-version files and ``documents.jsonl`` deliberately do
 not.
 """
 
@@ -38,7 +38,7 @@ class TaskRecord:
     origin_task_id: str | None = None
     force: bool = False
     failed_only: bool = False
-    asset_statuses: dict[str, str] = field(default_factory=dict)
+    version_statuses: dict[str, str] = field(default_factory=dict)
 
 
 def task_from_dict(obj: dict[str, object]) -> TaskRecord:

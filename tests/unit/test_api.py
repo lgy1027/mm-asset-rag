@@ -57,7 +57,7 @@ def test_health_endpoint_reports_status(client: TestClient) -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["vector_backend"] == "qdrant"
-    assert body["assets"] == 0
+    assert body["files"] == 0
     assert body["version"] == __version__
     # Shallow health has no config-completeness probes.
     assert "llm_configured" not in body
@@ -160,7 +160,13 @@ def test_search_endpoint_text_mode(client: TestClient) -> None:
     with patch("mm_asset_rag.api.dispatch_search", return_value=[]):
         response = client.post(
             "/search",
-            json={"query": "anything", "mode": "text", "top_k": 3},
+            json={
+                "query": "anything",
+                "mode": "text",
+                "top_k": 3,
+                "collection": "team",
+                "principal": "alice",
+            },
         )
     assert response.status_code == 200
     body = response.json()
@@ -171,7 +177,7 @@ def test_search_endpoint_text_mode(client: TestClient) -> None:
 def test_search_endpoint_image_to_image_requires_path(client: TestClient) -> None:
     response = client.post(
         "/search",
-        json={"query": "x", "mode": "image-to-image"},
+        json={"query": "x", "mode": "image-to-image", "collection": "team", "principal": "alice"},
     )
     assert response.status_code == 400
     assert "image_path" in response.json()["detail"]
@@ -181,7 +187,13 @@ def test_search_endpoint_rejects_absolute_image_path(client: TestClient) -> None
     """Image path validation rejects absolute paths at the API layer."""
     response = client.post(
         "/search",
-        json={"query": "x", "mode": "image-to-image", "image_path": "/etc/passwd"},
+        json={
+            "query": "x",
+            "mode": "image-to-image",
+            "image_path": "/etc/passwd",
+            "collection": "team",
+            "principal": "alice",
+        },
     )
     assert response.status_code == 422
 
@@ -189,7 +201,13 @@ def test_search_endpoint_rejects_absolute_image_path(client: TestClient) -> None
 def test_search_endpoint_rejects_parent_traversal(client: TestClient) -> None:
     response = client.post(
         "/search",
-        json={"query": "x", "mode": "hybrid", "image_path": "../escape.png"},
+        json={
+            "query": "x",
+            "mode": "hybrid",
+            "image_path": "../escape.png",
+            "collection": "team",
+            "principal": "alice",
+        },
     )
     assert response.status_code == 422
 
@@ -199,7 +217,16 @@ def test_answer_endpoint_returns_fallback(client: TestClient) -> None:
         "mm_asset_rag.api.answer_question",
         return_value={"question": "q", "answer": "no LLM configured", "sources": []},
     ):
-        response = client.post("/answer", json={"question": "q", "top_k": 3})
+        response = client.post(
+            "/answer",
+            json={
+                "question": "q",
+                "top_k": 3,
+                "collection": "team",
+                "principal": "alice",
+                "min_confidence": 0.5,
+            },
+        )
     assert response.status_code == 200
     assert response.json()["answer"] == "no LLM configured"
 
@@ -213,17 +240,116 @@ def test_answer_endpoint_supplies_the_search_service(client: TestClient) -> None
             return_value={"question": "q", "answer": "ok", "sources": []},
         ) as answer_question,
     ):
-        response = client.post("/answer", json={"question": "q", "top_k": 3})
+        response = client.post(
+            "/answer",
+            json={
+                "question": "q",
+                "top_k": 3,
+                "collection": "team",
+                "principal": "alice",
+                "min_confidence": 0.5,
+            },
+        )
 
     assert response.status_code == 200
     assert answer_question.call_args.kwargs["search_service"] is service
+    assert answer_question.call_args.kwargs["collection"] == "team"
+    assert answer_question.call_args.kwargs["principal"] == "alice"
+
+
+def test_search_requires_collection_and_principal_access_context(client: TestClient) -> None:
+    response = client.post("/search", json={"query": "anything", "mode": "text"})
+    assert response.status_code == 422
+    assert {error["loc"][-1] for error in response.json()["detail"]} >= {"collection", "principal"}
+
+
+def test_search_response_exposes_document_version_chunk_without_asset_id(
+    client: TestClient,
+) -> None:
+    from mm_asset_rag.schema import SearchHit
+
+    hit = SearchHit(
+        route="text",
+        score=0.9,
+        asset_id="internal-only-cache-key",
+        title="Design",
+        source_type="pdf",
+        source_path="pdfs/design.pdf",
+        evidence="evidence",
+        metadata={
+            "document_id": "design",
+            "version_id": "design@1-deadbeefcafe",
+            "chunk_id": "design@1-deadbeefcafe:0",
+            "page": 2,
+        },
+    )
+    with patch("mm_asset_rag.api.dispatch_search", return_value=[hit]):
+        response = client.post(
+            "/search",
+            json={"query": "design", "collection": "team", "principal": "alice"},
+        )
+    assert response.status_code == 200
+    payload = response.json()["hits"][0]
+    assert payload["document_id"] == "design"
+    assert payload["version_id"] == "design@1-deadbeefcafe"
+    assert payload["chunk_id"] == "design@1-deadbeefcafe:0"
+    assert "asset_id" not in json.dumps(payload)
 
 
 def test_eval_endpoint_runs_cases(client: TestClient) -> None:
     with patch("mm_asset_rag.api.run_eval", return_value=[]):
-        response = client.post("/eval", json={})
+        response = client.post("/eval", json={"collection": "team", "principal": "alice"})
     assert response.status_code == 200
     assert response.json() == {"results": []}
+
+
+def test_eval_endpoint_requires_and_forwards_access_context(client: TestClient) -> None:
+    assert client.post("/eval", json={}).status_code == 422
+    with patch("mm_asset_rag.api.run_eval", return_value=[]) as run_eval_stub:
+        response = client.post(
+            "/eval",
+            json={
+                "collection": "team",
+                "principal": "alice",
+                "metadata_filter": {"department": "research"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert run_eval_stub.call_args.kwargs["collection"] == "team"
+    assert run_eval_stub.call_args.kwargs["principal"] == "alice"
+    assert run_eval_stub.call_args.kwargs["metadata_filter"] == {"department": "research"}
+
+
+def test_chat_refusal_has_no_outer_sources(client: TestClient) -> None:
+    from mm_asset_rag.schema import SearchHit
+
+    hit = SearchHit(
+        route="text",
+        score=0.1,
+        asset_id="cache",
+        title="Weak",
+        source_type="pdf",
+        source_path="pdfs/weak.pdf",
+        metadata={
+            "document_id": "weak",
+            "version_id": "weak@1-hash",
+            "chunk_id": "weak@1-hash:0",
+        },
+    )
+    with patch("mm_asset_rag.api.dispatch_search", return_value=[hit]):
+        response = client.post(
+            "/chat",
+            json={
+                "question": "q",
+                "collection": "team",
+                "principal": "alice",
+                "min_confidence": 0.5,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["sources"] == []
 
 
 def test_eval_endpoint_rejects_traversal_cases_path(client: TestClient) -> None:
@@ -254,12 +380,19 @@ def test_eval_endpoint_resolves_cases_in_eval_cases_dir(client: TestClient) -> N
 
     captured: dict[str, object] = {}
 
-    def fake_run_eval(top_k, *, cases_path=None):
+    def fake_run_eval(top_k, *, cases_path=None, collection, principal, metadata_filter=None):
         captured["cases_path"] = cases_path
         return []
 
     with patch("mm_asset_rag.api.run_eval", side_effect=fake_run_eval):
-        response = client.post("/eval", json={"cases_path": "user_case.json"})
+        response = client.post(
+            "/eval",
+            json={
+                "cases_path": "user_case.json",
+                "collection": "team",
+                "principal": "alice",
+            },
+        )
     assert response.status_code == 200
     forwarded = captured.get("cases_path")
     assert forwarded is not None
@@ -383,7 +516,16 @@ def test_blocking_route_dispatches_via_to_thread(client: TestClient) -> None:
         ) as to_thread,
         patch("mm_asset_rag.api.dispatch_search", return_value=[]),
     ):
-        response = client.post("/search", json={"query": "x", "mode": "text", "top_k": 3})
+        response = client.post(
+            "/search",
+            json={
+                "query": "x",
+                "mode": "text",
+                "top_k": 3,
+                "collection": "team",
+                "principal": "alice",
+            },
+        )
     assert response.status_code == 200
     assert to_thread.called, "/search must run dispatch_search via asyncio.to_thread"
 
@@ -414,6 +556,9 @@ def test_upload_confirm_spawns_ingest_task(
                         "preview_id": preview_id,
                         "title": "Edited Scene",
                         "tags": ["scene", "manual"],
+                        "document_id": "edited-scene",
+                        "collection": "team",
+                        "allowed_principals": ["alice"],
                     }
                 ],
             },
@@ -546,7 +691,14 @@ def test_chat_stream_endpoint_emits_sources_and_done(client: TestClient) -> None
     ):
         response = client.post(
             "/chat/stream",
-            json={"question": "hi", "mode": "text", "top_k": 3},
+            json={
+                "question": "hi",
+                "mode": "text",
+                "top_k": 3,
+                "collection": "team",
+                "principal": "alice",
+                "min_confidence": 0.5,
+            },
         )
     assert response.status_code == 200
     assert "x-ndjson" in response.headers["content-type"]
@@ -564,7 +716,13 @@ def test_chat_stream_endpoint_emits_sources_and_done(client: TestClient) -> None
 def test_chat_stream_image_to_image_requires_path(client: TestClient) -> None:
     response = client.post(
         "/chat/stream",
-        json={"question": "x", "mode": "image-to-image"},
+        json={
+            "question": "x",
+            "mode": "image-to-image",
+            "collection": "team",
+            "principal": "alice",
+            "min_confidence": 0.5,
+        },
     )
     assert response.status_code == 200
     assert "x-ndjson" in response.headers["content-type"]
@@ -580,7 +738,7 @@ def test_chat_stream_runs_through_to_thread(client: TestClient) -> None:
     """
     import time as _time
 
-    def slow_chunks(question, hits):
+    def slow_chunks(question, hits, *, min_confidence):
         for w in ["slow", " ", "stream"]:
             _time.sleep(0.001)
             yield w
@@ -591,7 +749,14 @@ def test_chat_stream_runs_through_to_thread(client: TestClient) -> None:
     ):
         response = client.post(
             "/chat/stream",
-            json={"question": "hi", "mode": "text", "top_k": 3},
+            json={
+                "question": "hi",
+                "mode": "text",
+                "top_k": 3,
+                "collection": "team",
+                "principal": "alice",
+                "min_confidence": 0.5,
+            },
         )
     assert response.status_code == 200
     events = [json.loads(line) for line in response.text.split("\n") if line.strip()]
@@ -779,53 +944,103 @@ def test_iter_sync_in_thread_stop_signals_producer() -> None:
     assert producer_exited.is_set()
 
 
-def test_list_assets_endpoint_returns_index(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        from mm_asset_rag.asset_index import AssetIndexEntry
+def test_document_lifecycle_requires_and_enforces_access_context(
+    client: TestClient, tmp_home
+) -> None:
+    from mm_asset_rag.asset_index import DocumentVersionRecord
+    from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, DocumentVersion, Source
 
-        fake_service = mock_get_service.return_value
-        fake_service.list_assets.return_value = [
-            AssetIndexEntry(
-                asset_id="alpha",
-                sha256="abc",
-                source_type="image",
-                relative_path="images/alpha.png",
-                asset_title="Alpha",
-            )
-        ]
-        response = client.get("/assets")
-    assert response.status_code == 200
-    body = response.json()
-    assert len(body["assets"]) == 1
-    assert body["assets"][0]["asset_id"] == "alpha"
+    document = Document(
+        document_id="alpha",
+        title="Alpha",
+        source=Source(source_id="upload:alpha"),
+        access_policy=AccessPolicy(
+            collection="team",
+            allowed_principals=("alice",),
+            metadata={"department": "research", "internal_note": "do-not-disclose"},
+        ),
+    )
+    record = DocumentVersionRecord(
+        document=document,
+        version=DocumentVersion.create(document, "a" * 64),
+        asset=Asset(content_hash="a" * 64, source_type="image", relative_path="images/alpha.png"),
+    )
+    other_document = Document(
+        document_id="private",
+        title="Private",
+        source=Source(source_id="upload:private"),
+        access_policy=AccessPolicy(collection="team", allowed_principals=("bob",)),
+    )
+    other_record = DocumentVersionRecord(
+        document=other_document,
+        version=DocumentVersion.create(other_document, "b" * 64),
+        asset=Asset(content_hash="b" * 64, source_type="image", relative_path="images/private.png"),
+    )
+    from mm_asset_rag.paths import get_parsed_dir, physical_cache_id
 
+    image_path = (
+        get_parsed_dir() / physical_cache_id(record.asset.relative_path) / "images" / "figure.png"
+    )
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"image-bytes")
 
-def test_delete_asset_endpoint_200(client: TestClient) -> None:
+    with patch("mm_asset_rag.api.asset_index.load_records", return_value=[record, other_record]):
+        response = client.get("/documents")
+        assert response.status_code == 422
 
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        from mm_asset_rag.service import DeleteAssetReport
-
-        fake_service = mock_get_service.return_value
-        fake_service.delete_asset.return_value = DeleteAssetReport(
-            asset_id="alpha", file_deleted=True, was_known=True
+        response = client.get(
+            "/documents",
+            params={"collection": "team", "principal": "alice"},
         )
-        response = client.delete("/assets/alpha")
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["document_id"] for item in body["documents"]] == ["alpha"]
+        serialized = json.dumps(body)
+        assert "allowed_principals" not in serialized
+        assert "internal_note" not in serialized
+        assert "asset_id" not in serialized
+
+        response = client.get(
+            "/documents/alpha",
+            params={"collection": "team", "principal": "alice"},
+        )
+        assert response.status_code == 200
+        detail = json.dumps(response.json())
+        assert "allowed_principals" not in detail
+        assert "internal_note" not in detail
+
+        response = client.get(
+            "/documents/alpha",
+            params={
+                "collection": "team",
+                "principal": "alice",
+                "metadata_filter": '{"department":"sales"}',
+            },
+        )
+        assert response.status_code == 404
+        response = client.get(
+            "/documents/private",
+            params={"collection": "team", "principal": "alice"},
+        )
+        assert response.status_code == 404
+
+        response = client.get(
+            f"/parsed-image/alpha/alpha@1-{'a' * 64}/figure.png",
+            params={"collection": "team", "principal": "bob"},
+        )
+        assert response.status_code == 404
+        response = client.get(
+            f"/parsed-image/alpha/alpha@1-{'a' * 64}/figure.png",
+            params={"collection": "team", "principal": "alice"},
+        )
     assert response.status_code == 200
-    body = response.json()
-    assert body["asset_id"] == "alpha"
-    assert body["file_deleted"] is True
+    assert response.content == b"image-bytes"
 
 
-def test_delete_asset_endpoint_404(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        fake_service = mock_get_service.return_value
-        fake_service.delete_asset.return_value.was_known = False
-        response = client.delete("/assets/missing")
+def test_asset_routes_are_not_public_lifecycle_endpoints(client: TestClient) -> None:
+    response = client.get("/assets")
     assert response.status_code == 404
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        fake_service = mock_get_service.return_value
-        fake_service.delete_asset.return_value.was_known = False
-        response = client.delete("/assets/missing")
+    response = client.delete("/assets/internal-only-cache-key")
     assert response.status_code == 404
 
 
@@ -875,40 +1090,6 @@ def test_task_stream_endpoint_unknown_yields_error(client: TestClient) -> None:
     assert response.status_code == 200
     events = [json.loads(line) for line in response.text.split("\n") if line.strip()]
     assert any(e.get("event") == "error" for e in events)
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        fake_service = mock_get_service.return_value
-        fake_service.delete_asset.return_value.was_known = False
-        response = client.delete("/assets/missing")
-    assert response.status_code == 404
-
-
-def test_get_asset_endpoint_returns_detail(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        fake_service = mock_get_service.return_value
-        fake_service.get_asset_detail.return_value = {
-            "asset_id": "alpha",
-            "sha256": "abc",
-            "source_type": "image",
-            "relative_path": "images/alpha.png",
-            "title": "Alpha",
-            "tags": ["beach"],
-            "file_exists": True,
-            "parsed_exists": False,
-            "captions_exists": False,
-        }
-        response = client.get("/assets/alpha")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["asset_id"] == "alpha"
-    assert body["tags"] == ["beach"]
-
-
-def test_get_asset_endpoint_404(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        fake_service = mock_get_service.return_value
-        fake_service.get_asset_detail.return_value = None
-        response = client.get("/assets/missing")
-    assert response.status_code == 404
 
 
 # ─── Auth (MMRAG_API_TOKEN) ──────────────────────────────────────────────
@@ -951,9 +1132,11 @@ def test_auth_enabled_blocks_write_without_token(client: TestClient, monkeypatch
     assert response.headers.get("www-authenticate") is not None
 
 
-def test_auth_enabled_blocks_delete_without_token(client: TestClient, monkeypatch) -> None:
+def test_auth_enabled_blocks_document_lifecycle_write_without_token(
+    client: TestClient, monkeypatch
+) -> None:
     _with_token_env(monkeypatch, "secret")
-    response = client.delete("/assets/whatever")
+    response = client.post("/upload/confirm", json={"edits": []})
     assert response.status_code == 401
 
 
@@ -981,13 +1164,12 @@ def test_auth_accepts_bearer_header(client: TestClient, monkeypatch) -> None:
 
 
 def test_auth_read_endpoints_stay_open_when_token_set(client: TestClient, monkeypatch) -> None:
-    """Read endpoints (/search /answer /assets /tasks) stay open even with a
+    """Read endpoints (/search /answer /documents /tasks) stay open even with a
     token configured — the bundled web UI's same-origin fetches carry no
     Authorization header."""
     _with_token_env(monkeypatch, "secret")
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
-        mock_get_service.return_value.list_assets.return_value = []
-        response = client.get("/assets")
+    with patch("mm_asset_rag.api.asset_index.load_records", return_value=[]):
+        response = client.get("/documents", params={"collection": "team", "principal": "alice"})
     assert response.status_code == 200
 
 
@@ -1170,6 +1352,10 @@ def test_answer_chat_endpoints_require_token_when_set(client: TestClient, monkey
     # /chat/stream is an LLM-quota endpoint too — guarded the same way.
     assert client.post("/chat/stream", json={"question": "q"}).status_code == 401
     # Non-streaming read endpoint stays open.
-    with patch("mm_asset_rag.api.get_service") as m:
-        m.return_value.list_assets.return_value = []
-        assert client.get("/assets").status_code == 200
+    with patch("mm_asset_rag.api.asset_index.load_records", return_value=[]):
+        assert (
+            client.get(
+                "/documents", params={"collection": "team", "principal": "alice"}
+            ).status_code
+            == 200
+        )

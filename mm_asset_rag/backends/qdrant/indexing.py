@@ -22,7 +22,7 @@ from ...embedders import (
     get_default_image_embedder,
     get_default_text_embedder,
 )
-from ...paths import get_assets_dir, get_indexes_dir
+from ...paths import get_assets_dir, get_indexes_dir, physical_cache_id
 from ...settings import get_settings
 from .client import get_qdrant_client
 from .collections import (
@@ -260,15 +260,20 @@ def _select_top_chunks_per_pdf(
 
     by_asset: dict[str, list] = defaultdict(list)
     for d in documents:
-        by_asset[d.metadata.get("asset_id", "")].append(d)
+        document_id = getattr(d, "document_id", None) or d.metadata.get("asset_id", "")
+        by_asset[document_id].append(d)
 
     keep: list = []
-    for asset_id, group in by_asset.items():
+    for document_id, group in by_asset.items():
         if len(group) <= max_per_pdf:
             keep.extend(group)
             continue
         sample = group[0]
-        title = sample.metadata.get("asset_title") or asset_id.replace("_", " ")
+        title = (
+            sample.metadata.get("title")
+            or sample.metadata.get("asset_title")
+            or document_id.replace("_", " ")
+        )
         query_tokens = _tokenize_for_bm25(title)
         if not query_tokens:
             # Title is empty / punctuation-only — fall back to first N
@@ -287,6 +292,77 @@ def _select_top_chunks_per_pdf(
 
 def stable_point_id(value: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, value))
+
+
+def _without_asset_id(value: object) -> object:
+    """Copy parser metadata while removing legacy physical-asset identifiers."""
+    if isinstance(value, dict):
+        return {key: _without_asset_id(item) for key, item in value.items() if key != "asset_id"}
+    if isinstance(value, list):
+        return [_without_asset_id(item) for item in value]
+    if isinstance(value, tuple):
+        return [_without_asset_id(item) for item in value]
+    return value
+
+
+def _v2_payload(chunk) -> dict[str, object]:
+    """Build the explicit document/version/chunk/source/policy payload."""
+    return {
+        "document_id": chunk.document_id,
+        "title": str(chunk.metadata.get("title") or chunk.metadata.get("asset_title") or ""),
+        "version_id": chunk.document_version.version_id,
+        "version_number": chunk.document_version.version_number,
+        "chunk_id": chunk.chunk_id,
+        "ordinal": chunk.ordinal,
+        "text": chunk.text,
+        "source_id": chunk.source.source_id,
+        "source_uri": chunk.source.uri,
+        "source_provider": chunk.source.provider,
+        "source_type": chunk.asset.source_type,
+        "source_path": chunk.asset.relative_path,
+        "cache_id": physical_cache_id(chunk.asset.relative_path),
+        "collection": chunk.access_policy.collection,
+        "allowed_principals": list(chunk.access_policy.allowed_principals),
+        "metadata": _without_asset_id(dict(chunk.access_policy.metadata)),
+        "chunk_metadata": _without_asset_id(dict(chunk.metadata)),
+    }
+
+
+def _payload_schema_for(value: object) -> models.PayloadSchemaType:
+    if isinstance(value, bool):
+        return models.PayloadSchemaType.BOOL
+    if isinstance(value, int):
+        return models.PayloadSchemaType.INTEGER
+    if isinstance(value, float):
+        return models.PayloadSchemaType.FLOAT
+    return models.PayloadSchemaType.KEYWORD
+
+
+def _ensure_payload_indexes(client, collection_name: str, documents: list) -> None:
+    """Create Qdrant indexes for identity and policy predicates."""
+    fields: dict[str, models.PayloadSchemaType] = {
+        "document_id": models.PayloadSchemaType.KEYWORD,
+        "version_id": models.PayloadSchemaType.KEYWORD,
+        "chunk_id": models.PayloadSchemaType.KEYWORD,
+        "source_id": models.PayloadSchemaType.KEYWORD,
+        "source_type": models.PayloadSchemaType.KEYWORD,
+        "source_path": models.PayloadSchemaType.KEYWORD,
+        "cache_id": models.PayloadSchemaType.KEYWORD,
+        "ordinal": models.PayloadSchemaType.INTEGER,
+        "collection": models.PayloadSchemaType.KEYWORD,
+        "allowed_principals": models.PayloadSchemaType.KEYWORD,
+    }
+    for chunk in documents:
+        for key, value in chunk.access_policy.metadata.items():
+            if key != "asset_id":
+                fields.setdefault(f"metadata.{key}", _payload_schema_for(value))
+    for field_name, field_schema in fields.items():
+        client.create_payload_index(
+            collection_name=collection_name,
+            field_name=field_name,
+            field_schema=field_schema,
+            wait=True,
+        )
 
 
 def build_qdrant_text_index(
@@ -399,6 +475,7 @@ def build_qdrant_text_index(
         embed_colbert=use_embed_colbert,
         colbert_dim=colbert_dim,
     )
+    _ensure_payload_indexes(client, collection_name, documents)
 
     inserted = 0
     skipped = 0
@@ -417,10 +494,7 @@ def build_qdrant_text_index(
 
     for offset in range(0, len(documents), batch_size):
         batch = documents[offset : offset + batch_size]
-        doc_keys = [
-            f"text:{doc.metadata.get('asset_id', '')}:{doc.metadata.get('page')}:{offset + i}"
-            for i, doc in enumerate(batch)
-        ]
+        doc_keys = [f"text:{doc.chunk_id}" for doc in batch]
         point_ids = [stable_point_id(key) for key in doc_keys]
 
         if force_recreate:
@@ -488,7 +562,7 @@ def build_qdrant_text_index(
                 embed_colbert_vectors.append(cv)
 
         for j, i in enumerate(to_do):
-            payload = {**batch[i].metadata, "text": batch[i].text, "doc_key": doc_keys[i]}
+            payload = _v2_payload(batch[i])
             vector_dict: dict[str, object] = {
                 DENSE_VECTOR_NAME: dense_vectors[j],
                 SPARSE_VECTOR_NAME: sparse_vectors[j],
@@ -535,9 +609,7 @@ def build_qdrant_image_index(
         return 0, f"skipped: {exc}"
 
     documents = read_documents()
-    image_documents = [
-        document for document in documents if document.metadata.get("source_type") == "image"
-    ]
+    image_documents = [document for document in documents if document.asset.source_type == "image"]
     if not image_documents:
         return 0, "qdrant:image:empty"
 
@@ -548,7 +620,7 @@ def build_qdrant_image_index(
     first_vector: list[float] | None = None
     first_path: Path | None = None
     for document in image_documents:
-        candidate_path = assets_dir / str(document.metadata["source_path"])
+        candidate_path = assets_dir / document.asset.relative_path
         first_vector = provider.embed_image(candidate_path)
         if first_vector is not None:
             first_path = candidate_path
@@ -561,6 +633,7 @@ def build_qdrant_image_index(
     if force_recreate:
         _create_collection(client, collection_name, vector_size=len(first_vector), recreate=True)
     _create_collection(client, collection_name, vector_size=len(first_vector))
+    _ensure_payload_indexes(client, collection_name, image_documents)
 
     # Bulk-load existing point ids (one scroll pass).
     skipped = 0
@@ -589,14 +662,14 @@ def build_qdrant_image_index(
     todo_point_ids: list[str] = []
     todo_docs: list = []
     for document in image_documents:
-        point_id = stable_point_id(f"image:{document.metadata.get('asset_id')}")
+        point_id = stable_point_id(f"image:{document.chunk_id}")
         if point_id in existing_ids:
             skipped += 1
             continue
         try:
-            image_path = assets_dir / str(document.metadata["source_path"])
-        except (KeyError, TypeError):
-            print(f"image index skipped ({document.metadata.get('asset_id')}): missing source_path")
+            image_path = assets_dir / document.asset.relative_path
+        except (AttributeError, TypeError):
+            print(f"image index skipped ({document.chunk_id}): missing source path")
             continue
         todo_paths.append(image_path)
         todo_point_ids.append(point_id)
@@ -625,9 +698,9 @@ def build_qdrant_image_index(
 
     for point_id, document, vector in zip(todo_point_ids, todo_docs, vectors):
         if not vector:
-            print(f"image index skipped (empty vector): {document.metadata.get('asset_id')}")
+            print(f"image index skipped (empty vector): {document.chunk_id}")
             continue
-        payload = {**document.metadata, "text": document.text}
+        payload = _v2_payload(document)
         points.append(models.PointStruct(id=point_id, vector=vector, payload=payload))
 
     if points:

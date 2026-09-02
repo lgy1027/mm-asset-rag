@@ -35,7 +35,9 @@ _SYSTEM_MSG = {
 def format_sources(hits: list[SearchHit]) -> list[dict[str, object]]:
     return [
         {
-            "asset_id": hit.asset_id,
+            "document_id": hit.metadata.get("document_id"),
+            "version_id": hit.metadata.get("version_id"),
+            "chunk_id": hit.metadata.get("chunk_id"),
             "title": hit.title,
             "source_type": hit.source_type,
             "source_path": hit.source_path,
@@ -43,10 +45,19 @@ def format_sources(hits: list[SearchHit]) -> list[dict[str, object]]:
             "routes": hit.metadata.get("routes", [hit.route]),
             "page": hit.metadata.get("page"),
             "parser": hit.metadata.get("parser") or hit.metadata.get("provider"),
-            "images": hit.images or hit.metadata.get("images") or [],
+            "images": _without_asset_id(hit.images or hit.metadata.get("images") or []),
         }
         for hit in hits
     ]
+
+
+def _without_asset_id(value: object) -> object:
+    """Remove compatibility-only physical IDs from public answer payloads."""
+    if isinstance(value, dict):
+        return {key: _without_asset_id(item) for key, item in value.items() if key != "asset_id"}
+    if isinstance(value, list):
+        return [_without_asset_id(item) for item in value]
+    return value
 
 
 def _image_hint(hit: SearchHit) -> str:
@@ -67,14 +78,17 @@ def _image_hint(hit: SearchHit) -> str:
         fig = img.get("figure_id")
         tag = f"图{fig}" if fig else "图"
         label = f"{tag}: {cap}" if cap else tag
-        parts.append(f"{label} (/parsed-image/{hit.asset_id}/{img.get('path', '')})")
+        parts.append(
+            f"{label} (/parsed-image/{hit.metadata.get('document_id', '')}/"
+            f"{hit.metadata.get('version_id', '')}/{img.get('path', '')})"
+        )
     return f"关联图片: {'; '.join(parts)}" if parts else ""
 
 
 def _build_evidence_context(hits: list[SearchHit]) -> str:
     """Assemble the numbered evidence block fed to the LLM.
 
-    Each hit becomes ``[N] asset_id=... title=... source=... page=...`` then
+    Each hit becomes ``[N] document_id=... version_id=... chunk_id=...`` then
     the evidence text, then — when the hit carries associated figures — a
     ``关联图片:`` line so a text-only LLM can still cite which figure the
     user should look at ("见证据[1]的图3: 双碳目标路线图").
@@ -82,7 +96,9 @@ def _build_evidence_context(hits: list[SearchHit]) -> str:
     blocks = []
     for index, hit in enumerate(hits, start=1):
         header = (
-            f"[{index}] asset_id={hit.asset_id} title={hit.title} "
+            f"[{index}] document_id={hit.metadata.get('document_id')} "
+            f"version_id={hit.metadata.get('version_id')} "
+            f"chunk_id={hit.metadata.get('chunk_id')} title={hit.title} "
             f"source={hit.source_path} page={hit.metadata.get('page')}"
         )
         body = hit.evidence[:1200]
@@ -131,7 +147,7 @@ def _collect_image_parts(hits: list[SearchHit], settings) -> list[dict]:
         for img in images[:per_hit]:
             if not isinstance(img, dict):
                 continue
-            url = _read_image_data_url(hit.asset_id, str(img.get("path") or ""))
+            url = _read_image_data_url(hit.cache_id, str(img.get("path") or ""))
             if url is None:
                 continue
             parts.append({"type": "image_url", "image_url": {"url": url}})
@@ -242,20 +258,47 @@ def answer_question(
     hits: list[SearchHit] | None = None,
     *,
     search_service: SearchService | None = None,
+    collection: str | None = None,
+    metadata_filter: dict[str, object] | None = None,
+    principal: str | None = None,
+    min_confidence: float = 0.5,
 ) -> dict[str, object]:
     if hits is None:
+        if not collection or not principal:
+            raise ValueError("collection and principal are required for answer retrieval")
         service = search_service or get_search_service()
-        hits = service.execute(SearchCommand(query=question, mode=SearchMode.HYBRID, top_k=top_k))
+        hits = service.execute(
+            SearchCommand(
+                query=question,
+                mode=SearchMode.HYBRID,
+                top_k=top_k,
+                collection=collection,
+                metadata_filter=metadata_filter,
+                principal=principal,
+            )
+        )
+    if not hits or max(hit.score for hit in hits) < min_confidence:
+        return {
+            "question": question,
+            "answer": "证据不足，无法基于当前知识库可靠回答。",
+            "sources": [],
+        }
     return llm_answer(question, hits)
 
 
-def stream_answer_chunks(question: str, hits: list[SearchHit]) -> Iterator[str]:
+def stream_answer_chunks(
+    question: str, hits: list[SearchHit], *, min_confidence: float = 0.5
+) -> Iterator[str]:
     """Yield LLM answer chunks one at a time (OpenAI-compatible SSE format).
 
     Falls back to yielding the deterministic evidence summary as a single chunk
     when LLM credentials are not configured. Reasoning-model ``<think>`` blocks
     are stripped across chunk boundaries so the user only sees the final answer.
     """
+    if not hits or max(hit.score for hit in hits) < min_confidence:
+        yield "证据不足，无法基于当前知识库可靠回答。"
+        return
+
     base_url, api_key, model = get_settings().llm_creds
     if not base_url or not api_key or not model:
         fb = fallback_answer(question, hits)
@@ -329,9 +372,21 @@ def answer_json(
     top_k: int = 5,
     *,
     search_service: SearchService | None = None,
+    collection: str | None = None,
+    metadata_filter: dict[str, object] | None = None,
+    principal: str | None = None,
+    min_confidence: float = 0.5,
 ) -> str:
     return json.dumps(
-        answer_question(question, top_k=top_k, search_service=search_service),
+        answer_question(
+            question,
+            top_k=top_k,
+            search_service=search_service,
+            collection=collection,
+            metadata_filter=metadata_filter,
+            principal=principal,
+            min_confidence=min_confidence,
+        ),
         ensure_ascii=False,
         indent=2,
     )

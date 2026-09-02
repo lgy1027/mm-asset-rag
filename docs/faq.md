@@ -211,9 +211,10 @@ CLIP_MODEL=OFA-Sys/chinese-clip-vit-base-patch16   # 768d
 
 ### eval 跑了但 `hit_rate=0`
 
-**几乎一定是 asset_id 不匹配**:
-- eval case 写 `expected_asset_ids: ["Alexnet"]`,实际 corpus 里的 asset_id 是 `Alexnet_<8-hex-hash>`。
-- `evaluation_v2` 已经做了 trailing hash 剥离;`evaluation`(v1)没有。`evaluation` v1 仍跑过的,可以手动在 case 里把 `Alexnet` 写成 `Alexnet_<hash>`。
+**首先检查 qrels 的 `document_id`**:
+- 评测只做精确、区分大小写的逻辑文档 ID 匹配，不再用文件名、标题或 hash 做宽松匹配。
+- 默认上传会用原始文件名 stem 生成 `document_id`；也可以在上传确认时显式指定。qrels 必须写同一个值。
+- 每个 case 都要有 `query_id`，并在顶层 `qrels` 中有对应项；负例也要显式写成 `{}`。
 
 **第二种可能**:corpus 没 ingest。`mmrag eval` 不带 ingest 步骤,先把语料喂进 index:
 

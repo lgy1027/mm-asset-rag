@@ -1,38 +1,24 @@
-"""v2 retrieval eval: cases loaded from JSON, multi-dimensional groups.
+"""Qrels-only retrieval evaluation over exact logical document IDs.
 
-v2 is the new-generation retrieval eval set — opt-in via ``--v2`` on
-``mmrag eval`` or ``v2: true`` on ``POST /eval``; the default is still
-v1 so existing scripts / dashboards keep their numbers.
+Case files contain grouped queries plus one top-level graded-qrels mapping::
 
-**Cases are parameterized** — loaded from a JSON file via
-:func:`load_cases` (``{"version", "groups": {group: [case, ...]}}``).
-The bundled default (``mm_asset_rag/eval_data/v2_cases.json``) is a
-small text→text generic sample; point ``EVAL_CASES_PATH`` / ``--cases``
-at your own file to score a custom corpus. A larger internal baseline
-ships at ``examples/eval_cases_chapter11_v2.json`` for reproducibility
-(see that file's README — it needs its own corpus ingested).
+    {
+      "version": "v2",
+      "groups": {"en_on_en": [{"query_id": "q1", "query": "..."}]},
+      "qrels": {"q1": {"document-a": 3, "document-b": 1}}
+    }
 
-Every case pairs a free-text ``query`` with one or more
-``expected_asset_ids``. The ``_match`` helper uses prefix-tolerant
-matching so a case "hits" if any expected id is a substring of any
-actual id, or vice versa, so bare model names like ``clip`` still
-match ``Learning Transferable Visual Models From Natural Language
-Supervision_79e328a2`` once the search returns the full asset id.
-
-Use :func:`run_eval_v2` to run text→text, :func:`run_text_to_image_eval_v2`
-to run the text→image cases, and :func:`run_image_to_image_eval_v2`
-to run the image→image cases. The full per-query results plus
-aggregate metrics (hit_rate / precision / recall / f1 / ndcg + MRR + MAP)
-are dumped to ``$MM_ASSET_RAG_HOME/eval_report_v2.json``.
+``expected_asset_ids`` and filename/title matching are intentionally not
+supported.  A search result is scoreable only when its metadata contains a
+non-empty ``document_id``; relevance is exact string equality.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
 from importlib.resources import files
-from itertools import zip_longest
 from pathlib import Path
 
 from .metrics import _is_relevant, aggregate_metrics
@@ -41,26 +27,49 @@ from .schema import SearchHit
 from .search_service import SearchCommand, SearchMode, get_search_service
 
 
-def _default_cases_path(version: str) -> Path:
-    """Resolve the bundled default case file for ``version`` (``v1``/``v2``).
-
-    Uses :mod:`importlib.resources` so the JSON ships inside the wheel and
-    resolves correctly both installed and editable. The default files live
-    under ``mm_asset_rag/eval_data/``.
-    """
+def _default_cases_path(version: str):
     return files("mm_asset_rag").joinpath("eval_data", f"{version}_cases.json")
 
 
+def _parse_qrels(raw_qrels: object) -> dict[str, dict[str, int]]:
+    """Validate and retain positive integer grades, including empty queries."""
+    if not isinstance(raw_qrels, Mapping):
+        return {}
+    parsed: dict[str, dict[str, int]] = {}
+    for query_id, labels in raw_qrels.items():
+        if not isinstance(query_id, str) or not query_id or not isinstance(labels, Mapping):
+            continue
+        query_labels: dict[str, int] = {}
+        for document_id, relevance in labels.items():
+            if (
+                isinstance(document_id, str)
+                and document_id
+                and isinstance(relevance, int)
+                and not isinstance(relevance, bool)
+                and relevance > 0
+            ):
+                query_labels[document_id] = relevance
+        parsed[query_id] = query_labels
+    return parsed
+
+
+def load_qrels(path: str | Path) -> dict[str, dict[str, int]]:
+    """Load the top-level graded qrels mapping from a JSON case file."""
+    try:
+        payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    return _parse_qrels(payload.get("qrels"))
+
+
 def load_cases(path: str | Path | None = None, *, version: str) -> dict[str, list[dict]]:
-    """Load eval cases as a ``{group: [case, ...]}`` dict.
+    """Load and validate qrels-only grouped evaluation cases.
 
-    Resolution order: explicit ``path`` arg → ``Settings.eval_cases_path``
-    → the bundled default at ``mm_asset_rag/eval_data/<version>_cases.json``.
-    The bundled default is a small text→text-only generic sample; point
-    ``path`` / ``EVAL_CASES_PATH`` at your own file to score a custom corpus.
-
-    Raises :class:`FileNotFoundError` / :class:`ValueError` with a clear
-    message on a missing or malformed file rather than failing silently.
+    Each case must have a unique evaluation ``query_id`` and that ID must
+    appear explicitly in the top-level qrels mapping.  ``{}`` is a valid,
+    intentional negative judgment; an absent qrel is an input error.
     """
     if path is None:
         env_path = None
@@ -68,417 +77,293 @@ def load_cases(path: str | Path | None = None, *, version: str) -> dict[str, lis
             from .settings import get_settings
 
             env_path = get_settings().eval_cases_path
-        except Exception:  # pragma: no cover - settings infra failure
-            env_path = None
-        if env_path:
-            path = env_path
+        except Exception:  # pragma: no cover - settings infrastructure failure
+            pass
+        path = env_path
 
     if path is None:
-        traversable = _default_cases_path(version)
-        data = json.loads(traversable.read_text(encoding="utf-8"))
-        src = str(traversable)
+        source = _default_cases_path(version)
+        data = json.loads(source.read_text(encoding="utf-8"))
+        src = str(source)
     else:
-        p = Path(path).expanduser()
-        if not p.exists():
-            raise FileNotFoundError(f"eval cases file not found: {p}")
-        data = json.loads(p.read_text(encoding="utf-8"))
-        src = str(p)
+        source = Path(path).expanduser()
+        if not source.exists():
+            raise FileNotFoundError(f"eval cases file not found: {source}")
+        data = json.loads(source.read_text(encoding="utf-8"))
+        src = str(source)
 
-    if not isinstance(data, dict):
+    if not isinstance(data, Mapping):
         raise ValueError(f"eval cases file {src}: expected a top-level JSON object.")
-    # Guard against silently scoring 0 cases: the v1 runner iterates
-    # ``en/zh/zh_doc/legacy`` and v2 ``zh_on_en/en_on_en/zh_on_zh/negative``,
-    # so a cross-version mix-up (v2 file fed to ``mmrag eval`` / v1 file
-    # fed to ``--v2``) would leave every group absent and return an empty
-    # result with exit 0 — no signal that the wrong file was loaded.
     file_version = data.get("version")
     if file_version is not None and file_version != version:
         raise ValueError(
-            f"eval cases file {src}: version mismatch "
-            f"(expected {version!r}, got {file_version!r}). "
-            f"Use the matching --cases file for the --v2 flag."
+            f"eval cases file {src}: version mismatch (expected {version!r}, got {file_version!r})."
         )
     groups = data.get("groups")
-    if not isinstance(groups, dict) or not groups:
+    if not isinstance(groups, Mapping) or not groups:
+        raise ValueError(f"eval cases file {src}: expected a non-empty top-level 'groups' object.")
+    raw_qrels = data.get("qrels")
+    if not isinstance(raw_qrels, Mapping):
         raise ValueError(
-            f"eval cases file {src}: expected a top-level 'groups' object mapping "
-            "group name → list of {{query, expected_asset_ids}} cases."
+            f"eval cases file {src}: qrels are required; expected "
+            "{query_id: {document_id: relevance}} and not expected_asset_ids."
         )
-    return groups
+    qrels = _parse_qrels(raw_qrels)
 
-
-# ── Runner / report writers (parallel to v1 helpers) ──────────────────
-
-
-@dataclass
-class V2Result:
-    query: str
-    expected_asset_ids: list[str]
-    actual_asset_ids: list[str]
-    hit: bool
-    rank: int | None
-    group: str
-    # Parallel to actual_asset_ids; the LLM-derived paper title per hit (empty
-    # when no title, e.g. image route or pre-AUTO_META index). Kept separate
-    # so the reported actual_asset_ids stay plain ids while metrics still get
-    # the title to match paper-title expected ids.
-    actual_titles: list[str] = None  # type: ignore[assignment]
-
-    def __post_init__(self) -> None:
-        if self.actual_titles is None:
-            self.actual_titles = []
-
-
-def aggregate_retrieval_scenarios(results: list[V2Result]) -> dict[str, dict[str, object]]:
-    """Separate positive retrieval quality from negative rejection behavior."""
-
-    positive = [result for result in results if result.expected_asset_ids]
-    negative = [result for result in results if not result.expected_asset_ids]
-
-    def metric_rows(items: list[V2Result]) -> list[dict[str, object]]:
-        return [
-            {
-                "actual_ids": (
-                    [
-                        (asset_id, title) if title else asset_id
-                        for asset_id, title in zip_longest(
-                            result.actual_asset_ids, result.actual_titles, fillvalue=""
-                        )
-                    ]
-                    if result.actual_titles
-                    else list(result.actual_asset_ids)
-                ),
-                "expected_ids": _normalize_id_list(result.expected_asset_ids),
-            }
-            for result in items
-        ]
-
-    empty_result_count = sum(1 for result in negative if not result.actual_asset_ids)
-    false_retrieval_count = sum(1 for result in negative if result.actual_asset_ids)
-    return {
-        "positive": {
-            "total": len(positive),
-            "hit_count": sum(1 for result in positive if result.hit),
-            "hit_rate": sum(1 for result in positive if result.hit) / max(len(positive), 1),
-            "metrics": aggregate_metrics(metric_rows(positive)) if positive else {},
-        },
-        "negative": {
-            "total": len(negative),
-            "empty_result_count": empty_result_count,
-            "empty_result_rate": empty_result_count / max(len(negative), 1),
-            "false_retrieval_count": false_retrieval_count,
-            "false_retrieval_rate": false_retrieval_count / max(len(negative), 1),
-        },
-    }
+    loaded: dict[str, list[dict]] = {}
+    seen_query_ids: set[str] = set()
+    for group, cases in groups.items():
+        if not isinstance(group, str) or not isinstance(cases, list):
+            raise ValueError(f"eval cases file {src}: every group must map to a case list.")
+        loaded_cases: list[dict] = []
+        for case in cases:
+            if not isinstance(case, Mapping):
+                raise ValueError(f"eval cases file {src}: every case must be an object.")
+            if "expected_asset_ids" in case:
+                raise ValueError(
+                    f"eval cases file {src}: expected_asset_ids is obsolete; use graded qrels."
+                )
+            query_id = case.get("query_id")
+            if not isinstance(query_id, str) or not query_id:
+                raise ValueError(f"eval cases file {src}: every case requires a query_id.")
+            if query_id in seen_query_ids:
+                raise ValueError(f"eval cases file {src}: duplicate query_id {query_id!r}.")
+            seen_query_ids.add(query_id)
+            if query_id not in raw_qrels or query_id not in qrels:
+                raise ValueError(f"eval cases file {src}: missing qrels for query_id {query_id!r}.")
+            if "query" not in case and "image_path" not in case:
+                raise ValueError(
+                    f"eval cases file {src}: query_id {query_id!r} needs query or image_path."
+                )
+            loaded_cases.append({**dict(case), "qrels": dict(qrels[query_id])})
+        loaded[group] = loaded_cases
+    return loaded
 
 
 def _load_full_ids() -> set[str]:
-    """Return the set of full asset_ids for the active rows.
+    """Legacy answer-evaluation seam; retrieval qrels never call this.
 
-    Multiple ``_NNN_hash`` variants of the same content can coexist
-    in the index (re-ingestion of a slightly different file revision
-    keeps the SHA256 stable but bumps a per-write hash). We dedupe by
-    ``asset_id`` instead of ``sha256`` so ``_expand`` can return every
-    hash variant — ``_match`` then accepts any of them as a valid hit.
+    Answer-quality evaluation still owns an independent asset-citation case
+    format.  Keep its lazy import working until that evaluator is migrated,
+    without allowing these physical identifiers into retrieval scoring.
     """
-    seen: set[str] = set()
-    out: set[str] = set()
     index_path = get_asset_index_path()
     if not index_path.exists():
-        return out
-    with index_path.open(encoding="utf-8") as f:
-        for line in f:
+        return set()
+    full_ids: set[str] = set()
+    with index_path.open(encoding="utf-8") as source:
+        for line in source:
             if not line.strip():
                 continue
             try:
                 row = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if row.get("deleted"):
-                continue
-            aid = row.get("asset_id", "")
-            if aid in seen:
-                continue
-            seen.add(aid)
-            out.add(aid)
-    return out
+            asset_id = row.get("asset_id")
+            if not row.get("deleted") and isinstance(asset_id, str) and asset_id:
+                full_ids.add(asset_id)
+    return full_ids
 
 
 def _expand(prefix: str, full_ids: set[str]) -> list[str]:
-    """Expand a bare prefix (e.g. ``Caltech Airplanes``) to all full
-    asset_ids that start with it. Returns ``[prefix]`` if no match
-    so the strict match still works when the caller passed a full id.
-
-    Multiple ``_NNN_hash`` variants of the same title are common (each
-    parse run + content edit produces a new SHA). A single hash should
-    *not* be treated as the canonical answer — the matcher below also
-    accepts any actual id whose title is prefixed by the bare term.
-    """
-    matches = sorted(f for f in full_ids if f.startswith(prefix))
-    return matches if matches else [prefix]
+    """Legacy answer-citation expansion; never used by retrieval qrels."""
+    matches = sorted(asset_id for asset_id in full_ids if asset_id.startswith(prefix))
+    return matches or [prefix]
 
 
-def _title_of(asset_id: str) -> str:
-    """Strip the trailing ``_<8-hex-hash>`` from an asset id to get the
-    bare title used for prefix-tolerant matching.
-
-    Asset ids look like ``<title>_<8-hex>``. If the id has no ``_`` we
-    return the whole id (e.g. for synthetic or user-supplied ids).
-    """
-    if "_" not in asset_id:
-        return asset_id
-    # The hash is the last ``_``-segment, exactly 8 lowercase hex chars.
-    head, _, tail = asset_id.rpartition("_")
-    if len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
-        return head
-    return asset_id
+@dataclass
+class V2Result:
+    query_id: str
+    query: str
+    qrels: dict[str, int]
+    actual_document_ids: list[str]
+    hit: bool
+    rank: int | None
+    group: str
 
 
-def strip_trailing_hash(asset_id: str) -> str:
-    """Normalise an asset id for eval matching.
-
-    Drops a trailing ``_<8-hex>`` content-hash suffix and casefolds the
-    remainder so ``Rich feature hierarchies`` matches
-    ``Rich Feature Hierarchies for Accurate Object Detection And Semantic Segmentation_b857cf69``.
-    Mirrors the v1 helper so both eval harnesses apply the same
-    normalisation.
-    """
-    if not asset_id:
-        return ""
-    if "_" in asset_id:
-        head, _, tail = asset_id.rpartition("_")
-        if len(tail) == 8 and all(c in "0123456789abcdef" for c in tail):
-            return head.casefold()
-    return asset_id.casefold()
+def _document_ids(hits: list[SearchHit]) -> list[str]:
+    """Extract scoreable logical identities; never fall back to asset/title."""
+    document_ids: list[str] = []
+    for hit in hits:
+        document_id = hit.metadata.get("document_id")
+        if isinstance(document_id, str) and document_id.strip():
+            document_ids.append(document_id)
+    return document_ids
 
 
-def _actual_candidates(act: str | tuple[str, str]) -> list[str]:
-    """Normalise an actual entry to the list of id-strings to compare.
-
-    Accepts either a bare ``asset_id`` (str, for backwards compatibility with
-    image-route evals and unit tests) or an ``(asset_id, title)`` pair. For the
-    pair, both the asset_id and the title are candidates — a hit on either
-    counts as relevant. This is what lets the CLIP case resolve when the
-    retriever returns ``("clip_b14b418e", "Learning Transferable Visual Models
-    From Natural Language Supervision")`` and the expected id is the paper's
-    canonical title: the asset_id alone never matches, but the LLM-derived
-    title does.
-    """
-    if isinstance(act, tuple):
-        return [v for v in act if v]
-    return [act] if act else []
-
-
-def _match(actual: list[str | tuple[str, str]], expected: list[str]) -> int | None:
-    # Relevance is the normalised bidirectional-substring check shared with
-    # ``aggregate_metrics`` (via ``metrics._is_relevant``), so per-query
-    # ``hit``/``rank`` and the aggregate ``hit_rate``/``MRR``/``NDCG`` agree
-    # by construction — a bare short title matches a longer returned id both
-    # here and in the reported metrics. Each actual may carry a title too
-    # (see :func:`_actual_candidates`); the asset_id or the title matching any
-    # expected id is a hit at that rank.
-    for rank, act in enumerate(actual, start=1):
-        if any(_is_relevant(c, expected) for c in _actual_candidates(act)):
+def _first_relevant_rank(actual_document_ids: list[str], qrels: Mapping[str, int]) -> int | None:
+    for rank, document_id in enumerate(actual_document_ids, start=1):
+        if _is_relevant(document_id, qrels):
             return rank
     return None
+
+
+def _metric_rows(results: list[V2Result]) -> list[dict[str, object]]:
+    return [
+        {"actual_document_ids": list(result.actual_document_ids), "qrels": dict(result.qrels)}
+        for result in results
+    ]
+
+
+def aggregate_retrieval_scenarios(results: list[V2Result]) -> dict[str, dict[str, object]]:
+    """Separate judged retrieval quality from explicit negative behavior."""
+    positive = [result for result in results if result.qrels]
+    negative = [result for result in results if not result.qrels]
+    empty_count = sum(not result.actual_document_ids for result in negative)
+    false_count = sum(bool(result.actual_document_ids) for result in negative)
+    return {
+        "positive": {
+            "total": len(positive),
+            "hit_count": sum(result.hit for result in positive),
+            "hit_rate": sum(result.hit for result in positive) / max(len(positive), 1),
+            "metrics": aggregate_metrics(_metric_rows(positive)) if positive else {},
+        },
+        "negative": {
+            "total": len(negative),
+            "empty_result_count": empty_count,
+            "empty_result_rate": empty_count / max(len(negative), 1),
+            "false_retrieval_count": false_count,
+            "false_retrieval_rate": false_count / max(len(negative), 1),
+        },
+    }
+
+
+def _make_result(
+    *, case: Mapping[str, object], hits: list[SearchHit], group: str, query: str
+) -> V2Result:
+    actual = _document_ids(hits)
+    qrels = dict(case["qrels"])  # validated by load_cases
+    rank = _first_relevant_rank(actual, qrels)
+    return V2Result(
+        query_id=str(case["query_id"]),
+        query=query,
+        qrels=qrels,
+        actual_document_ids=actual,
+        hit=rank is not None,
+        rank=rank,
+        group=group,
+    )
 
 
 def run_eval_v2(
     top_k: int = 5,
     *,
+    collection: str,
+    principal: str,
+    metadata_filter: dict[str, object] | None = None,
     cases_path: str | Path | None = None,
     search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
 ) -> list[V2Result]:
-    """Run the v2 text→text regression set (CLI / API entry point).
-
-    Thin alias for :func:`run_text_to_text_eval_v2` so the CLI ``--v2``
-    flag and the API ``v2: true`` field can treat v1 and v2 symmetrically
-    (``run_eval`` vs ``run_eval_v2``). Returns the same :class:`V2Result`
-    shape as the other v2 runners, which parallels v1's ``EvalResult`` so
-    callers can swap the two without adapting the response shape.
-
-    ``cases_path`` overrides the case file for this run (default:
-    ``Settings.eval_cases_path`` → the bundled ``v2_cases.json``).
-
-    ``search_fn`` is the command-level dependency-injection seam used by
-    tests; production defaults to :meth:`SearchService.execute`.
-
-    The text→image / image→image groups have their own runners; this
-    convenience only covers the text→text set because that is what v1's
-    ``run_eval`` covers and what the default ``mmrag eval`` output
-    compares against.
-    """
     if search_fn is None:
-        return run_text_to_text_eval_v2(top_k=top_k, cases_path=cases_path)
+        return run_text_to_text_eval_v2(
+            top_k=top_k,
+            cases_path=cases_path,
+            collection=collection,
+            principal=principal,
+            metadata_filter=metadata_filter,
+        )
     return run_text_to_text_eval_v2(
         top_k=top_k,
         cases_path=cases_path,
         search_fn=search_fn,
+        collection=collection,
+        principal=principal,
+        metadata_filter=metadata_filter,
     )
 
 
 def run_text_to_text_eval_v2(
     top_k: int = 5,
     *,
+    collection: str,
+    principal: str,
+    metadata_filter: dict[str, object] | None = None,
     search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
-    full_ids: set[str] | None = None,
     cases_path: str | Path | None = None,
 ) -> list[V2Result]:
-    """Run all v2 text→text cases against the live hybrid index.
-
-    ``search_fn`` defaults to :meth:`SearchService.execute`. Tests pass a
-    stub that returns canned ``SearchHit`` lists so the eval can run offline
-    against a mock corpus. The stub signature is
-    ``(SearchCommand) -> list[SearchHit]``.
-
-    ``full_ids`` is the set of known asset_ids used by ``_expand`` to
-    resolve bare expected ids. Tests inject a synthetic set so the
-    eval runs without a real ``asset_index.jsonl``.
-
-    ``cases_path`` overrides the case file (default: the bundled
-    ``v2_cases.json`` or ``Settings.eval_cases_path``). Only the
-    text→text groups are iterated; image groups belong to the other
-    runners. A group absent from the file is skipped.
-    """
     search = search_fn or get_search_service().execute
-    ids = full_ids if full_ids is not None else _load_full_ids()
-
     groups = load_cases(cases_path, version="v2")
-    out: list[V2Result] = []
+    results: list[V2Result] = []
     for group in ("zh_on_en", "en_on_en", "zh_on_zh", "negative"):
         for case in groups.get(group, ()):
+            query = str(case["query"])
             hits = search(
                 SearchCommand(
-                    query=str(case["query"]),
+                    query=query,
                     mode=SearchMode.HYBRID,
                     top_k=top_k,
+                    collection=collection,
+                    metadata_filter=metadata_filter,
+                    principal=principal,
                 )
             )
-            # Carry (asset_id, title) pairs for _match so it can hit on either.
-            # The asset_id is a filename stem (e.g. clip_b14b418e) which never
-            # matches a paper-title expected id; with AUTO_META on, hit.title is
-            # the LLM-derived canonical paper title, which does. The reported
-            # actual_asset_ids stay plain asset_ids for readability.
-            actual_pairs: list[tuple[str, str]] = [(hit.asset_id, hit.title or "") for hit in hits]
-            expected: list[str] = []
-            for item in case["expected_asset_ids"]:
-                expected.extend(_expand(str(item), ids))
-            rank = _match(actual_pairs, expected) if expected else None
-            out.append(
-                V2Result(
-                    query=str(case["query"]),
-                    expected_asset_ids=expected,
-                    actual_asset_ids=[hit.asset_id for hit in hits],
-                    hit=rank is not None,
-                    rank=rank,
-                    group=group,
-                    actual_titles=[hit.title or "" for hit in hits],
-                )
-            )
-    return out
+            results.append(_make_result(case=case, hits=hits, group=group, query=query))
+    return results
 
 
 def run_text_to_image_eval_v2(
     top_k: int = 5,
     *,
+    collection: str,
+    principal: str,
+    metadata_filter: dict[str, object] | None = None,
     search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
-    full_ids: set[str] | None = None,
     cases_path: str | Path | None = None,
 ) -> list[V2Result]:
-    """Run the v2 text→image cases against the Qdrant image collection.
-
-    ``search_fn`` is the command-level dependency-injection hook for tests;
-    production defaults to :meth:`SearchService.execute`.
-    """
     search = search_fn or get_search_service().execute
-    ids = full_ids if full_ids is not None else _load_full_ids()
-
-    cases = load_cases(cases_path, version="v2").get("text_to_image", [])
-    out: list[V2Result] = []
-    for case in cases:
+    results: list[V2Result] = []
+    for case in load_cases(cases_path, version="v2").get("text_to_image", []):
+        query = str(case["query"])
         hits = search(
             SearchCommand(
-                query=str(case["query"]),
+                query=query,
                 mode=SearchMode.TEXT_TO_IMAGE,
                 top_k=top_k,
+                collection=collection,
+                metadata_filter=metadata_filter,
+                principal=principal,
             )
         )
-        actual = [hit.asset_id for hit in hits]
-        expected: list[str] = []
-        for item in case["expected_asset_ids"]:
-            expected.extend(_expand(str(item), ids))
-        rank = _match(actual, expected) if expected else None
-        out.append(
-            V2Result(
-                query=str(case["query"]),
-                expected_asset_ids=expected,
-                actual_asset_ids=actual,
-                hit=rank is not None,
-                rank=rank,
-                group="text_to_image",
-            )
-        )
-    return out
+        results.append(_make_result(case=case, hits=hits, group="text_to_image", query=query))
+    return results
 
 
 def run_image_to_image_eval_v2(
     top_k: int = 5,
     *,
+    collection: str,
+    principal: str,
+    metadata_filter: dict[str, object] | None = None,
     search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
     cases_path: str | Path | None = None,
 ) -> list[V2Result]:
-    """Run the v2 image→image cases.
-
-    A case file is a trusted evaluator input and historically supports an
-    absolute fixture path. Public callers still go through SearchService's
-    strict relative-to-assets sandbox; only an external evaluator fixture
-    takes the legacy direct adapter below.
-    """
     search = search_fn or get_search_service().execute
-    full_ids = _load_full_ids()
-    out: list[V2Result] = []
+    results: list[V2Result] = []
     for case in load_cases(cases_path, version="v2").get("image_to_image", []):
-        image_path = Path(case["image_path"])
-        if not image_path.exists():
-            out.append(
-                V2Result(
-                    query=str(image_path.name),
-                    expected_asset_ids=list(case["expected_asset_ids"]),
-                    actual_asset_ids=[],
-                    hit=False,
-                    rank=None,
-                    group="image_to_image",
-                )
+        image_path = Path(str(case["image_path"]))
+        if image_path.exists():
+            command = SearchCommand(
+                query=image_path.name,
+                mode=SearchMode.IMAGE_TO_IMAGE,
+                image_path=image_path,
+                top_k=top_k,
+                collection=collection,
+                metadata_filter=metadata_filter,
+                principal=principal,
             )
-            continue
-        command = SearchCommand(
-            query=str(image_path.name),
-            mode=SearchMode.IMAGE_TO_IMAGE,
-            image_path=image_path,
-            top_k=top_k,
-        )
-        hits = _execute_image_eval_search(
-            command,
-            image_path=image_path,
-            search=search,
-            trusted_case=search_fn is None,
-        )
-        actual = [hit.asset_id for hit in hits]
-        expected: list[str] = []
-        for item in case["expected_asset_ids"]:
-            expected.extend(_expand(str(item), full_ids))
-        rank = _match(actual, expected) if expected else None
-        out.append(
-            V2Result(
-                query=str(image_path.name),
-                expected_asset_ids=expected,
-                actual_asset_ids=actual,
-                hit=rank is not None,
-                rank=rank,
-                group="image_to_image",
+            hits = _execute_image_eval_search(
+                command,
+                image_path=image_path,
+                search=search,
+                trusted_case=search_fn is None,
             )
+        else:
+            hits = []
+        results.append(
+            _make_result(case=case, hits=hits, group="image_to_image", query=image_path.name)
         )
-    return out
+    return results
 
 
 def _execute_image_eval_search(
@@ -488,14 +373,7 @@ def _execute_image_eval_search(
     search: Callable[[SearchCommand], list[SearchHit]],
     trusted_case: bool,
 ) -> list[SearchHit]:
-    """Run a case image through SearchService unless it is an external fixture.
-
-    ``SearchService`` deliberately rejects absolute and out-of-assets paths
-    supplied by API/CLI clients. Evaluator case files are trusted project
-    fixtures and predate that public contract, so preserve their established
-    behavior with the legacy backend adapter only for the default evaluator
-    path. Injected search functions always receive the unchanged command.
-    """
+    """Preserve the trusted external image-fixture evaluator adapter."""
     if not trusted_case:
         return search(command)
     try:
@@ -511,76 +389,29 @@ def _execute_image_eval_search(
             image_path=relative_path,
             top_k=command.top_k,
             min_score=command.min_score,
+            collection=command.collection,
+            metadata_filter=command.metadata_filter,
+            principal=command.principal,
         )
     )
 
 
-def _normalize_id_list(ids: list[str]) -> list[str]:
-    """Strip ``_<8-hex>`` hash suffixes + casefold, dedup preserving order.
-
-    Used to collapse duplicate hash variants of the same document before
-    writing them into the eval report's ``expected_ids``/``actual_ids``
-    fields (so a re-parse producing a new hash doesn't bloat the stored
-    lists). :mod:`mm_asset_rag.metrics` applies its own normalisation on
-    top when computing relevance, so this pre-pass is purely cosmetic for
-    the report payload — it does not change any metric value.
-    """
-    out: list[str] = []
-    for aid in ids:
-        norm = strip_trailing_hash(aid)
-        if norm and norm not in out:
-            out.append(norm)
-    return out
-
-
 def write_eval_report_v2(results_by_group: dict[str, list[V2Result]], path=None) -> None:
-    """Write per-query results + per-group aggregate metrics to JSON."""
+    """Write per-query qrels and required document-level aggregate metrics."""
     target = path or get_eval_report().with_name("eval_report_v2.json")
-
-    def _agg(rs: list[V2Result]) -> dict:
-        if not rs:
-            return {}
-        return aggregate_metrics(
-            [
-                {
-                    # Pair each actual asset_id with its title so metrics can
-                    # match on the LLM-derived paper title too (matches the
-                    # per-query _match contract → aggregate stays self-consistent
-                    # with per_query hit/rank). Fall back to bare asset_id when
-                    # no titles (image route / old reports). zip_longest (not
-                    # zip) guards against a future code path where the two lists
-                    # diverge in length — silent truncation would drop trailing
-                    # asset_ids and skew the metrics.
-                    "actual_ids": (
-                        [
-                            (aid, t) if t else aid
-                            for aid, t in zip_longest(
-                                r.actual_asset_ids, r.actual_titles, fillvalue=""
-                            )
-                        ]
-                        if r.actual_titles
-                        else list(r.actual_asset_ids)
-                    ),
-                    "expected_ids": _normalize_id_list(r.expected_asset_ids),
-                }
-                for r in rs
-            ]
-        )
-
+    all_results = [result for results in results_by_group.values() for result in results]
     payload = {
         "version": "v2",
-        "scenarios": aggregate_retrieval_scenarios(
-            [result for results in results_by_group.values() for result in results]
-        ),
+        "scenarios": aggregate_retrieval_scenarios(all_results),
         "per_group": {
-            g: {
-                "total": len(rs),
-                "hits": sum(1 for r in rs if r.hit),
-                "hit_rate": sum(1 for r in rs if r.hit) / max(len(rs), 1),
-                "metrics": _agg(rs),
-                "per_query": [asdict(r) for r in rs],
+            group: {
+                "total": len(results),
+                "hits": sum(result.hit for result in results),
+                "hit_rate": sum(result.hit for result in results) / max(len(results), 1),
+                "metrics": aggregate_metrics(_metric_rows(results)) if results else {},
+                "per_query": [asdict(result) for result in results],
             }
-            for g, rs in results_by_group.items()
+            for group, results in results_by_group.items()
         },
     }
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -590,15 +421,9 @@ if __name__ == "__main__":  # pragma: no cover
     from .config import load_env
 
     load_env()
-    t2t = run_text_to_text_eval_v2(top_k=5)
-    t2i = run_text_to_image_eval_v2(top_k=5)
-    i2i = run_image_to_image_eval_v2(top_k=5)
-    by_group: dict[str, list[V2Result]] = {
-        "text_to_text": t2t,
-        "text_to_image": t2i,
-        "image_to_image": i2i,
+    by_group = {
+        "text_to_text": run_text_to_text_eval_v2(),
+        "text_to_image": run_text_to_image_eval_v2(),
+        "image_to_image": run_image_to_image_eval_v2(),
     }
     write_eval_report_v2(by_group)
-    for g, rs in by_group.items():
-        hits = sum(1 for r in rs if r.hit)
-        print(f"{g}: {hits}/{len(rs)} hit_rate={hits / max(len(rs), 1):.3f}")

@@ -2,16 +2,26 @@
   "version": "v1",
   "groups": {
     "en": [
-      {"query": "retrieval augmented generation RAG", "expected_asset_ids": ["Retrieval Augmented Generation"]},
-      {"query": "attention is all you need transformer architecture", "expected_asset_ids": ["Attention Is All You Need"]},
-      {"query": "deep residual learning image recognition ResNet", "expected_asset_ids": ["Resnet"]},
-      {"query": "generative adversarial networks", "expected_asset_ids": ["Gan"]},
-      {"query": "learning transferable visual models natural language supervision contrastive", "expected_asset_ids": ["Learning Transferable Visual Models From Natural Language Supervision"]}
+      {"query_id": "v1-en-rag", "query": "retrieval augmented generation RAG"},
+      {"query_id": "v1-en-transformer", "query": "attention is all you need transformer architecture"},
+      {"query_id": "v1-en-resnet", "query": "deep residual learning image recognition ResNet"},
+      {"query_id": "v1-en-gan", "query": "generative adversarial networks"},
+      {"query_id": "v1-en-clip", "query": "learning transferable visual models natural language supervision contrastive"}
     ],
     "zh": [
-      {"query": "哪份资料讲了 retrieval augmented generation？", "expected_asset_ids": ["Retrieval Augmented Generation"]},
-      {"query": "残差网络 怎么解决梯度消失", "expected_asset_ids": ["Resnet"]},
-      {"query": "关于自注意力 Transformer 的原始论文", "expected_asset_ids": ["Attention Is All You Need"]}
+      {"query_id": "v1-zh-rag", "query": "哪份资料讲了 retrieval augmented generation？"},
+      {"query_id": "v1-zh-resnet", "query": "残差网络 怎么解决梯度消失"},
+      {"query_id": "v1-zh-transformer", "query": "关于自注意力 Transformer 的原始论文"}
     ]
+  },
+  "qrels": {
+    "v1-en-rag": {"Retrieval Augmented Generation": 1},
+    "v1-en-transformer": {"Attention Is All You Need": 1},
+    "v1-en-resnet": {"Resnet": 1},
+    "v1-en-gan": {"Gan": 1},
+    "v1-en-clip": {"Learning Transferable Visual Models From Natural Language Supervision": 1},
+    "v1-zh-rag": {"Retrieval Augmented Generation": 1},
+    "v1-zh-resnet": {"Resnet": 1},
+    "v1-zh-transformer": {"Attention Is All You Need": 1}
   }
 }

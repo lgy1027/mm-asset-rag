@@ -27,6 +27,7 @@ from mm_asset_rag.schema import SearchHit
 
 
 def _hit(asset_id: str, evidence: str, score: float = 0.5) -> SearchHit:
+    version_id = f"{asset_id}@1-{'a' * 12}"
     return SearchHit(
         route="text",
         score=score,
@@ -35,7 +36,15 @@ def _hit(asset_id: str, evidence: str, score: float = 0.5) -> SearchHit:
         source_type="pdf",
         source_path=f"pdfs/{asset_id}.pdf",
         evidence=evidence,
-        metadata={"page": 1},
+        metadata={
+            "document_id": asset_id,
+            "version_id": version_id,
+            "chunk_id": f"{version_id}:0",
+            "collection": "tests",
+            "allowed_principals": [],
+            "metadata": {},
+            "page": 1,
+        },
     )
 
 
@@ -257,6 +266,7 @@ def test_hybrid_search_reranks_when_enabled(tmp_home, monkeypatch):
 
 
 def _image_hit(asset_id: str, score: float = 0.5) -> SearchHit:
+    version_id = f"{asset_id}@1-{'b' * 12}"
     return SearchHit(
         route="qdrant_text_to_image",
         score=score,
@@ -265,7 +275,15 @@ def _image_hit(asset_id: str, score: float = 0.5) -> SearchHit:
         source_type="image",
         source_path=f"images/{asset_id}.jpg",
         evidence=f"image caption {asset_id}",
-        metadata={"page": 1},
+        metadata={
+            "document_id": asset_id,
+            "version_id": version_id,
+            "chunk_id": f"{version_id}:0",
+            "collection": "tests",
+            "allowed_principals": [],
+            "metadata": {},
+            "page": 1,
+        },
     )
 
 

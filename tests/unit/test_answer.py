@@ -9,23 +9,32 @@ from mm_asset_rag.schema import SearchHit
 from mm_asset_rag.search_service import SearchCommand, SearchMode
 
 
-def _hit(asset_id: str, evidence: str = "some text") -> SearchHit:
+def _hit(asset_id: str, evidence: str = "some text", *, score: float = 0.9) -> SearchHit:
     return SearchHit(
         route="text",
-        score=0.9,
+        score=score,
         asset_id=asset_id,
         title=asset_id,
         source_type="pdf",
         source_path=f"{asset_id}.pdf",
         evidence=evidence,
-        metadata={"page": 2, "parser": "pymupdf"},
+        metadata={
+            "document_id": f"document-{asset_id}",
+            "version_id": f"document-{asset_id}@1-deadbeefcafe",
+            "chunk_id": f"document-{asset_id}@1-deadbeefcafe:0",
+            "page": 2,
+            "parser": "pymupdf",
+        },
     )
 
 
-def test_format_sources_extracts_metadata() -> None:
+def test_format_sources_exposes_document_version_chunk_not_asset_identity() -> None:
     sources = format_sources([_hit("a"), _hit("b")])
     assert len(sources) == 2
-    assert sources[0]["asset_id"] == "a"
+    assert sources[0]["document_id"] == "document-a"
+    assert sources[0]["version_id"] == "document-a@1-deadbeefcafe"
+    assert sources[0]["chunk_id"] == "document-a@1-deadbeefcafe:0"
+    assert "asset_id" not in sources[0]
     assert sources[0]["page"] == 2
     assert sources[0]["parser"] == "pymupdf"
     assert sources[0]["score"] == 0.9
@@ -49,11 +58,32 @@ def test_answer_question_uses_search_service_when_hits_are_missing() -> None:
     backend = Mock()
     backend.execute.return_value = [_hit("a")]
 
-    answer_question("question", search_service=backend)
+    answer_question(
+        "question",
+        search_service=backend,
+        collection="team",
+        principal="alice",
+        min_confidence=0.5,
+    )
 
     backend.execute.assert_called_once_with(
-        SearchCommand(query="question", mode=SearchMode.HYBRID, top_k=5)
+        SearchCommand(
+            query="question",
+            mode=SearchMode.HYBRID,
+            top_k=5,
+            collection="team",
+            principal="alice",
+        )
     )
+
+
+def test_answer_question_refuses_low_confidence_without_calling_llm(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "mm_asset_rag.answer.llm_answer", Mock(side_effect=AssertionError("LLM called"))
+    )
+    result = answer_question("question", hits=[_hit("a", score=0.2)], min_confidence=0.5)
+    assert result["sources"] == []
+    assert "证据不足" in result["answer"]
 
 
 def test_answer_json_returns_valid_json(monkeypatch) -> None:
@@ -78,7 +108,7 @@ def test_answer_json_returns_valid_json(monkeypatch) -> None:
             ]
         ),
     )
-    payload = answer_json("any question?")
+    payload = answer_json("any question?", collection="team", principal="alice", min_confidence=0.5)
     parsed = json.loads(payload)
     assert "answer" in parsed
     assert "sources" in parsed

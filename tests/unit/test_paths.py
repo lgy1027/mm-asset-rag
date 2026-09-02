@@ -47,3 +47,28 @@ def test_get_documents_jsonl(tmp_home: Path) -> None:
 
 def test_get_eval_report(tmp_home: Path) -> None:
     assert paths.get_eval_report() == tmp_home / "eval_report.json"
+
+
+def test_physical_cache_id_uses_the_complete_relative_path() -> None:
+    cache_id = getattr(paths, "physical_cache_id", None)
+
+    assert callable(cache_id)
+    pdf_id = cache_id("pdfs/shared.pdf")
+    document_id = cache_id("documents/shared.pdf")
+    assert pdf_id != document_id
+    assert len(pdf_id) == 64
+    assert pdf_id == cache_id("pdfs/shared.pdf")
+
+
+def test_safe_parsed_image_path_keeps_same_stem_assets_separate(tmp_home: Path) -> None:
+    pdf_id = paths.physical_cache_id("pdfs/shared.pdf")
+    document_id = paths.physical_cache_id("documents/shared.pdf")
+    pdf_image = tmp_home / "parsed" / pdf_id / "images" / "figure.png"
+    document_image = tmp_home / "parsed" / document_id / "images" / "figure.png"
+    pdf_image.parent.mkdir(parents=True)
+    document_image.parent.mkdir(parents=True)
+    pdf_image.write_bytes(b"pdf")
+    document_image.write_bytes(b"document")
+
+    assert paths.safe_parsed_image_path(pdf_id, "figure.png") == pdf_image
+    assert paths.safe_parsed_image_path(document_id, "figure.png") == document_image

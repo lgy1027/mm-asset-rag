@@ -68,6 +68,7 @@ def _stub_post_chat_json(payload: object):
 
 def _hit(asset_id: str, score: float, *, route: str = "text") -> SearchHit:
     """Build a SearchHit for test fixtures."""
+    version_id = f"{asset_id}@1-{'a' * 12}"
     return SearchHit(
         route=route,
         score=score,
@@ -76,7 +77,15 @@ def _hit(asset_id: str, score: float, *, route: str = "text") -> SearchHit:
         source_type="pdf",
         source_path=f"{asset_id}.pdf",
         evidence=f"evidence for {asset_id}",
-        metadata={"page": 1},
+        metadata={
+            "document_id": asset_id,
+            "version_id": version_id,
+            "chunk_id": f"{version_id}:0",
+            "collection": "tests",
+            "allowed_principals": [],
+            "metadata": {},
+            "page": 1,
+        },
     )
 
 
@@ -228,7 +237,7 @@ def test_multi_query_single_returns_hybrid_search(monkeypatch) -> None:
     fake_hits = [_hit("a", 0.9), _hit("b", 0.8)]
     calls: list[tuple] = []
 
-    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None, backend=None):
         calls.append((query, image_path, top_k, min_score))
         return fake_hits
 
@@ -246,7 +255,7 @@ def test_multi_query_fuses_via_rrf(monkeypatch) -> None:
     # so it should accumulate a higher score than B or C which appear once.
     calls: list[str] = []
 
-    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None, backend=None):
         calls.append(query)
         if "alpha" in query:
             return [_hit("a", 0.9), _hit("c", 0.5)]
@@ -274,7 +283,7 @@ def test_multi_query_respects_n_parallel(monkeypatch) -> None:
     queries = [f"q{i}" for i in range(6)]
     fake_hits_per_query = {q: [_hit(f"asset-{i}", 0.5)] for i, q in enumerate(queries)}
 
-    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None, backend=None):
         return fake_hits_per_query[query]
 
     # Patch the pool class to inspect its ``max_workers`` so we can
@@ -583,7 +592,7 @@ def test_multi_query_dedupes_image_to_image(monkeypatch) -> None:
     queries = ["q0", "q1", "q2", "q3"]
     fake_text_hits = {q: [_hit(f"text-{q}", 0.5, route="text")] for q in queries}
 
-    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None, backend=None):
         # Image side should already be None here — dedup pulls it
         # out before fanning out text searches.
         assert image_path is None, "i2i should be pulled by multi_query_search, not hybrid_search"
@@ -618,7 +627,7 @@ def test_multi_query_isolates_variant_exceptions(monkeypatch) -> None:
     failure on variant 1 would 500 the whole search."""
     queries = ["ok-a", "broken", "ok-c"]
 
-    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None):
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None, backend=None):
         if query == "broken":
             raise RuntimeError("simulated Qdrant 5xx")
         return [_hit(f"asset-{query}", 0.5)]

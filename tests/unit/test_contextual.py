@@ -19,6 +19,8 @@ from mm_asset_rag.contextual import (
     generate_chunk_context,
     generate_doc_summary,
 )
+from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, DocumentVersion, Source
+from mm_asset_rag.knowledge_models import Asset as PersistedAsset
 from mm_asset_rag.schema import ParsedDocument
 
 
@@ -27,6 +29,34 @@ def _doc(text: str, *, chunk_index: int | None = 0, section: str = "") -> Parsed
         text=text,
         metadata={"asset_id": "a1", "chunk_index": chunk_index, "section": section},
     )
+
+
+def _stored_chunks(texts: list[str], *, context: str) -> list[Chunk]:
+    document = Document(
+        document_id="context-doc",
+        title="Context document",
+        source=Source(source_id="upload:context-doc"),
+        access_policy=AccessPolicy(collection="tests", allowed_principals=()),
+    )
+    content_hash = "c" * 64
+    version = DocumentVersion.create(document, content_hash)
+    asset = PersistedAsset(
+        content_hash=content_hash,
+        source_type="pdf",
+        relative_path="pdfs/context-doc.pdf",
+    )
+    return [
+        Chunk.create(
+            document_version=version,
+            asset=asset,
+            ordinal=index,
+            text=text,
+            source=document.source,
+            access_policy=document.access_policy,
+            metadata={"context": context},
+        )
+        for index, text in enumerate(texts)
+    ]
 
 
 def test_generate_doc_summary_builds_prompt_and_strips_think(tmp_home, monkeypatch):
@@ -139,26 +169,7 @@ def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, 
     from mm_asset_rag.document_store import write_documents
     from mm_asset_rag.registry import embedders, register_embedder
 
-    docs = [
-        ParsedDocument(
-            text="正文内容一",
-            metadata={
-                "asset_id": "a1",
-                "chunk_index": 0,
-                "source_type": "pdf",
-                "context": "这是关于DDPM去噪扩散的前缀",
-            },
-        ),
-        ParsedDocument(
-            text="正文内容二",
-            metadata={
-                "asset_id": "a1",
-                "chunk_index": 1,
-                "source_type": "pdf",
-                "context": "这是关于DDPM去噪扩散的前缀",
-            },
-        ),
-    ]
+    docs = _stored_chunks(["正文内容一", "正文内容二"], context="这是关于DDPM去噪扩散的前缀")
     write_documents(docs)
 
     seen_texts: list[str] = []
@@ -224,17 +235,7 @@ def test_build_qdrant_text_index_probe_not_reused_when_doc0_has_context(
 
     # Single doc with a context preamble so offset==0, 0 in to_do, and
     # the reuse path is the one the guard must block.
-    docs = [
-        ParsedDocument(
-            text="正文内容",
-            metadata={
-                "asset_id": "a1",
-                "chunk_index": 0,
-                "source_type": "pdf",
-                "context": "CTX-前缀",
-            },
-        ),
-    ]
+    docs = _stored_chunks(["正文内容"], context="CTX-前缀")
     write_documents(docs)
 
     seen_texts: list[str] = []

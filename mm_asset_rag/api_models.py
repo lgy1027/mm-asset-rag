@@ -43,6 +43,9 @@ class _RouteRequest(BaseModel):
     mode: str = Field(default="hybrid", pattern="^(text|text-to-image|image-to-image|hybrid)$")
     image_path: str | None = Field(default=None, max_length=1024)
     top_k: int = Field(default=5, ge=1, le=200)
+    collection: str = Field(..., min_length=1, max_length=200)
+    metadata_filter: dict[str, str | int | float | bool] | None = None
+    principal: str = Field(..., min_length=1, max_length=200)
 
     @field_validator("image_path")
     @classmethod
@@ -57,10 +60,17 @@ class SearchRequest(_RouteRequest):
 class AnswerRequest(BaseModel):
     question: str = Field(..., min_length=1, max_length=2000)
     top_k: int = Field(default=5, ge=1, le=200)
+    collection: str = Field(..., min_length=1, max_length=200)
+    metadata_filter: dict[str, str | int | float | bool] | None = None
+    principal: str = Field(..., min_length=1, max_length=200)
+    min_confidence: float = Field(..., gt=0.0, le=1.0)
 
 
 class EvalRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=200)
+    collection: str = Field(..., min_length=1, max_length=200)
+    metadata_filter: dict[str, str | int | float | bool] | None = None
+    principal: str = Field(..., min_length=1, max_length=200)
     v2: bool = Field(
         default=False,
         description=(
@@ -102,6 +112,7 @@ class EvalRequest(BaseModel):
 
 class ChatRequest(_RouteRequest):
     question: str = Field(..., min_length=1, max_length=2000)
+    min_confidence: float = Field(..., gt=0.0, le=1.0)
 
 
 class UploadEdit(BaseModel):
@@ -109,7 +120,16 @@ class UploadEdit(BaseModel):
     title: str | None = None
     tags: list[str] | str | None = None
     description: str | None = None
+    document_id: str | None = Field(default=None, min_length=1, max_length=200)
+    collection: str | None = Field(default=None, min_length=1, max_length=200)
+    allowed_principals: list[str] | None = Field(default=None, max_length=200)
     rejected: bool = False
+
+    @model_validator(mode="after")
+    def _require_access_policy_for_confirmed_upload(self) -> UploadEdit:
+        if not self.rejected and (self.collection is None or self.allowed_principals is None):
+            raise ValueError("collection and allowed_principals are required for confirmed uploads")
+        return self
 
 
 class UploadConfirmRequest(BaseModel):

@@ -258,6 +258,8 @@ class Reranker:
                     "rerank_score": ce_raw,
                     "blended": True,
                 },
+                images=list(h.images),
+                cache_id=h.cache_id,
             )
 
         ranked: list[SearchHit] = []

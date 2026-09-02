@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 from mm_asset_rag.document_store import write_documents
+from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, DocumentVersion, Source
+from mm_asset_rag.knowledge_models import Asset as PersistedAsset
 from mm_asset_rag.paths import get_documents_jsonl
 from mm_asset_rag.query_preprocess import invalidate_vocab_cache, preprocess
-from mm_asset_rag.schema import ParsedDocument
 
 
 @pytest.fixture(autouse=True)
@@ -25,8 +26,28 @@ def _isolated_home(tmp_path, monkeypatch):
 
 
 def _seed_corpus(home: Path, texts: list[str]) -> None:
+    document = Document(
+        document_id="query-preprocess",
+        title="Query preprocess corpus",
+        source=Source(source_id="tests:query-preprocess"),
+        access_policy=AccessPolicy(collection="tests", allowed_principals=()),
+    )
+    content_hash = "d" * 64
+    version = DocumentVersion.create(document, content_hash)
+    asset = PersistedAsset(
+        content_hash=content_hash,
+        source_type="pdf",
+        relative_path="pdfs/query-preprocess.pdf",
+    )
     docs = [
-        ParsedDocument(text=t, metadata={"asset_id": f"a{i}", "source_type": "pdf"})
+        Chunk.create(
+            document_version=version,
+            asset=asset,
+            ordinal=i,
+            text=t,
+            source=document.source,
+            access_policy=document.access_policy,
+        )
         for i, t in enumerate(texts)
     ]
     write_documents(docs, get_documents_jsonl())
