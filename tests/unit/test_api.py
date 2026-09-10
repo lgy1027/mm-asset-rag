@@ -156,6 +156,60 @@ def test_root_serves_bundled_ui(client: TestClient) -> None:
     assert response.headers["cache-control"] == "no-cache"
 
 
+def test_root_exposes_upload_testing_workspace_landmarks(client: TestClient) -> None:
+    """The bundled UI keeps ingest, validation, and library work visible together."""
+    response = client.get("/")
+
+    assert response.status_code == 200
+    for marker in (
+        'class="app-shell"',
+        "workspace-panel ingest-panel",
+        "workspace-panel validation-panel",
+        "workspace-panel library-panel",
+        'class="drop-zone"',
+        "@media (max-width: 980px)",
+    ):
+        assert marker in response.text
+
+
+def test_root_exposes_persisted_bilingual_ui_controls(client: TestClient) -> None:
+    """The testing workspace can switch its visible copy between English and Chinese."""
+    response = client.get("/")
+
+    assert response.status_code == 200
+    for marker in (
+        'id="languageToggle"',
+        'data-i18n="upload"',
+        "const translations =",
+        "function applyLanguage()",
+        'localStorage.getItem("mmrag-language")',
+    ):
+        assert marker in response.text
+
+
+def test_root_shows_a_visible_searching_state_before_chat_tokens(client: TestClient) -> None:
+    """A slow retrieval must not leave the Ask action looking inert."""
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert 'searching: "Searching your knowledge base…"' in response.text
+    assert 'translate("searching")' in response.text
+
+
+def test_root_keeps_long_markdown_answers_in_a_scrollable_panel(client: TestClient) -> None:
+    """Long streamed answers must scroll inside the workbench and render Markdown safely."""
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert ".messages { flex: 1; min-height: 0; overflow-y: auto;" in response.text
+    assert "function renderMarkdown(markdown)" in response.text
+    assert "ansText.innerHTML = renderMarkdown(answerBuf);" in response.text
+    assert r"line.match(/^\s*(#{1,6})\s+(.+)$/)" in response.text
+    assert r"line.match(/^\s*[-*+]\s+(.+)$/)" in response.text
+    assert "function isMarkdownTableDivider(line)" in response.text
+    assert '<div class="table-scroll"><table>' in response.text
+
+
 def test_search_endpoint_text_mode(client: TestClient) -> None:
     with patch("mm_asset_rag.api.dispatch_search", return_value=[]):
         response = client.post(

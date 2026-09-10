@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     # (e.g. ``rag.example.com``) or ``*`` to disable the check. ``*`` alone
     # is unsafe without also setting ``mmrag_api_token``.
     mmrag_trusted_hosts: str | None = None
+    # Listener address for ``mmrag-api``. Keep loopback as the package
+    # default; use ``0.0.0.0`` with an explicit trusted-host policy when the
+    # web UI must be reachable from another machine on the LAN.
+    mmrag_api_host: str = "127.0.0.1"
+    mmrag_api_port: int = 8011
 
     # ─── LLM (OpenAI-compatible chat completion) ─────────────────────────
     openai_api_key: str | None = None

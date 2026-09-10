@@ -345,8 +345,11 @@ def stream_answer_chunks(
                 break
             try:
                 obj = json.loads(data)
-                delta = obj.get("choices", [{}])[0].get("delta", {}).get("content")
-            except json.JSONDecodeError:
+                choices = obj.get("choices") if isinstance(obj, dict) else None
+                if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                    continue
+                delta = choices[0].get("delta", {}).get("content")
+            except (json.JSONDecodeError, TypeError):
                 continue
             if not delta:
                 continue

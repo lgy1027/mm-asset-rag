@@ -52,8 +52,14 @@ The HTTP API ships with two independent security layers, both with safe loopback
 | --- | --- | --- |
 | `MMRAG_API_TOKEN` | unset | Static bearer token for destructive + write endpoints; unset = no auth |
 | `MMRAG_TRUSTED_HOSTS` | `127.0.0.1,localhost,[::1]` | Comma-separated trusted Host headers; `*` disables the check |
+| `MMRAG_API_HOST` | `127.0.0.1` | Uvicorn listener; set `0.0.0.0` to receive LAN traffic |
+| `MMRAG_API_PORT` | `8011` | Uvicorn listener port |
 
-When deploying on a public host, set **both** `MMRAG_API_TOKEN` (so destructive endpoints can't be called anonymously) and `MMRAG_TRUSTED_HOSTS` (so the loopback-only host check accepts your public hostname).
+For LAN access, set `MMRAG_API_HOST=0.0.0.0` and include the LAN address or
+hostname in `MMRAG_TRUSTED_HOSTS`. When deploying on a public host, set
+**both** `MMRAG_API_TOKEN` (so destructive endpoints can't be called
+anonymously) and `MMRAG_TRUSTED_HOSTS` (so the loopback-only host check accepts
+your public hostname).
 
 ## Text embedding
 

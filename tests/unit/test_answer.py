@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from mm_asset_rag.answer import answer_question, fallback_answer, format_sources
+from mm_asset_rag.answer import (
+    answer_question,
+    fallback_answer,
+    format_sources,
+    stream_answer_chunks,
+)
 from mm_asset_rag.schema import SearchHit
 from mm_asset_rag.search_service import SearchCommand, SearchMode
 
@@ -84,6 +89,32 @@ def test_answer_question_refuses_low_confidence_without_calling_llm(monkeypatch)
     result = answer_question("question", hits=[_hit("a", score=0.2)], min_confidence=0.5)
     assert result["sources"] == []
     assert "证据不足" in result["answer"]
+
+
+def test_stream_answer_ignores_empty_choices_keepalive_event(monkeypatch) -> None:
+    """OpenAI-compatible providers may emit a terminal SSE object with no choices."""
+
+    class _Response:
+        encoding = None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int):
+            del chunk_size
+            yield b'data: {"choices":[{"delta":{"content":"answer"}}]}\n'
+            yield b'data: {"choices":[]}\n'
+            yield b"data: [DONE]\n"
+
+    class _Settings:
+        llm_creds = ("http://127.0.0.1:8000/v1", "test-key", "test-model")
+        answer_with_images = False
+        llm_timeout = 10.0
+
+    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _Settings())
+    monkeypatch.setattr("mm_asset_rag.answer._post_chat", lambda *args, **kwargs: _Response())
+
+    assert list(stream_answer_chunks("question", [_hit("a")])) == ["answer"]
 
 
 def test_answer_json_returns_valid_json(monkeypatch) -> None:

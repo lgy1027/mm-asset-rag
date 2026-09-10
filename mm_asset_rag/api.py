@@ -943,22 +943,28 @@ def root() -> FileResponse:
 def run() -> None:
     """Console-script entry point declared in ``pyproject.toml``.
 
-    Runs the FastAPI app on ``127.0.0.1:8011`` via uvicorn. We bind to
-    loopback only — the API is unauthenticated by default (set
-    ``MMRAG_API_TOKEN`` to guard destructive + LLM-quota endpoints, and
-    ``MMRAG_TRUSTED_HOSTS`` to widen the Host allow-list beyond loopback).
+    Runs the FastAPI app at the address configured by ``MMRAG_API_HOST`` /
+    ``MMRAG_API_PORT``. The package default is loopback; when binding to the
+    LAN, set ``MMRAG_TRUSTED_HOSTS`` and an API token deliberately.
     """
     import sys
 
     if "--help" in sys.argv or "-h" in sys.argv:
         print(
             "mmrag-api — start the mm-asset-rag HTTP API + web UI.\n\n"
-            "  mmrag-api            # serve on http://127.0.0.1:8011\n\n"
+            "  mmrag-api            # serve on MMRAG_API_HOST:MMRAG_API_PORT\n\n"
             "No CLI flags; configure via env vars (see .env.example / "
-            "docs/configuration.md). Bind is loopback-only by default; set "
-            "MMRAG_TRUSTED_HOSTS + MMRAG_API_TOKEN before exposing publicly."
+            "docs/configuration.md). The default bind is 127.0.0.1:8011; set "
+            "MMRAG_API_HOST=0.0.0.0, MMRAG_TRUSTED_HOSTS and MMRAG_API_TOKEN "
+            "before exposing it beyond the local machine."
         )
         return
     import uvicorn
 
-    uvicorn.run("mm_asset_rag.api:app", host="127.0.0.1", port=8011, log_level="info")
+    settings = get_settings()
+    uvicorn.run(
+        "mm_asset_rag.api:app",
+        host=settings.mmrag_api_host,
+        port=settings.mmrag_api_port,
+        log_level="info",
+    )

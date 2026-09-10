@@ -36,6 +36,8 @@ def test_defaults_applied_when_no_env(monkeypatch):
         "LLM_TIMEOUT",
         "CLIP_MODEL",
         "DOCUMENT_PARSER",
+        "MMRAG_API_HOST",
+        "MMRAG_API_PORT",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -59,6 +61,8 @@ def test_defaults_applied_when_no_env(monkeypatch):
     assert s.auto_meta_pdf_max_render_pixels == 8_000_000
     assert s.preview_cache_ttl_seconds == 24 * 60 * 60
     assert s.auto_meta_max_concurrency == 3
+    assert s.mmrag_api_host == "127.0.0.1"
+    assert s.mmrag_api_port == 8011
 
 
 def test_data_dir_falls_back_to_home(monkeypatch):
@@ -84,6 +88,16 @@ def test_env_var_overrides_default(monkeypatch):
     assert s.enable_ocr is True
     assert s.enable_vlm is True
     assert s.qdrant_upsert_batch_size == 64
+
+
+def test_api_bind_address_can_be_configured(monkeypatch):
+    monkeypatch.setenv("MMRAG_API_HOST", "0.0.0.0")
+    monkeypatch.setenv("MMRAG_API_PORT", "18011")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.mmrag_api_host == "0.0.0.0"
+    assert settings.mmrag_api_port == 18011
 
 
 def test_case_insensitive_env(monkeypatch):

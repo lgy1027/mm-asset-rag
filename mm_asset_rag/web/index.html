@@ -19,14 +19,18 @@
       --err: #f87171;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "Helvetica Neue", Arial, sans-serif; }
-    header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
+    html, body { height: 100%; margin: 0; padding: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, "Helvetica Neue", Arial, sans-serif; }
+    header { min-height: 58px; padding: 14px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
     header h1 { margin: 0; font-size: 16px; font-weight: 600; }
     header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
     header .sub { color: var(--muted); font-size: 12px; }
-    main { display: grid; grid-template-columns: 380px 1fr; height: calc(100vh - 53px); }
-    aside { border-right: 1px solid var(--border); overflow-y: auto; padding: 16px; }
-    section { padding: 16px 24px; overflow-y: auto; }
+    #languageToggle { margin-left: auto; padding: 5px 10px; font-size: 12px; }
+    .app-shell { display: grid; grid-template-columns: minmax(300px, 350px) minmax(0, 1fr) minmax(260px, 320px); min-height: 0; height: calc(100vh - 58px); overflow: hidden; }
+    .workspace-panel { min-width: 0; overflow-y: auto; padding: 20px; }
+    .ingest-panel { border-right: 1px solid var(--border); background: rgba(255,255,255,0.01); }
+    .validation-panel { display: flex; flex-direction: column; padding: 24px; min-height: 0; overflow: hidden; }
+    .library-panel { border-left: 1px solid var(--border); background: rgba(255,255,255,0.01); }
+    .section-caption { color: var(--muted); font-size: 12px; margin: -6px 0 16px; }
     h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; }
     .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
     .panel-tight { padding: 8px 10px; }
@@ -77,13 +81,37 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     .preview-head .meta { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
     .preview-card input[type=text], .preview-card textarea { margin-bottom: 6px; }
     .preview-actions { display: flex; gap: 8px; margin-top: 8px; }
-    .chat { display: flex; flex-direction: column; height: 100%; }
-    .messages { flex: 1; overflow-y: auto; padding-right: 8px; }
+    .drop-zone { border: 1px dashed #4b5d78; border-radius: 8px; background: linear-gradient(135deg, rgba(59,130,246,.10), rgba(94,177,255,.03)); padding: 14px; text-align: center; }
+    .drop-zone strong { display: block; margin-bottom: 3px; }
+    .drop-zone span { color: var(--muted); font-size: 12px; }
+    .drop-zone input { margin-top: 10px; text-align: left; }
+    .chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+    .messages { flex: 1; min-height: 0; overflow-y: auto; padding-right: 8px; }
     .msg { padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; line-height: 1.55; }
     .msg.user { background: var(--panel-2); border: 1px solid var(--border); }
     .msg.assistant { background: #14283f; border: 1px solid #1e3a5f; }
     .msg .meta { font-size: 11px; color: var(--muted); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
     .msg pre { white-space: pre-wrap; font-family: inherit; margin: 0; }
+    .answer-text { overflow-wrap: anywhere; }
+    .answer-text > :first-child { margin-top: 0; }
+    .answer-text > :last-child { margin-bottom: 0; }
+    .answer-text h1, .answer-text h2, .answer-text h3, .answer-text h4, .answer-text h5, .answer-text h6 { margin: 16px 0 8px; line-height: 1.3; }
+    .answer-text h1 { font-size: 19px; }
+    .answer-text h2 { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--fg); }
+    .answer-text h3 { font-size: 14px; }
+    .answer-text p { margin: 0 0 10px; }
+    .answer-text ul, .answer-text ol { margin: 0 0 10px; padding-left: 22px; }
+    .answer-text blockquote { margin: 0 0 10px; padding-left: 10px; border-left: 3px solid var(--accent); color: var(--muted); }
+    .answer-text code { background: rgba(0, 0, 0, 0.28); border-radius: 4px; padding: 1px 4px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.92em; }
+    .answer-text pre { overflow-x: auto; margin: 0 0 10px; padding: 10px; border-radius: 6px; background: rgba(0, 0, 0, 0.28); }
+    .answer-text pre code { padding: 0; background: transparent; }
+    .answer-text a { color: var(--accent); }
+    .answer-text .table-scroll { overflow-x: auto; margin: 0 0 12px; border: 1px solid var(--border); border-radius: 6px; }
+    .answer-text table { width: 100%; min-width: max-content; border-collapse: collapse; font-size: 13px; }
+    .answer-text th, .answer-text td { padding: 8px 10px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    .answer-text th { background: var(--panel-2); font-weight: 600; }
+    .answer-text tr:last-child td { border-bottom: 0; }
+    .answer-text th:last-child, .answer-text td:last-child { border-right: 0; }
     .sources { margin-top: 10px; border-top: 1px dashed var(--border); padding-top: 10px; }
     .source { background: rgba(255,255,255,0.02); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 12px; }
     .source .head { display: flex; gap: 6px; align-items: center; margin-bottom: 4px; }
@@ -135,6 +163,29 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     .modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
     .modal-actions button { font-size: 13px; padding: 6px 14px; }
     .modal-actions .ghost { color: var(--muted); }
+    .validation-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 14px; }
+    .validation-top h2 { margin-bottom: 4px; color: var(--fg); font-size: 16px; letter-spacing: 0; text-transform: none; }
+    .validation-top p { margin: 0; color: var(--muted); font-size: 12px; }
+    .validation-step { color: var(--accent); font-size: 11px; font-weight: 600; white-space: nowrap; }
+    .validation-panel .chat { flex: 1; min-height: 460px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); padding: 16px; }
+    .library-panel .panel { max-height: 46vh; overflow-y: auto; }
+    @media (max-width: 980px) {
+      .app-shell { grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); }
+      .library-panel { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--border); display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .library-panel h2 { grid-column: span 1; }
+      .library-panel .panel { max-height: 280px; }
+    }
+    @media (max-width: 680px) {
+      html, body { height: auto; overflow-y: auto; }
+      header { padding: 12px 16px; }
+      .app-shell { display: block; height: auto; overflow: visible; }
+      .workspace-panel { padding: 16px; overflow: visible; }
+      .ingest-panel, .library-panel { border: 0; border-bottom: 1px solid var(--border); }
+      .library-panel { display: block; }
+      .validation-panel .chat { min-height: 420px; }
+      .validation-top { display: block; }
+      .validation-step { display: inline-block; margin-top: 6px; }
+    }
   </style>
 </head>
 <body>
@@ -142,11 +193,12 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     <span class="dot" id="statusDot"></span>
     <h1>mm-asset-rag</h1>
     <span class="sub" id="statusText">connecting…</span>
+    <button class="ghost" id="languageToggle" type="button" aria-label="Switch language">中文</button>
   </header>
 
-  <main>
-    <aside>
-      <h2>Health</h2>
+  <main class="app-shell">
+    <aside class="workspace-panel ingest-panel">
+      <h2 data-i18n="health">Health</h2>
       <div class="panel" id="healthPanel">
         <div class="kpi"><div><div class="v" id="kpiFiles">–</div><div class="l">files</div></div></div>
         <div class="kpi" style="margin-top:8px">
@@ -155,55 +207,49 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         </div>
       </div>
 
-      <h2>Access context</h2>
+      <h2 data-i18n="accessContext">Access context</h2>
       <div class="panel">
-        <label>Collection</label>
+        <label data-i18n="collection">Collection</label>
         <input type="text" id="accessCollection" value="default" autocomplete="off">
-        <label>Principal</label>
-        <input type="text" id="accessPrincipal" placeholder="required" autocomplete="off">
-        <label>Policy metadata filter (JSON object, optional)</label>
+        <label data-i18n="principal">Principal</label>
+        <input type="text" id="accessPrincipal" data-i18n-placeholder="principalRequired" placeholder="required" autocomplete="off">
+        <label data-i18n="metadataFilter">Policy metadata filter (JSON object, optional)</label>
         <textarea id="accessMetadata" placeholder='{"department":"research"}'></textarea>
-        <label>Minimum confidence</label>
+        <label data-i18n="minimumConfidence">Minimum confidence</label>
         <input type="text" id="minConfidence" value="0.50" inputmode="decimal">
       </div>
 
-      <h2>Upload</h2>
+      <h2 data-i18n="upload">Upload</h2>
       <div class="panel">
-        <label>PDFs, images &amp; documents (drag or click)</label>
-        <input type="file" id="fileInput" multiple
-               accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp,.gif,.docx,.pptx,.xlsx,.html,.htm,.md,.markdown,.txt" />
+        <div class="drop-zone">
+          <strong data-i18n="chooseFiles">Choose files to test</strong>
+          <span data-i18n="acceptedFiles">PDF, image, Office document, HTML, Markdown, or text</span>
+          <input type="file" id="fileInput" multiple
+                 accept=".pdf,.jpg,.jpeg,.png,.webp,.bmp,.gif,.docx,.pptx,.xlsx,.html,.htm,.md,.markdown,.txt" />
+        </div>
         <div class="file-list" id="fileList"></div>
         <div class="row" style="margin-top:8px">
           <span style="font-size:11px;color:var(--muted)">
-            Preview first: the server sniffs file type and auto-extracts title/tags with VLM when configured.
+            <span data-i18n="previewHint">Preview first: the server sniffs file type and auto-extracts title/tags with VLM when configured.</span>
           </span>
-          <button class="shrink" id="previewBtn" disabled>Preview</button>
+          <button class="shrink" id="previewBtn" disabled data-i18n="preview">Preview</button>
         </div>
         <div id="previewList"></div>
         <div class="preview-actions" id="previewActions" style="display:none">
-          <button class="ghost" id="clearPreviewBtn">Cancel</button>
-          <button id="confirmBtn">Confirm &amp; Ingest</button>
+          <button class="ghost" id="clearPreviewBtn" data-i18n="cancel">Cancel</button>
+          <button id="confirmBtn" data-i18n="confirmIngest">Confirm &amp; Ingest</button>
         </div>
       </div>
 
       <div class="panel" id="taskPanel" style="display:none">
         <div class="row">
           <span class="pill" id="taskStatusPill">pending</span>
-          <button class="shrink ghost" id="refreshTaskBtn">refresh</button>
+          <button class="shrink ghost" id="refreshTaskBtn" data-i18n="refresh">refresh</button>
         </div>
         <div class="status-bar"><div id="taskBar" style="width:0%"></div></div>
         <div style="font-size:12px;color:var(--muted)" id="taskDetail">–</div>
       </div>
 
-      <h2>Tasks</h2>
-      <div class="panel panel-tight" id="tasksList">
-        <div class="empty">no tasks yet</div>
-      </div>
-
-      <h2>Documents</h2>
-      <div class="panel panel-tight" id="documentsList">
-        <div class="empty">enter an access context to list documents</div>
-      </div>
     </aside>
 
     <aside id="documentDrawer" aria-hidden="true">
@@ -214,12 +260,19 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       <div class="drawer-body" id="documentDrawerBody">loading…</div>
     </aside>
 
-    <section>
+    <section class="workspace-panel validation-panel">
+      <div class="validation-top">
+        <div>
+          <h2 data-i18n="validateTitle">Validate retrieval and answers</h2>
+          <p data-i18n="validateHint">1. set an access context · 2. ingest files · 3. ask a question and inspect sources</p>
+        </div>
+        <span class="validation-step" data-i18n="testWorkbench">TEST WORKBENCH</span>
+      </div>
       <div class="chat">
         <div class="messages" id="messages">
-          <div class="empty">ask a question about your PDFs / images.<br>
+          <div class="empty"><span data-i18n="askEmpty">ask a question about your PDFs / images.</span><br>
             <br>
-            <span style="font-size:11px">examples:</span><br>
+            <span style="font-size:11px" data-i18n="examples">examples:</span><br>
             <span style="font-size:12px;color:var(--muted)">
               "讲 transformer 的论文" · "find an image of a butterfly" · "what is RAG?"
             </span>
@@ -227,32 +280,114 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         </div>
 
         <div class="input-row">
-          <textarea id="queryInput" placeholder="ask anything…   (shift+enter for newline)"></textarea>
+          <textarea id="queryInput" data-i18n-placeholder="questionPlaceholder" placeholder="ask anything…   (shift+enter for newline)"></textarea>
           <div class="modes">
-            <label><input type="radio" name="mode" value="hybrid" checked> hybrid</label>
-            <label><input type="radio" name="mode" value="text"> text</label>
-            <label><input type="radio" name="mode" value="text-to-image"> text→image</label>
-            <label><input type="radio" name="mode" value="image-to-image"> image→image</label>
-            <button id="askBtn">Ask</button>
+            <label><input type="radio" name="mode" value="hybrid" checked> <span data-i18n="hybrid">hybrid</span></label>
+            <label><input type="radio" name="mode" value="text"> <span data-i18n="text">text</span></label>
+            <label><input type="radio" name="mode" value="text-to-image"> <span data-i18n="textToImage">text→image</span></label>
+            <label><input type="radio" name="mode" value="image-to-image"> <span data-i18n="imageToImage">image→image</span></label>
+            <button id="askBtn" data-i18n="ask">Ask</button>
           </div>
         </div>
       </div>
     </section>
+
+    <aside class="workspace-panel library-panel">
+      <div>
+        <h2 data-i18n="recentTasks">Recent tasks</h2>
+        <div class="panel panel-tight" id="tasksList">
+          <div class="empty" data-i18n="noTasks">no tasks yet</div>
+        </div>
+      </div>
+      <div>
+        <h2 data-i18n="visibleDocuments">Visible documents</h2>
+        <p class="section-caption" data-i18n="visibleDocumentsHint">Matches the collection and principal on the left.</p>
+        <div class="panel panel-tight" id="documentsList">
+          <div class="empty" data-i18n="enterAccessContext">enter an access context to list documents</div>
+        </div>
+      </div>
+    </aside>
   </main>
 
   <div id="confirmModal" class="modal" aria-hidden="true" role="dialog" aria-modal="true">
     <div class="modal-dialog">
-      <div class="modal-title" id="confirmTitle">Confirm</div>
+      <div class="modal-title" id="confirmTitle" data-i18n="confirm">Confirm</div>
       <div class="modal-body" id="confirmBody">Are you sure?</div>
       <div class="modal-actions">
-        <button class="ghost" id="confirmNo">Cancel</button>
-        <button id="confirmYes">Confirm</button>
+        <button class="ghost" id="confirmNo" data-i18n="cancel">Cancel</button>
+        <button id="confirmYes" data-i18n="confirm">Confirm</button>
       </div>
     </div>
   </div>
 
   <script>
     const $ = (id) => document.getElementById(id);
+    const translations = {
+      en: {
+        health: "Health", accessContext: "Access context", collection: "Collection", principal: "Principal",
+        principalRequired: "required", metadataFilter: "Policy metadata filter (JSON object, optional)",
+        minimumConfidence: "Minimum confidence", upload: "Upload", chooseFiles: "Choose files to test",
+        acceptedFiles: "PDF, image, Office document, HTML, Markdown, or text",
+        previewHint: "Preview first: the server sniffs file type and auto-extracts title/tags with VLM when configured.",
+        preview: "Preview", cancel: "Cancel", confirm: "Confirm", confirmIngest: "Confirm & Ingest",
+        previewing: "Previewing…", title: "Title", tags: "Tags", description: "Description",
+        optionalDescription: "optional description", skipFile: "skip this file", existingDocument: "existing document",
+        file: "file", image: "IMAGE", unsupported: "UNSUPPORTED", noVisibleDocuments: "no visible documents",
+        refresh: "refresh", validateTitle: "Validate retrieval and answers",
+        validateHint: "1. set an access context · 2. ingest files · 3. ask a question and inspect sources",
+        testWorkbench: "TEST WORKBENCH", askEmpty: "ask a question about your PDFs / images.",
+        examples: "examples:", questionPlaceholder: "ask anything…   (shift+enter for newline)",
+        hybrid: "hybrid", text: "text", textToImage: "text→image", imageToImage: "image→image",
+        ask: "Ask", recentTasks: "Recent tasks", noTasks: "no tasks yet",
+        visibleDocuments: "Visible documents", visibleDocumentsHint: "Matches the collection and principal on the left.",
+        enterAccessContext: "enter an access context to list documents",
+        searching: "Searching your knowledge base…",
+      },
+      zh: {
+        health: "服务状态", accessContext: "访问范围", collection: "知识库集合", principal: "访问主体",
+        principalRequired: "必填", metadataFilter: "策略元数据筛选（JSON 对象，可选）",
+        minimumConfidence: "最低置信度", upload: "上传", chooseFiles: "选择要测试的文件",
+        acceptedFiles: "PDF、图片、Office 文档、HTML、Markdown 或纯文本",
+        previewHint: "先预览：服务端会识别文件类型，并在配置 VLM 后自动提取标题和标签。",
+        preview: "预览", cancel: "取消", confirm: "确认", confirmIngest: "确认并导入",
+        previewing: "正在预览…", title: "标题", tags: "标签", description: "描述",
+        optionalDescription: "可选描述", skipFile: "跳过此文件", existingDocument: "已有文档",
+        file: "文件", image: "图片", unsupported: "不支持", noVisibleDocuments: "暂无可见文档",
+        refresh: "刷新", validateTitle: "验证检索与回答",
+        validateHint: "1. 设置访问范围 · 2. 导入文件 · 3. 提问并检查来源",
+        testWorkbench: "测试工作台", askEmpty: "针对已上传的 PDF 或图片提问。",
+        examples: "示例：", questionPlaceholder: "输入问题…   （Shift+Enter 换行）",
+        hybrid: "混合检索", text: "文本检索", textToImage: "文本→图片", imageToImage: "图片→图片",
+        ask: "提问", recentTasks: "最近任务", noTasks: "暂无任务",
+        visibleDocuments: "可见文档", visibleDocumentsHint: "与左侧的 collection 和 principal 范围保持一致。",
+        enterAccessContext: "填写有效的访问范围后即可查看文档。",
+        searching: "正在检索知识库…",
+      },
+    };
+    let uiLanguage = "en";
+    function translate(key) {
+      return translations[uiLanguage][key] || translations.en[key] || key;
+    }
+    function applyLanguage() {
+      document.documentElement.lang = uiLanguage === "zh" ? "zh-CN" : "en";
+      document.querySelectorAll("[data-i18n]").forEach((element) => {
+        element.textContent = translate(element.dataset.i18n);
+      });
+      document.querySelectorAll("[data-i18n-placeholder]").forEach((element) => {
+        element.placeholder = translate(element.dataset.i18nPlaceholder);
+      });
+      $("languageToggle").textContent = uiLanguage === "zh" ? "EN" : "中文";
+      $("languageToggle").setAttribute(
+        "aria-label", uiLanguage === "zh" ? "Switch to English" : "切换为中文",
+      );
+    }
+    function loadLanguage() {
+      const saved = localStorage.getItem("mmrag-language");
+      uiLanguage = saved === "zh" || saved === "en"
+        ? saved
+        : (navigator.language || "").toLowerCase().startsWith("zh") ? "zh" : "en";
+      applyLanguage();
+    }
     const fileInput = $("fileInput");
     const fileList = $("fileList");
     const previewBtn = $("previewBtn");
@@ -273,6 +408,14 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
     const accessPrincipal = $("accessPrincipal");
     const accessMetadata = $("accessMetadata");
     const minConfidence = $("minConfidence");
+    const languageToggle = $("languageToggle");
+
+    languageToggle.addEventListener("click", () => {
+      uiLanguage = uiLanguage === "zh" ? "en" : "zh";
+      localStorage.setItem("mmrag-language", uiLanguage);
+      applyLanguage();
+    });
+    loadLanguage();
 
     let pickedFiles = [];
     let activeTaskId = null;
@@ -303,6 +446,98 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
 
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+
+    // The API returns Markdown rather than trusted HTML. Escape every source
+    // character first, then add only the Markdown elements the UI supports.
+    function renderMarkdownInline(text) {
+      const escaped = escapeHtml(text);
+      return escaped
+        .replace(/`([^`]+)`/g, "<code>$1</code>")
+        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+        .replace(/__(.+?)__/g, "<strong>$1</strong>")
+        .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+        .replace(/_([^_\n]+)_/g, "<em>$1</em>")
+        .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+    }
+
+    function markdownTableCells(line) {
+      let text = line.trim();
+      if (text.startsWith("|")) text = text.slice(1);
+      if (text.endsWith("|")) text = text.slice(0, -1);
+      return text.split("|").map((cell) => cell.trim());
+    }
+
+    function isMarkdownTableDivider(line) {
+      const cells = markdownTableCells(line);
+      return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+    }
+
+    function renderMarkdownTable(headers, rows) {
+      const head = headers.map((cell) => `<th>${renderMarkdownInline(cell)}</th>`).join("");
+      const body = rows.map((row) => `<tr>${headers.map((_, index) => `<td>${renderMarkdownInline(row[index] || "")}</td>`).join("")}</tr>`).join("");
+      return `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
+    }
+
+    function renderMarkdown(markdown) {
+      const lines = String(markdown || "").replace(/\r\n?/g, "\n").split("\n");
+      const blocks = [];
+      let paragraph = [];
+      let list = null;
+      let code = null;
+      const flushParagraph = () => {
+        if (paragraph.length) blocks.push(`<p>${renderMarkdownInline(paragraph.join("\n")).replace(/\n/g, "<br>")}</p>`);
+        paragraph = [];
+      };
+      const flushList = () => {
+        if (list) blocks.push(`<${list.type}>${list.items.map((item) => `<li>${renderMarkdownInline(item)}</li>`).join("")}</${list.type}>`);
+        list = null;
+      };
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index];
+        if (code) {
+          if (/^```/.test(line)) { blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`); code = null; }
+          else code.push(line);
+          continue;
+        }
+        if (/^```/.test(line)) { flushParagraph(); flushList(); code = []; continue; }
+        if (line.includes("|") && index + 1 < lines.length && isMarkdownTableDivider(lines[index + 1])) {
+          const headers = markdownTableCells(line);
+          const rows = [];
+          let rowIndex = index + 2;
+          while (rowIndex < lines.length && lines[rowIndex].includes("|")) {
+            rows.push(markdownTableCells(lines[rowIndex]));
+            rowIndex += 1;
+          }
+          flushParagraph();
+          flushList();
+          blocks.push(renderMarkdownTable(headers, rows));
+          index = rowIndex - 1;
+          continue;
+        }
+        const heading = line.match(/^\s*(#{1,6})\s+(.+)$/);
+        const unordered = line.match(/^\s*[-*+]\s+(.+)$/);
+        const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
+        if (heading) {
+          flushParagraph(); flushList();
+          const level = heading[1].length;
+          blocks.push(`<h${level}>${renderMarkdownInline(heading[2])}</h${level}>`);
+        } else if (unordered || ordered) {
+          flushParagraph();
+          const type = unordered ? "ul" : "ol";
+          if (!list || list.type !== type) { flushList(); list = { type, items: [] }; }
+          list.items.push((unordered || ordered)[1]);
+        } else if (/^>\s?/.test(line)) {
+          flushParagraph(); flushList(); blocks.push(`<blockquote>${renderMarkdownInline(line.replace(/^>\s?/, ""))}</blockquote>`);
+        } else if (/^\s*([-*_])(?:\s*\1){2,}\s*$/.test(line)) {
+          flushParagraph(); flushList(); blocks.push("<hr>");
+        } else if (!line.trim()) {
+          flushParagraph(); flushList();
+        } else paragraph.push(line);
+      }
+      if (code) blocks.push(`<pre><code>${escapeHtml(code.join("\n"))}</code></pre>`);
+      flushParagraph(); flushList();
+      return blocks.join("");
     }
 
     // Short, uppercased format label for a document's file extension —
@@ -397,13 +632,13 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       currentPreview = null;
       previewSubmitted = false;
       confirmBtn.disabled = false;
-      confirmBtn.textContent = "Confirm & Ingest";
+      confirmBtn.textContent = translate("confirmIngest");
     });
 
     previewBtn.addEventListener("click", async () => {
       if (!pickedFiles.length) return;
       previewBtn.disabled = true;
-      previewBtn.textContent = "Previewing…";
+      previewBtn.textContent = translate("previewing");
       const fd = new FormData();
       for (const f of pickedFiles) fd.append("files", f, f.name);
       try {
@@ -413,7 +648,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         currentPreview = d;
         previewSubmitted = false;
         confirmBtn.disabled = false;
-        confirmBtn.textContent = "Confirm & Ingest";
+        confirmBtn.textContent = translate("confirmIngest");
         renderPreviewCards(d.previews || []);
         previewActions.style.display = (d.previews || []).length ? "flex" : "none";
         setStatus(`preview ready · ${(d.previews || []).length} file(s)`, "ok");
@@ -421,7 +656,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         setStatus(`preview failed: ${e.message}`, "err");
       } finally {
         previewBtn.disabled = false;
-        previewBtn.textContent = "Preview";
+        previewBtn.textContent = translate("preview");
       }
     });
 
@@ -434,7 +669,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       previewActions.style.display = "none";
       previewSubmitted = false;
       confirmBtn.disabled = false;
-      confirmBtn.textContent = "Confirm & Ingest";
+      confirmBtn.textContent = translate("confirmIngest");
       previewBtn.disabled = true;
     });
 
@@ -443,32 +678,32 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         const sn = p.sniff || {};
         const disabled = sn.source_type === "unknown" ? "checked" : "";
         const kind = sn.source_type === "pdf" ? "PDF"
-          : sn.source_type === "image" ? "IMAGE"
+          : sn.source_type === "image" ? translate("image")
           : sn.source_type === "document" ? "DOC"
-          : "UNSUPPORTED";
+          : translate("unsupported");
         const tags = (p.effective_tags || []).join(", ");
         const detail = sn.source_type === "pdf"
           ? `${sn.page_count || "?"} page(s)`
           : sn.source_type === "image" ? `${sn.width || "?"}×${sn.height || "?"}`
           : sn.source_type === "document" ? _docLabel(sn.relative_path)
-          : (p.rejected_reason || "unsupported");
+          : (p.rejected_reason || translate("unsupported").toLowerCase());
         const dupBadge = p.existing_document_id
-          ? `<span class="pill warn" style="margin-left:6px">existing document ${escapeHtml(p.existing_document_id)}</span>`
+          ? `<span class="pill warn" style="margin-left:6px">${escapeHtml(translate("existingDocument"))} ${escapeHtml(p.existing_document_id)}</span>`
           : "";
         return `
           <div class="preview-card ${sn.source_type === "unknown" ? "unsupported" : ""}" data-preview-id="${escapeHtml(p.preview_id)}">
             <div class="preview-head">
-              <strong>${kind} · ${escapeHtml(sn.relative_path || "file")}</strong>
+              <strong>${kind} · ${escapeHtml(sn.relative_path || translate("file"))}</strong>
               <span class="meta">${escapeHtml(detail)}</span>
               ${dupBadge}
             </div>
-            <label>Title</label>
+            <label>${escapeHtml(translate("title"))}</label>
             <input type="text" class="preview-title" value="${escapeHtml(p.effective_title || sn.title || "")}">
-            <label>Tags</label>
+            <label>${escapeHtml(translate("tags"))}</label>
             <input type="text" class="preview-tags" value="${escapeHtml(tags)}" placeholder="tag1, tag2, tag3">
-            <label>Description</label>
-            <textarea class="preview-desc" placeholder="optional description">${escapeHtml(p.effective_description || "")}</textarea>
-            <label class="check"><input type="checkbox" class="preview-reject" ${disabled}> skip this file</label>
+            <label>${escapeHtml(translate("description"))}</label>
+            <textarea class="preview-desc" placeholder="${escapeHtml(translate("optionalDescription"))}">${escapeHtml(p.effective_description || "")}</textarea>
+            <label class="check"><input type="checkbox" class="preview-reject" ${disabled}> ${escapeHtml(translate("skipFile"))}</label>
           </div>`;
       }).join("");
     }
@@ -1033,15 +1268,16 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
       queryInput.value = "";
       askBtn.disabled = true;
       const mode = document.querySelector('input[name="mode"]:checked').value;
+      setStatus(translate("searching"), "ok");
       appendMessage("user", `<div class="meta">you · ${mode}</div><pre>${escapeHtml(q)}</pre>`);
 
-      // Streamed assistant message: we mutate the <pre> as tokens arrive.
+      // Streamed assistant message: re-render accumulated Markdown as tokens arrive.
       if (messages.querySelector(".empty")) messages.innerHTML = "";
       const assistantDiv = document.createElement("div");
       assistantDiv.className = "msg assistant";
       assistantDiv.innerHTML =
         `<div class="meta">assistant · ${mode}${llmModel ? " · " + escapeHtml(llmModel) : ""}</div>` +
-        `<pre class="ansText"></pre>` +
+        `<div class="ansText answer-text">${escapeHtml(translate("searching"))}</div>` +
         `<div class="sources ansSources"></div>`;
       messages.appendChild(assistantDiv);
       const ansText = assistantDiv.querySelector(".ansText");
@@ -1073,7 +1309,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
               ansSources.innerHTML = renderSources(event.sources || []);
             } else if (event.event === "token") {
               answerBuf += event.text || "";
-              ansText.textContent = answerBuf;
+              ansText.innerHTML = renderMarkdown(answerBuf);
               messages.scrollTop = messages.scrollHeight;
             } else if (event.event === "error") {
               ansText.textContent = `error: ${event.message || "unknown"}`;
