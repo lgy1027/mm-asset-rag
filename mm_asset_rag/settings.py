@@ -53,9 +53,6 @@ class Settings(BaseSettings):
     mmrag_api_port: int = 8011
 
     # ─── LLM (OpenAI-compatible chat completion) ─────────────────────────
-    openai_api_key: str | None = None
-    openai_base_url: str | None = None
-    openai_model: str | None = None
     # Shared remote OpenAI-compatible connection for LLM, VLM and embedding.
     openai_compat_api_key: str | None = None
     openai_compat_base_url: str | None = None
@@ -594,29 +591,16 @@ class Settings(BaseSettings):
 
     @property
     def has_llm(self) -> bool:
-        """Whether the LLM triple is complete enough to issue real requests.
-
-        True when *either* the ``OPENAI_*`` triple is set *or* the ``VLM_*``
-        triple is set (the LLM channel falls back to VLM credentials — see
-        :attr:`llm_creds`). This lets a deployment configure a single
-        multimodal model under ``VLM_*`` and have it serve both the image
-        caption / auto-meta path *and* the ``/answer`` / ``/chat`` text path.
-        """
-        return bool(
-            (self.openai_api_key and self.openai_base_url and self.openai_model)
-            or (self.vlm_api_key and self.vlm_base_url and self.vlm_model)
-        )
+        """Whether the optional LLM has a model plus a resolved connection."""
+        base, key, model = self.llm_creds
+        return bool(base and key and model)
 
     @property
     def llm_creds(self) -> tuple[str | None, str | None, str | None]:
         """Return ``(base_url, api_key, model)`` for the chat LLM channel.
 
-        ``OPENAI_*`` is preferred (it is the canonical chat triple); when
-        any of the three is missing the ``VLM_*`` triple is used as
-        fallback so a deployment that only configured a multimodal VLM
-        still gets a working ``/answer`` / ``/chat``. Returns ``(None,
-        None, None)`` when neither triple is complete — callers then fall
-        back to the evidence-summary path.
+        The LLM model is optional; no VLM or legacy configuration fallback is
+        used when it is absent.
         """
         if not self.llm_model:
             return None, None, None
@@ -630,9 +614,8 @@ class Settings(BaseSettings):
     def vlm_creds(self) -> tuple[str | None, str | None, str | None]:
         """Return ``(base_url, api_key, model)`` for the VLM channel.
 
-        ``VLM_*`` is preferred; falls back to ``OPENAI_*`` when unset
-        (preserves the long-standing "configure once under OPENAI_*"
-        convenience for image caption / auto-meta).
+        VLM remains optional and resolves only its own model plus the common
+        connection or its explicit override.
         """
         if not self.vlm_model:
             return None, None, None

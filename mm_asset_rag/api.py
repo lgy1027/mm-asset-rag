@@ -352,7 +352,7 @@ def health(
         "text_index_exists": _qdrant_collection_alive("text"),
         "image_index_exists": _qdrant_collection_alive("image"),
         "vector_backend": "qdrant",
-        "model": get_settings().openai_model or "",
+        "model": get_settings().llm_model or "",
     }
     if deep:
         s = get_settings()
@@ -360,11 +360,8 @@ def health(
         # (api_key, base_url, model) — different orders, name carefully.
         lb, lk, lm = s.llm_creds
         ek, eb, _em = s.text_embedding_creds
-        # An embedder with no explicit EMBEDDING_MODEL still works at runtime
-        # (TextEmbedder falls back to "text-embedding-3-small"), so treat a
-        # missing model as configured as long as api_key + base_url resolve.
         payload["llm_configured"] = bool(lb and lk and lm)
-        payload["embedder_configured"] = bool(ek and eb)
+        payload["embedder_configured"] = bool(ek and eb and _em)
     return payload
 
 

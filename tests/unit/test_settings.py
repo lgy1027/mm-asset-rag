@@ -111,19 +111,16 @@ def test_has_llm_requires_full_triple(monkeypatch):
     # ``has_llm`` accepts either ``OPENAI_*`` or ``VLM_*`` (LLM channel
     # falls back to VLM credentials), so the negative case must clear both
     # triples — otherwise a sibling test that set ``VLM_*`` would leak in.
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
-    monkeypatch.delenv("VLM_API_KEY", raising=False)
-    monkeypatch.delenv("VLM_BASE_URL", raising=False)
-    monkeypatch.delenv("VLM_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_COMPAT_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_COMPAT_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_MODEL", raising=False)
     assert Settings(_env_file=None).has_llm is False
 
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "k")
     assert Settings(_env_file=None).has_llm is False  # still missing BASE_URL+MODEL
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://x")
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://x")
     assert Settings(_env_file=None).has_llm is False  # still missing MODEL
-    monkeypatch.setenv("OPENAI_MODEL", "gpt")
+    monkeypatch.setenv("LLM_MODEL", "gpt")
     assert Settings(_env_file=None).has_llm is True
 
 
@@ -156,26 +153,26 @@ def test_pdf_parser_validates_choice(monkeypatch):
 
 
 def test_get_settings_returns_singleton(monkeypatch):
-    monkeypatch.setenv("OPENAI_MODEL", "first")
+    monkeypatch.setenv("LLM_MODEL", "first")
     a = get_settings()
     b = get_settings()
     assert a is b  # lru_cache
 
-    monkeypatch.setenv("OPENAI_MODEL", "second")
+    monkeypatch.setenv("LLM_MODEL", "second")
     # Cache miss only if cleared.
     c = Settings(_env_file=None)
-    assert c.openai_model == "second"
+    assert c.llm_model == "second"
 
 
 def test_get_settings_cache_clear_reflects_new_env(monkeypatch):
-    monkeypatch.setenv("OPENAI_MODEL", "first")
+    monkeypatch.setenv("LLM_MODEL", "first")
     a = get_settings()
-    assert a.openai_model == "first"
+    assert a.llm_model == "first"
 
-    monkeypatch.setenv("OPENAI_MODEL", "second")
+    monkeypatch.setenv("LLM_MODEL", "second")
     get_settings.cache_clear()
     b = get_settings()
-    assert b.openai_model == "second"
+    assert b.llm_model == "second"
 
 
 def test_env_bool_coercion(monkeypatch):

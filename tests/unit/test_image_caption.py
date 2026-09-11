@@ -50,10 +50,6 @@ def _enable(monkeypatch, *, enabled: bool = True, creds=("http://vlm/v1", "sk", 
         monkeypatch.setattr(s, "vlm_base_url", None)
         monkeypatch.setattr(s, "vlm_api_key", None)
         monkeypatch.setattr(s, "vlm_model", None)
-        # Clear the OPENAI_* fallback too, or vlm_creds still resolves.
-        monkeypatch.setattr(s, "openai_base_url", None)
-        monkeypatch.setattr(s, "openai_api_key", None)
-        monkeypatch.setattr(s, "openai_model", None)
     else:
         monkeypatch.setattr(s, "vlm_base_url", creds[0])
         monkeypatch.setattr(s, "vlm_api_key", creds[1])

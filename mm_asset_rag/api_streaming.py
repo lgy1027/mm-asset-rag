@@ -22,7 +22,12 @@ def _provider_hosts() -> set[str]:
     hosts: set[str] = set()
     try:
         s = get_settings()
-        for base in (s.openai_base_url, s.vlm_base_url, s.embedding_base_url):
+        for base in (
+            s.openai_compat_base_url,
+            s.llm_base_url,
+            s.vlm_base_url,
+            s.embedding_base_url,
+        ):
             if base:
                 host = urlparse(base).hostname
                 if host:

@@ -1363,7 +1363,7 @@ def test_safe_stream_error_strips_urls_and_caps_length(monkeypatch) -> None:
     # matching the configured provider host exactly, so set one here.
     from mm_asset_rag.settings import get_settings
 
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "https://api.openai.com/v1")
     get_settings.cache_clear()
     conn_err = Exception(
         "HTTPSConnectionPool(host='api.openai.com', port=443): "
