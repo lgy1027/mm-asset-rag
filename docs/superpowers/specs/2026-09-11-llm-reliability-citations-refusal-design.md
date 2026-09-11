@@ -155,3 +155,32 @@ This slice does not solve CSV ingestion, distributed limiting, semantic
 entailment scoring, or autonomous threshold tuning. Those remain separately
 measurable follow-ups once the qrels set grows and production traffic supplies
 calibration data.
+
+## OpenAI-compatible provider configuration
+
+The project is a new deployment and does not retain legacy configuration
+compatibility. LLM, VLM, and text embedding are remote OpenAI-compatible
+capabilities backed by one shared client boundary. The shared connection is
+`OPENAI_COMPAT_BASE_URL` plus `OPENAI_COMPAT_API_KEY`; each capability may
+explicitly override that pair with its own `*_BASE_URL` and `*_API_KEY`.
+
+Each capability selects only its own model:
+
+- `LLM_MODEL` is optional. Without it, answer generation uses the numbered
+  evidence-summary degradation path.
+- `VLM_MODEL` is optional. Its image features remain unavailable until it is
+  configured.
+- `EMBEDDING_MODEL` is mandatory, as are its resolved base URL and API key.
+  Startup/initialization raises a direct configuration error if any is absent.
+
+The project removes `OPENAI_*` and historical cross-capability fallbacks,
+including the `text-embedding-3-small` implicit model. It also removes the
+local `sentence_transformers` embedding backend: text embeddings always use
+the remote `/embeddings` endpoint. Reranking is not part of the common
+OpenAI-compatible protocol because providers use differing `/rerank` shapes;
+it remains an independent, enabled-only adapter.
+
+The shared client owns authorization, URL handling, timeout, retry and pacing;
+chat and embedding callers supply only endpoint-specific request bodies. Unit
+tests prove the resolution order, hard embedding validation, optional LLM/VLM
+behavior, and absence of legacy configuration fallback.
