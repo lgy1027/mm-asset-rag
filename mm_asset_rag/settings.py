@@ -56,6 +56,12 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str | None = None
+    # Shared remote OpenAI-compatible connection for LLM, VLM and embedding.
+    openai_compat_api_key: str | None = None
+    openai_compat_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str | None = None
     llm_timeout: float = 120.0
     # Process-local start-rate ceiling for all shared chat-completion callers.
     # Five requests/minute keeps small hosted providers below common burst
@@ -71,12 +77,7 @@ class Settings(BaseSettings):
     answer_min_lexical_coverage: float = 0.2
 
     # ─── Text embedding ───────────────────────────────────────────────────
-    # Backend: ``openai`` (OpenAI-compatible /v1/embeddings) or
-    # ``sentence_transformers`` (local HF model). For multilingual /
-    # cross-language corpora, ``sentence_transformers`` with
-    # ``BAAI/bge-m3`` or ``intfloat/multilingual-e5-large`` is much
-    # stronger than the OpenAI default on ZH↔EN retrieval.
-    embedding_backend: Literal["openai", "sentence_transformers"] = "openai"
+    # Text embedding is always remote OpenAI-compatible `/embeddings`.
     embedding_api_key: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str | None = None
@@ -233,7 +234,7 @@ class Settings(BaseSettings):
     # ``reranker_top_n`` should be ≤ ``qdrant_hybrid_prefetch_limit`` (default
     # 50) or the candidate pool is bounded by the prefetch. Disable with
     # ``RERANKER_ENABLED=false`` when latency / download cost is a concern.
-    reranker_enabled: bool = True
+    reranker_enabled: bool = False
     reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_top_n: int = 30
     reranker_top_k: int | None = None
@@ -258,7 +259,7 @@ class Settings(BaseSettings):
     # nested form); the client handles the shape per-provider, so only
     # ``reranker_api_key`` typically needs setting (base / model have
     # per-provider defaults).
-    reranker_provider: Literal["local", "siliconflow", "dashscope"] = "local"
+    reranker_provider: Literal["siliconflow", "dashscope"] = "siliconflow"
     # Rerank API base URL (HTTP providers). Resolved in ``embedders.reranker``
     # so this stays None → provider default.
     # SiliconFlow: https://api.siliconflow.cn/v1/rerank (flat form).
@@ -617,11 +618,13 @@ class Settings(BaseSettings):
         None, None)`` when neither triple is complete — callers then fall
         back to the evidence-summary path.
         """
-        if self.openai_api_key and self.openai_base_url and self.openai_model:
-            return self.openai_base_url, self.openai_api_key, self.openai_model
-        if self.vlm_api_key and self.vlm_base_url and self.vlm_model:
-            return self.vlm_base_url, self.vlm_api_key, self.vlm_model
-        return None, None, None
+        if not self.llm_model:
+            return None, None, None
+        return (
+            self.llm_base_url or self.openai_compat_base_url,
+            self.llm_api_key or self.openai_compat_api_key,
+            self.llm_model,
+        )
 
     @property
     def vlm_creds(self) -> tuple[str | None, str | None, str | None]:
@@ -631,18 +634,20 @@ class Settings(BaseSettings):
         (preserves the long-standing "configure once under OPENAI_*"
         convenience for image caption / auto-meta).
         """
-        if self.vlm_api_key and self.vlm_base_url and self.vlm_model:
-            return self.vlm_base_url, self.vlm_api_key, self.vlm_model
-        if self.openai_api_key and self.openai_base_url and self.openai_model:
-            return self.openai_base_url, self.openai_api_key, self.openai_model
-        return None, None, None
+        if not self.vlm_model:
+            return None, None, None
+        return (
+            self.vlm_base_url or self.openai_compat_base_url,
+            self.vlm_api_key or self.openai_compat_api_key,
+            self.vlm_model,
+        )
 
     @property
     def text_embedding_creds(self) -> tuple[str | None, str | None, str | None]:
-        """Return ``(api_key, base_url, model)`` falling back to OPENAI_* for creds."""
+        """Return the explicit embedding model with its resolved remote connection."""
         return (
-            self.embedding_api_key or self.openai_api_key,
-            self.embedding_base_url or self.openai_base_url,
+            self.embedding_api_key or self.openai_compat_api_key,
+            self.embedding_base_url or self.openai_compat_base_url,
             self.embedding_model,
         )
 

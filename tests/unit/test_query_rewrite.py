@@ -50,9 +50,9 @@ def settings_with_llm(monkeypatch) -> Settings:
     s = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_api_key="sk-test",
-        openai_base_url="https://api.example.com/v1",
-        openai_model="gpt-test",
+        openai_compat_api_key="sk-test",
+        openai_compat_base_url="https://api.example.com/v1",
+        llm_model="gpt-test",
     )
     return s
 
@@ -127,9 +127,9 @@ def test_rewrite_parses_json_variants(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_api_key="sk-test",
-        openai_base_url="https://api.example.com/v1",
-        openai_model="gpt-test",
+        openai_compat_api_key="sk-test",
+        openai_compat_base_url="https://api.example.com/v1",
+        llm_model="gpt-test",
     )
     out = qr.rewrite_query("用户原句", settings=settings)
     # Original is preserved at index 0, three variants total.
@@ -144,9 +144,9 @@ def test_rewrite_parses_bare_list(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_api_key="sk-test",
-        openai_base_url="https://api.example.com/v1",
-        openai_model="gpt-test",
+        openai_compat_api_key="sk-test",
+        openai_compat_base_url="https://api.example.com/v1",
+        llm_model="gpt-test",
     )
     out = qr.rewrite_query("orig", settings=settings)
     assert out[0] == "orig"
@@ -159,9 +159,9 @@ def test_rewrite_parses_garbage_returns_original(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_api_key="sk-test",
-        openai_base_url="https://api.example.com/v1",
-        openai_model="gpt-test",
+        openai_compat_api_key="sk-test",
+        openai_compat_base_url="https://api.example.com/v1",
+        llm_model="gpt-test",
     )
     out = qr.rewrite_query("原始查询", settings=settings)
     assert out == ["原始查询"]
@@ -177,9 +177,9 @@ def test_rewrite_timeout_returns_original(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_api_key="sk-test",
-        openai_base_url="https://api.example.com/v1",
-        openai_model="gpt-test",
+        openai_compat_api_key="sk-test",
+        openai_compat_base_url="https://api.example.com/v1",
+        llm_model="gpt-test",
     )
     out = qr.rewrite_query("hello", settings=settings)
     assert out == ["hello"]
@@ -219,9 +219,9 @@ def test_rewrite_empty_query_returns_empty_string(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_api_key="sk-test",
-        openai_base_url="https://api.example.com/v1",
-        openai_model="gpt-test",
+        openai_compat_api_key="sk-test",
+        openai_compat_base_url="https://api.example.com/v1",
+        llm_model="gpt-test",
     )
     out = qr.rewrite_query("", settings=settings)
     assert out == [""]

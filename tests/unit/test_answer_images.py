@@ -121,9 +121,9 @@ def test_read_image_data_url_returns_data_url_for_real_image(tmp_home) -> None:
 
 def test_llm_answer_degrades_to_text_when_image_request_fails(tmp_home, monkeypatch) -> None:
     """Image-bearing request fails → retry text-only → success."""
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://fake/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    monkeypatch.setenv("OPENAI_MODEL", "fake-model")
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://fake/v1")
+    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "k")
+    monkeypatch.setenv("LLM_MODEL", "fake-model")
     monkeypatch.setenv("ANSWER_WITH_IMAGES", "true")
     get_settings.cache_clear()
 
@@ -157,10 +157,10 @@ def test_llm_answer_degrades_to_text_when_image_request_fails(tmp_home, monkeypa
 
 
 def test_llm_answer_no_retry_when_text_only_fails(tmp_home, monkeypatch) -> None:
-    """When the toggle is off (text-only), a failure must propagate — no retry."""
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://fake/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "k")
-    monkeypatch.setenv("OPENAI_MODEL", "fake-model")
+    """When text-only mode fails unexpectedly, the error propagates."""
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://fake/v1")
+    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "k")
+    monkeypatch.setenv("LLM_MODEL", "fake-model")
     get_settings.cache_clear()
 
     calls = {"n": 0}

@@ -27,9 +27,10 @@ There is no `asset_manifest.json`; `/upload/confirm` creates a logical `Document
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MM_ASSET_RAG_HOME` | `~/.mm_asset_rag` | Runtime data directory |
-| `OPENAI_API_KEY` | unset | Chat LLM API key |
-| `OPENAI_BASE_URL` | unset | OpenAI-compatible chat base URL |
-| `OPENAI_MODEL` | unset | Chat model |
+| `OPENAI_COMPAT_API_KEY` | unset | Shared remote OpenAI-compatible API key |
+| `OPENAI_COMPAT_BASE_URL` | unset | Shared remote OpenAI-compatible base URL |
+| `LLM_MODEL` | unset | Optional chat model |
+| `VLM_MODEL` | unset | Optional vision model |
 | `LLM_TIMEOUT` | `120.0` | Chat timeout seconds |
 | `LLM_REQUESTS_PER_MINUTE` | `5` | Process-local maximum chat request starts per minute; retries count |
 | `LLM_MAX_RETRIES` | `2` | Retries after the first transient 429, timeout, connection, or 5xx failure |
@@ -37,12 +38,9 @@ There is no `asset_manifest.json`; `/upload/confirm` creates a logical `Document
 | `ANSWER_MIN_RERANK_SCORE` | `0.0` | Raw cross-encoder relevance floor for answer evidence; never uses final hybrid score |
 | `ANSWER_MIN_LEXICAL_COVERAGE` | `0.2` | Minimum local meaningful-query-term coverage when no usable rerank score exists |
 
-### LLM ↔ VLM bidirectional fallback
+### Capability-specific overrides
 
-The chat LLM channel (`/answer`, `/chat`) and the image-channel VLM (image caption, `/upload/preview` auto-meta, tier-3 multimodal answer) can each use a different provider. Configure either `OPENAI_*` or `VLM_*` alone and both channels work; configure both to split by purpose (e.g. local ollama for chat, MiniMax-M3 for vision).
-
-- `/answer` LLM channel: `OPENAI_*` preferred, falls back to `VLM_*`.
-- `/upload/preview` VLM channel: `VLM_*` preferred, falls back to `OPENAI_*`.
+LLM, VLM and embedding use the shared `OPENAI_COMPAT_*` connection by default. Set a capability's own `*_BASE_URL` and `*_API_KEY` only when it uses a different provider. There is no cross-capability credential or model fallback.
 
 When neither triple is complete, `/answer` and `/chat` return evidence-summary fallback answers instead of failing.
 
@@ -70,10 +68,9 @@ your public hostname).
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `EMBEDDING_BACKEND` | `openai` | `openai` (OpenAI-compatible /v1/embeddings) or `sentence_transformers` (local HF model) |
-| `EMBEDDING_API_KEY` | `OPENAI_API_KEY` fallback | Embedding API key |
-| `EMBEDDING_BASE_URL` | `OPENAI_BASE_URL` fallback | Embedding base URL |
-| `EMBEDDING_MODEL` | unset | Embedding model |
+| `EMBEDDING_API_KEY` | shared key | Explicit remote embedding key override |
+| `EMBEDDING_BASE_URL` | shared base URL | Explicit remote embedding URL override |
+| `EMBEDDING_MODEL` | required | Required remote embedding model |
 | `EMBEDDING_BATCH_SIZE` | `5` | Batch size |
 | `EMBEDDING_REQUEST_INTERVAL` | `0.25` | Delay between requests |
 | `EMBEDDING_RETRY_COUNT` | `5` | Retry attempts |

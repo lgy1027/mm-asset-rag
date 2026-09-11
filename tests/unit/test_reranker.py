@@ -134,8 +134,8 @@ def test_rerank_degrades_when_model_load_fails(tmp_home, monkeypatch):
     reset_reranker()
 
 
-def test_get_default_reranker_disabled_by_default(tmp_home, monkeypatch):
-    """Reranker is now enabled by default; disable via RERANKER_ENABLED=false."""
+def test_get_default_reranker_disabled_when_configured(tmp_home, monkeypatch):
+    """An explicit disabled setting prevents remote reranker construction."""
     reset_reranker()
     # Explicitly disable.
     monkeypatch.setenv("RERANKER_ENABLED", "false")
@@ -145,14 +145,10 @@ def test_get_default_reranker_disabled_by_default(tmp_home, monkeypatch):
     assert get_default_reranker() is None
 
 
-def test_get_default_reranker_enabled_by_default(tmp_home):
-    """The default is now enabled (latency for precision). The Reranker
-    instance is constructed lazily and returned here without loading the
-    model (model load only happens on the first ``rerank`` call)."""
+def test_get_default_reranker_disabled_by_default(tmp_home):
+    """Remote reranking is opt-in and has no default model download."""
     reset_reranker()
-    with patch.object(Reranker, "_dep_available", return_value=True):
-        reranker = get_default_reranker()
-    assert reranker is not None
+    assert get_default_reranker() is None
 
 
 def test_get_default_reranker_none_when_dep_missing(tmp_home, monkeypatch):
@@ -250,9 +246,10 @@ def test_hybrid_search_reranks_when_enabled(tmp_home, monkeypatch):
         def predict(self, pairs, show_progress_bar=False):
             return [0.9] * len(pairs)
 
-    with (
-        patch.object(Reranker, "_dep_available", return_value=True),
-        patch.object(Reranker, "_load", return_value=FakeCE()),
+    monkeypatch.setenv("RERANKER_PROVIDER", "siliconflow")
+    monkeypatch.setenv("RERANKER_API_KEY", "key")
+    with patch.object(
+        HttpRerankApiReranker, "rerank", side_effect=lambda _q, hits, top_k: hits[:top_k]
     ):
         out = hybrid_search("query", top_k=5, backend=backend)
 
@@ -745,7 +742,7 @@ def test_http_score_empty_documents_returns_empty(tmp_home, monkeypatch):
     post.assert_not_called()
 
 
-def test_http_rerank_falls_back_to_openai_api_key(tmp_home, monkeypatch):
+def test_http_rerank_falls_back_to_common_api_key(tmp_home, monkeypatch):
     """When ``RERANKER_API_KEY`` is unset, the HTTP provider reuses
     ``OPENAI_API_KEY`` — same fallback as the embedding / LLM creds, so a
     single key configures the whole stack."""
@@ -753,7 +750,7 @@ def test_http_rerank_falls_back_to_openai_api_key(tmp_home, monkeypatch):
     monkeypatch.setenv("RERANKER_PROVIDER", "siliconflow")
     # Intentionally do NOT set RERANKER_API_KEY.
     monkeypatch.setenv("RERANKER_API_BASE", "https://example.test/v1/rerank")
-    monkeypatch.setenv("OPENAI_API_KEY", "shared-key")
+    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "shared-key")
     reset_reranker()
 
     captured = {}
@@ -769,8 +766,7 @@ def test_http_rerank_falls_back_to_openai_api_key(tmp_home, monkeypatch):
 
 
 def test_get_default_reranker_picks_http_provider(tmp_home, monkeypatch):
-    """``get_default_reranker`` factory selects the HTTP class when the
-    provider is siliconflow / dashscope, and the local class otherwise."""
+    """The factory selects an enabled configured remote HTTP provider."""
     monkeypatch.setenv("RERANKER_ENABLED", "true")
     reset_reranker()
     # dashscope has a universal default base (the DashScope-native endpoint)
@@ -783,12 +779,6 @@ def test_get_default_reranker_picks_http_provider(tmp_home, monkeypatch):
     r = get_default_reranker()
     assert isinstance(r, HttpRerankApiReranker)
 
-    reset_reranker()
-    monkeypatch.setenv("RERANKER_PROVIDER", "local")
-    get_settings.cache_clear()
-    with patch.object(Reranker, "_dep_available", return_value=True):
-        r = get_default_reranker()
-    assert type(r) is Reranker
     reset_reranker()
 
 

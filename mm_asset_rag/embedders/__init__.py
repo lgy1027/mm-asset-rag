@@ -19,7 +19,6 @@ from .image_embedder import ImageEmbedder, ImageEmbeddingUnavailable
 from .reranker import Reranker, get_default_reranker, reset_reranker
 from .text_embedder import (
     EmbeddingConfigError,
-    SentenceTransformerTextEmbedder,
     TextEmbedder,
     build_default_text_embedder,
 )
@@ -31,7 +30,6 @@ __all__ = [
     "ImageEmbedder",
     "ImageEmbeddingUnavailable",
     "Reranker",
-    "SentenceTransformerTextEmbedder",
     "TextEmbedder",
     "build_default_image_embedder",
     "build_default_text_embedder",

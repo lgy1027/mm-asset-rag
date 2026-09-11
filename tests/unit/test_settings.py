@@ -127,20 +127,12 @@ def test_has_llm_requires_full_triple(monkeypatch):
     assert Settings(_env_file=None).has_llm is True
 
 
-def test_text_embedding_creds_falls_back_to_openai(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("EMBEDDING_API_KEY", raising=False)
-    monkeypatch.delenv("EMBEDDING_BASE_URL", raising=False)
-    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
-    monkeypatch.setenv("OPENAI_API_KEY", "k1")
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://llm")
-    monkeypatch.setenv("EMBEDDING_MODEL", "text-embed-3-small")
+def test_text_embedding_uses_common_connection_but_requires_own_model(monkeypatch):
+    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "k1")
+    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://provider")
+    monkeypatch.setenv("EMBEDDING_MODEL", "embed-v1")
     s = Settings(_env_file=None)
-    api_key, base_url, model = s.text_embedding_creds
-    assert api_key == "k1"
-    assert base_url == "http://llm"
-    assert model == "text-embed-3-small"
+    assert s.text_embedding_creds == ("k1", "http://provider", "embed-v1")
 
 
 def test_text_embedding_creds_overrides_take_precedence(monkeypatch):

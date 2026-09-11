@@ -361,7 +361,7 @@ class HttpRerankApiReranker(Reranker):
         default_base, default_model, _ = _provider_defaults(s.reranker_provider)
         base = s.reranker_api_base or default_base
         model = s.reranker_api_model or default_model
-        key = s.reranker_api_key or s.openai_api_key
+        key = s.reranker_api_key or s.openai_compat_api_key
         return bool(base and key and model)
 
     def _config(self) -> tuple[str, str, str, str, float]:
@@ -372,7 +372,7 @@ class HttpRerankApiReranker(Reranker):
         api_base = s.reranker_api_base or default_base
         model = s.reranker_api_model or default_model
         form = default_form  # form is provider-fixed, not user-tunable
-        api_key = s.reranker_api_key or s.openai_api_key or ""
+        api_key = s.reranker_api_key or s.openai_compat_api_key or ""
         timeout = s.reranker_api_timeout
         return api_base, model, form, api_key, timeout
 
@@ -560,16 +560,7 @@ def _provider_class(provider: str) -> type[Reranker]:
     """Map ``Settings.reranker_provider`` to a concrete class."""
     if provider in ("siliconflow", "dashscope"):
         return HttpRerankApiReranker
-    if provider != "local":
-        # Literal validation at Settings layer normally blocks this, but a
-        # caller poking ``settings.reranker_provider`` directly (or a future
-        # loosened Literal) would otherwise silently run the local backend
-        # while the user believes they are calling a cloud API.
-        _LOGGER.warning(
-            "unknown reranker_provider %r, falling back to local CrossEncoder",
-            provider,
-        )
-    return Reranker  # "local" + any unknown → local backend
+    raise ValueError(f"unsupported remote reranker provider: {provider}")
 
 
 def reset_reranker() -> None:
