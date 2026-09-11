@@ -1,0 +1,67 @@
+{
+  "version": "answer_v1",
+  "groups": {
+    "zh": [
+      {
+        "query": "投资性房地产后续计量的成本模式能否改为公允价值模式？",
+        "expected_asset_ids": ["第七章投资性房地产-投资性房地产的后续计量"],
+        "expected_answer_assets": ["第七章投资性房地产-投资性房地产的后续计量"],
+        "expected_answer_keywords": ["成本模式", "公允价值模式", "变更"]
+      },
+      {
+        "query": "企业为什么使用容器部署微服务，容器能解决哪些开发环境问题？",
+        "expected_asset_ids": ["Docker详解与部署微服务实战"],
+        "expected_answer_assets": ["Docker详解与部署微服务实战"],
+        "expected_answer_keywords": ["容器", "微服务", "环境"]
+      },
+      {
+        "query": "在中国境内处理自然人个人信息，适用什么法律和基本规则？",
+        "expected_asset_ids": ["《中华人民共和国个人信息保护法》核心要点解读"],
+        "expected_answer_assets": ["《中华人民共和国个人信息保护法》核心要点解读"],
+        "expected_answer_keywords": ["个人信息", "中国境内", "处理"]
+      },
+      {
+        "query": "小区业主和物业服务企业各自有哪些主要权利义务？",
+        "expected_asset_ids": ["物业管理与业主权利义务法律指南"],
+        "expected_answer_assets": ["物业管理与业主权利义务法律指南"],
+        "expected_answer_keywords": ["业主", "物业服务企业", "权利义务"]
+      },
+      {
+        "query": "电商平台、平台商家和直播带货主体需要遵守哪些合规要求？",
+        "expected_asset_ids": ["电商平台合规经营核心要点指南"],
+        "expected_answer_assets": ["电商平台合规经营核心要点指南"],
+        "expected_answer_keywords": ["电商平台", "商家", "合规"]
+      },
+      {
+        "query": "机动车驾驶人、骑行者和行人应遵守哪些道路交通安全规则？",
+        "expected_asset_ids": ["道路交通安全法律知识指南"],
+        "expected_answer_assets": ["道路交通安全法律知识指南"],
+        "expected_answer_keywords": ["机动车", "行人", "道路交通安全"]
+      },
+      {
+        "query": "如何识别小学数学学习困难学生并提供教育支持？",
+        "expected_asset_ids": ["学习困难学生的识别与教育支持策略"],
+        "expected_answer_assets": ["学习困难学生的识别与教育支持策略"],
+        "expected_answer_keywords": ["学习困难", "识别", "支持"]
+      },
+      {
+        "query": "物流订单审核后，如何制定运输计划并防控常见风险？",
+        "expected_asset_ids": ["物流运输管理核心流程与常见风险防控"],
+        "expected_answer_assets": ["物流运输管理核心流程与常见风险防控"],
+        "expected_answer_keywords": ["订单", "运输计划", "风险"]
+      },
+      {
+        "query": "政府信息公开应遵循哪些原则，行政机关应主动公开哪些内容？",
+        "expected_asset_ids": ["政府信息公开法律框架与实践操作指南"],
+        "expected_answer_assets": ["政府信息公开法律框架与实践操作指南"],
+        "expected_answer_keywords": ["政府信息公开", "主动公开", "行政机关"]
+      },
+      {
+        "query": "合同在什么情况下成立，又在什么情况下有效？",
+        "expected_asset_ids": ["合同何时成立？又在什么情况下有效？"],
+        "expected_answer_assets": ["合同何时成立？又在什么情况下有效？"],
+        "expected_answer_keywords": ["合同", "成立", "有效"]
+      }
+    ]
+  }
+}

@@ -149,6 +149,19 @@ def test_answer_eval_result_carries_all_score_fields() -> None:
         assert name in fields, f"AnswerEvalResult missing {name!r}"
 
 
+def test_documents_100_answer_cases_are_loadable_and_scored() -> None:
+    path = Path(__file__).parents[2] / "examples" / "eval_cases_documents_100_answer_v1.json"
+
+    groups, version = ae._load_cases(path)
+    cases = [case for group in groups.values() for case in group]
+
+    assert version == "answer_v1"
+    assert len(cases) == 10
+    assert all(case["expected_asset_ids"] for case in cases)
+    assert all(case["expected_answer_assets"] for case in cases)
+    assert all(case["expected_answer_keywords"] for case in cases)
+
+
 # ─── 2. Offline graceful degradation ─────────────────────────────────────
 
 
