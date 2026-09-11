@@ -107,6 +107,19 @@ def test_bundled_v1_default_runs_with_qrels_only() -> None:
     assert all(result.actual_document_ids == [] for result in results)
 
 
+def test_documents_100_qrels_are_loadable_and_explicit() -> None:
+    path = Path(__file__).parents[2] / "examples" / "eval_cases_documents_100_v1.json"
+
+    groups = load_cases(path)
+    cases = [case for group in groups.values() for case in group]
+
+    assert len(cases) == 30
+    assert {case["query_id"] for case in cases} == set(load_qrels(path))
+    assert all("query" in case and "qrels" in case for case in cases)
+    assert len(groups["negative"]) == 5
+    assert all(not case["qrels"] for case in groups["negative"])
+
+
 def test_api_v1_default_uses_bundled_qrels(monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
 
