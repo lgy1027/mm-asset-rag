@@ -31,6 +31,11 @@ There is no `asset_manifest.json`; `/upload/confirm` creates a logical `Document
 | `OPENAI_BASE_URL` | unset | OpenAI-compatible chat base URL |
 | `OPENAI_MODEL` | unset | Chat model |
 | `LLM_TIMEOUT` | `120.0` | Chat timeout seconds |
+| `LLM_REQUESTS_PER_MINUTE` | `5` | Process-local maximum chat request starts per minute; retries count |
+| `LLM_MAX_RETRIES` | `2` | Retries after the first transient 429, timeout, connection, or 5xx failure |
+| `LLM_RETRY_BACKOFF_SECONDS` | `1.0` | Base exponential retry backoff seconds when `Retry-After` is absent |
+| `ANSWER_MIN_RERANK_SCORE` | `0.0` | Raw cross-encoder relevance floor for answer evidence; never uses final hybrid score |
+| `ANSWER_MIN_LEXICAL_COVERAGE` | `0.2` | Minimum local meaningful-query-term coverage when no usable rerank score exists |
 
 ### LLM ↔ VLM bidirectional fallback
 

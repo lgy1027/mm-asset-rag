@@ -66,6 +66,7 @@ from pathlib import Path
 
 import requests
 
+from .llm_transport import LlmTransportError, post_chat_completion
 from .paths import get_answer_eval_report
 from .schema import SearchHit
 from .search_service import SearchCommand, SearchMode, get_search_service
@@ -388,7 +389,7 @@ def _judge_one(
         score = float(judge_call(query, hits, answer))
     except _JudgeUnavailable as exc:
         return None, True, str(exc)
-    except (requests.Timeout, requests.HTTPError, ValueError, KeyError) as exc:
+    except (LlmTransportError, requests.Timeout, requests.HTTPError, ValueError, KeyError) as exc:
         return None, True, f"{type(exc).__name__}: {exc}"
     # Clamp into [0, 1] — judge may overshoot.
     score = max(0.0, min(1.0, score))
@@ -410,21 +411,15 @@ def _judge_chat_json(
     unexpected. Caller (:func:`_judge_one`) catches these and records them
     as ``faithfulness_skipped=True``.
     """
-    resp = requests.post(
-        base_url.rstrip("/") + "/chat/completions",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json={
-            "model": model,
-            "temperature": 0.0,
-            "messages": messages,
-            "response_format": {"type": "json_object"},
-        },
+    resp = post_chat_completion(
+        base_url,
+        api_key,
+        model,
+        messages,
         timeout=timeout,
+        temperature=0.0,
+        response_format={"type": "json_object"},
     )
-    resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
 

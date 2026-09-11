@@ -1,0 +1,57 @@
+"""Local, explainable sufficiency checks before generating an answer."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+
+from .schema import SearchHit
+from .settings import Settings
+
+
+@dataclass(frozen=True)
+class EvidenceAssessment:
+    sufficient: bool
+    reason: str | None = None
+
+
+def _terms(text: str) -> set[str]:
+    lowered = text.casefold()
+    words = set(re.findall(r"[a-z0-9][a-z0-9_.-]{1,}", lowered))
+    for run in re.findall(r"[\u4e00-\u9fff]+", lowered):
+        words.update(run[index : index + 2] for index in range(max(0, len(run) - 1)))
+    return words
+
+
+def _searchable_text(hit: SearchHit) -> str:
+    meta = hit.metadata.get("metadata")
+    extra = (
+        " ".join(f"{key} {value}" for key, value in meta.items()) if isinstance(meta, dict) else ""
+    )
+    return f"{hit.title} {hit.evidence} {extra}"
+
+
+def assess_answer_evidence(
+    question: str, hits: list[SearchHit], settings: Settings
+) -> EvidenceAssessment:
+    """Assess evidence without relying on normalized final retrieval scores."""
+    if not hits:
+        return EvidenceAssessment(False, "no_evidence")
+    usable = [hit for hit in hits if hit.evidence.strip()]
+    if not usable:
+        return EvidenceAssessment(False, "empty_evidence")
+    text_hits = [hit for hit in usable if hit.source_type != "image"]
+    if not text_hits:
+        return EvidenceAssessment(False, "insufficient_candidates")
+    rerank_scores = [
+        float(hit.metadata["rerank_score"]) for hit in text_hits if "rerank_score" in hit.metadata
+    ]
+    if rerank_scores and max(rerank_scores) >= settings.answer_min_rerank_score:
+        return EvidenceAssessment(True)
+    query_terms = _terms(question)
+    if not query_terms:
+        return EvidenceAssessment(False, "weak_lexical_coverage")
+    matched = set().union(*(_terms(_searchable_text(hit)) for hit in text_hits)) & query_terms
+    if len(matched) / len(query_terms) >= settings.answer_min_lexical_coverage:
+        return EvidenceAssessment(True)
+    return EvidenceAssessment(False, "weak_lexical_coverage")

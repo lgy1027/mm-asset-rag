@@ -56,6 +56,7 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 
+from .llm_transport import post_chat_completion
 from .retrieval import hybrid_search, merge_hits
 from .schema import SearchHit
 from .settings import Settings, get_settings
@@ -167,24 +168,16 @@ def _post_chat_json(
         {"role": "system", "content": _REWRITE_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
-    payload = {
-        "model": model,
-        "temperature": 0.3,  # low but non-zero so the variants aren't all identical
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-        "messages": messages,
-    }
-    url = base_url.rstrip("/") + "/chat/completions"
-    response = requests.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
+    response = post_chat_completion(
+        base_url,
+        api_key,
+        model,
+        messages,
         timeout=timeout,
+        temperature=0.3,
+        max_tokens=max_tokens,
+        response_format={"type": "json_object"},
     )
-    response.raise_for_status()
     body = response.json()
     content = body["choices"][0]["message"]["content"]
     if not isinstance(content, str):

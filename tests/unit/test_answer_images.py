@@ -138,7 +138,7 @@ def test_llm_answer_degrades_to_text_when_image_request_fails(tmp_home, monkeypa
                 raise RuntimeError("model does not support images")
 
         def json(self) -> dict:
-            return {"choices": [{"message": {"content": "text-only answer"}}]}
+            return {"choices": [{"message": {"content": "text-only answer [1]"}}]}
 
     def fake_post(*args, **kwargs):
         calls["n"] += 1
@@ -153,7 +153,7 @@ def test_llm_answer_degrades_to_text_when_image_request_fails(tmp_home, monkeypa
     ):
         result = llm_answer("Q?", [_hit_with_images("a", [{"path": "images/x.png"}])])
     assert calls["n"] == 2  # image attempt + text retry
-    assert result["answer"] == "text-only answer"
+    assert result["answer"] == "text-only answer [1]"
 
 
 def test_llm_answer_no_retry_when_text_only_fails(tmp_home, monkeypatch) -> None:

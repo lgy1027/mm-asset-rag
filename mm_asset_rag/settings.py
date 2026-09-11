@@ -57,6 +57,18 @@ class Settings(BaseSettings):
     openai_base_url: str | None = None
     openai_model: str | None = None
     llm_timeout: float = 120.0
+    # Process-local start-rate ceiling for all shared chat-completion callers.
+    # Five requests/minute keeps small hosted providers below common burst
+    # limits; retries are paced too.
+    llm_requests_per_minute: int = 5
+    # Transient 429/network/5xx failures retry this many times after the
+    # original attempt. Authentication and other ordinary 4xx errors do not.
+    llm_max_retries: int = 2
+    llm_retry_backoff_seconds: float = 1.0
+    # Evidence-policy thresholds. These operate on raw reranker / lexical
+    # signals, never on final RRF or min-max normalized ranking scores.
+    answer_min_rerank_score: float = 0.0
+    answer_min_lexical_coverage: float = 0.2
 
     # ─── Text embedding ───────────────────────────────────────────────────
     # Backend: ``openai`` (OpenAI-compatible /v1/embeddings) or

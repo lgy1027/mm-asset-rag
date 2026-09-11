@@ -8,7 +8,9 @@ from mm_asset_rag.answer import (
     answer_question,
     fallback_answer,
     format_sources,
+    llm_answer,
     stream_answer_chunks,
+    validate_answer_citations,
 )
 from mm_asset_rag.schema import SearchHit
 from mm_asset_rag.search_service import SearchCommand, SearchMode
@@ -110,11 +112,13 @@ def test_stream_answer_ignores_empty_choices_keepalive_event(monkeypatch) -> Non
         llm_creds = ("http://127.0.0.1:8000/v1", "test-key", "test-model")
         answer_with_images = False
         llm_timeout = 10.0
+        answer_min_rerank_score = 0.0
+        answer_min_lexical_coverage = 0.2
 
     monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _Settings())
     monkeypatch.setattr("mm_asset_rag.answer._post_chat", lambda *args, **kwargs: _Response())
 
-    assert list(stream_answer_chunks("question", [_hit("a")])) == ["answer"]
+    assert list(stream_answer_chunks("text", [_hit("a")])) == ["answer"]
 
 
 def test_answer_json_returns_valid_json(monkeypatch) -> None:
@@ -208,3 +212,38 @@ def test_warn_insecure_base_url_silent_on_https(caplog) -> None:
     with caplog.at_level(logging.WARNING, logger="mm_asset_rag.provider_security"):
         warn_insecure_base_url("https://10.0.0.5/v1")
     assert not any("HTTP" in r.message for r in caplog.records)
+
+
+def test_citation_validator_requires_inline_in_range_markers() -> None:
+    assert validate_answer_citations("结论成立。[1]", 1).valid is True
+    assert validate_answer_citations("结论成立。[9]", 1).valid is False
+    assert validate_answer_citations("结论成立。\n来源：[1]", 1).valid is False
+
+
+def test_fallback_answer_numbers_evidence_sources() -> None:
+    result = fallback_answer("question", [_hit("a"), _hit("b")])
+    assert result["_fallback"] is True
+    assert "[1]" in result["answer"]
+    assert "[2]" in result["answer"]
+
+
+def test_llm_answer_repairs_invalid_citations_once(monkeypatch) -> None:
+    class _Settings:
+        llm_creds = ("https://example.test/v1", "key", "model")
+        answer_with_images = False
+        llm_timeout = 1.0
+
+    class _Response:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"choices": [{"message": {"content": self.content}}]}
+
+    responses = [_Response("未标注的结论"), _Response("修复后的结论。[1]")]
+    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _Settings())
+    monkeypatch.setattr("mm_asset_rag.answer._post_chat", lambda *args, **kwargs: responses.pop(0))
+    assert llm_answer("问题", [_hit("a")])["answer"] == "修复后的结论。[1]"

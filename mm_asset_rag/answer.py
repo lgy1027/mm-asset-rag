@@ -6,11 +6,13 @@ import base64
 import json
 import re
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import requests
 
-from . import provider_security
+from .evidence_policy import assess_answer_evidence
+from .llm_transport import LlmTransportError, post_chat_completion
 from .paths import safe_parsed_image_path
 from .schema import SearchHit
 from .search_service import SearchCommand, SearchMode, SearchService, get_search_service
@@ -26,10 +28,33 @@ _SYSTEM_MSG = {
     "role": "system",
     "content": (
         "你是多模态资料检索助手。只能基于给定证据回答；"
-        "如果证据不足，要明确说不足。回答要列出关键来源。"
+        "如果证据不足，要明确说不足。每个事实句或段落后必须紧跟证据编号[N]，"
+        "N 只能是给定证据块的编号；不得把引用只放在末尾来源列表。"
         "证据可能附带图片，可看图回答图中的数字、表格、流程等。"
     ),
 }
+
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+
+@dataclass(frozen=True)
+class CitationValidation:
+    valid: bool
+    reason: str | None = None
+
+
+def validate_answer_citations(answer: str, evidence_count: int) -> CitationValidation:
+    """Check that a substantive answer uses in-range citations inline."""
+    markers = list(_CITATION_RE.finditer(answer))
+    if not markers:
+        return CitationValidation(False, "no_citation")
+    if any(int(marker.group(1)) < 1 or int(marker.group(1)) > evidence_count for marker in markers):
+        return CitationValidation(False, "out_of_range")
+    for marker in markers:
+        prefix = answer[max(0, marker.start() - 80) : marker.start()]
+        if re.search(r"(?:来源|参考来源|sources?)\s*[:：]?\s*$", prefix, flags=re.IGNORECASE):
+            return CitationValidation(False, "detached_citation")
+    return CitationValidation(True)
 
 
 def format_sources(hits: list[SearchHit]) -> list[dict[str, object]]:
@@ -177,13 +202,8 @@ def _post_chat(
     base_url: str, api_key: str, model: str, messages: list, *, stream: bool, timeout: float
 ) -> requests.Response:
     """One OpenAI-compatible chat completion POST (shared by answer + stream)."""
-    provider_security.warn_insecure_base_url(base_url)
-    return requests.post(
-        base_url.rstrip("/") + "/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json={"model": model, "temperature": 0.1, "stream": stream, "messages": messages},
-        timeout=timeout,
-        stream=stream,
+    return post_chat_completion(
+        base_url, api_key, model, messages, timeout=timeout, stream=stream, temperature=0.1
     )
 
 
@@ -202,11 +222,15 @@ def _degrade_to_text(messages: list, question: str, context: str) -> None:
 
 
 def fallback_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
-    evidence = "\n\n".join(hit.evidence[:300] for hit in hits[:3] if hit.evidence)
+    evidence = "\n\n".join(
+        f"证据摘要 [{index}]：{hit.evidence[:300]}"
+        for index, hit in enumerate(hits[:3], start=1)
+        if hit.evidence
+    )
     return {
         "question": question,
         "answer": (
-            "当前未配置 LLM，因此返回检索证据摘要。"
+            "当前未配置 LLM 或无法使用 LLM，因此返回检索证据摘要。"
             "请先检查 sources 中的原始资料、页码和解析器，再决定是否接入生成式回答。\n\n" + evidence
         ),
         "sources": format_sources(hits),
@@ -219,6 +243,39 @@ def fallback_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
         # fallback path, but that doesn't mean the eval regressed.
         "_fallback": True,
     }
+
+
+def _repair_citations(
+    question: str,
+    context: str,
+    draft: str,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float,
+) -> str | None:
+    """Ask once for citation-only repair; never manufacture markers locally."""
+    messages = [
+        {
+            "role": "system",
+            "content": "修复草稿的证据引用。只保留有证据支持的内容，每个事实后附有效[N]。",
+        },
+        {
+            "role": "user",
+            "content": f"问题：{question}\n\n证据：\n{context}\n\n草稿：\n{draft}",
+        },
+    ]
+    try:
+        response = _post_chat(base_url, api_key, model, messages, stream=False, timeout=timeout)
+        response.raise_for_status()
+        return re.sub(
+            r"<think>.*?</think>",
+            "",
+            str(response.json()["choices"][0]["message"]["content"]),
+            flags=re.DOTALL,
+        ).strip()
+    except Exception:
+        return None
 
 
 def llm_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
@@ -234,17 +291,27 @@ def llm_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
     try:
         response = _post_chat(base_url, api_key, model, messages, stream=False, timeout=timeout)
         response.raise_for_status()
+    except LlmTransportError:
+        return fallback_answer(question, hits)
     except Exception:
         # Image mode can fail when the model isn't vision-capable — degrade
         # to text-only and retry so /answer stays usable.
         if not isinstance(content, list):
             raise
         _degrade_to_text(messages, question, context)
-        response = _post_chat(base_url, api_key, model, messages, stream=False, timeout=timeout)
-        response.raise_for_status()
+        try:
+            response = _post_chat(base_url, api_key, model, messages, stream=False, timeout=timeout)
+            response.raise_for_status()
+        except LlmTransportError:
+            return fallback_answer(question, hits)
     raw_answer = response.json()["choices"][0]["message"]["content"]
     # Strip reasoning-model <think>...</think> blocks.
     answer = re.sub(r"<think>.*?</think>", "", str(raw_answer), flags=re.DOTALL).strip()
+    if not validate_answer_citations(answer, len(hits)).valid:
+        repaired = _repair_citations(question, context, answer, base_url, api_key, model, timeout)
+        if repaired is None or not validate_answer_citations(repaired, len(hits)).valid:
+            return fallback_answer(question, hits)
+        answer = repaired
     return {
         "question": question,
         "answer": answer,
@@ -277,11 +344,13 @@ def answer_question(
                 principal=principal,
             )
         )
-    if not hits or max(hit.score for hit in hits) < min_confidence:
+    assessment = assess_answer_evidence(question, hits or [], get_settings())
+    if not assessment.sufficient:
         return {
             "question": question,
             "answer": "证据不足，无法基于当前知识库可靠回答。",
             "sources": [],
+            "refusal_reason": assessment.reason,
         }
     return llm_answer(question, hits)
 
@@ -295,7 +364,8 @@ def stream_answer_chunks(
     when LLM credentials are not configured. Reasoning-model ``<think>`` blocks
     are stripped across chunk boundaries so the user only sees the final answer.
     """
-    if not hits or max(hit.score for hit in hits) < min_confidence:
+    assessment = assess_answer_evidence(question, hits, get_settings())
+    if not assessment.sufficient:
         yield "证据不足，无法基于当前知识库可靠回答。"
         return
 
@@ -315,13 +385,21 @@ def stream_answer_chunks(
     try:
         response = _post_chat(base_url, api_key, model, messages, stream=True, timeout=timeout)
         response.raise_for_status()
+    except LlmTransportError:
+        yield str(fallback_answer(question, hits)["answer"])
+        return
     except Exception:
         # Image mode can fail for non-vision models — degrade and retry.
         if not isinstance(content, list):
-            raise
+            yield str(fallback_answer(question, hits)["answer"])
+            return
         _degrade_to_text(messages, question, context)
-        response = _post_chat(base_url, api_key, model, messages, stream=True, timeout=timeout)
-        response.raise_for_status()
+        try:
+            response = _post_chat(base_url, api_key, model, messages, stream=True, timeout=timeout)
+            response.raise_for_status()
+        except Exception:
+            yield str(fallback_answer(question, hits)["answer"])
+            return
 
     # Buffer across chunks so we can strip <think>...</think> that spans boundaries.
     buffer = ""
