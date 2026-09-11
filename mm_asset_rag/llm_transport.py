@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 from . import provider_security
+from .openai_compatible import require_connection
 from .settings import get_settings
 
 
@@ -114,15 +115,19 @@ def post_chat_completion(
         payload["max_tokens"] = max_tokens
     if response_format is not None:
         payload["response_format"] = response_format
-    provider_security.warn_insecure_base_url(base_url)
+    connection = require_connection(base_url, api_key)
+    provider_security.warn_insecure_base_url(connection.base_url)
     active_limiter = limiter or get_llm_rate_limiter()
     last_error: BaseException | None = None
     for attempt in range(max(0, retries) + 1):
         try:
             active_limiter.acquire()
             response = post(
-                base_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                connection.endpoint("chat/completions"),
+                headers={
+                    "Authorization": f"Bearer {connection.api_key}",
+                    "Content-Type": "application/json",
+                },
                 json=payload,
                 timeout=timeout,
                 stream=stream,

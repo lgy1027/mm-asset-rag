@@ -7,6 +7,8 @@ from typing import Any
 
 import requests
 
+from ..openai_compatible import require_connection
+
 
 class EmbeddingConfigError(RuntimeError):
     """Raised when the mandatory remote embedding configuration is incomplete."""
@@ -35,6 +37,7 @@ class TextEmbedder:
                 "Remote embedding requires OPENAI_COMPAT_API_KEY, OPENAI_COMPAT_BASE_URL, "
                 "and EMBEDDING_MODEL (or explicit EMBEDDING_* overrides)."
             )
+        self.connection = require_connection(self.base_url, self.api_key)
 
     @property
     def name(self) -> str:
@@ -67,7 +70,7 @@ class TextEmbedder:
         for attempt in range(self.retry_count):
             try:
                 response = requests.post(
-                    self.base_url.rstrip("/") + "/embeddings",
+                    self.connection.endpoint("embeddings"),
                     headers={
                         "Authorization": f"Bearer {self.api_key}",
                         "Content-Type": "application/json",
