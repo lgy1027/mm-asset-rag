@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import random
 import threading
 import time
 from collections.abc import Callable
@@ -10,41 +9,11 @@ from typing import Any
 
 import requests
 
-from . import provider_security
+from .openai_adapters import LlmRateLimiter, LlmTransportError, OpenAIChatAdapter
 from .openai_compatible import require_connection
 from .settings import get_settings
 
-
-class LlmTransportError(RuntimeError):
-    """Raised when a chat request cannot be completed after allowed retries."""
-
-
-class LlmRateLimiter:
-    """Thread-safe minimum-interval limiter; zero disables pacing for tests."""
-
-    def __init__(
-        self,
-        requests_per_minute: int,
-        *,
-        clock: Callable[[], float] = time.monotonic,
-        sleep: Callable[[float], None] = time.sleep,
-    ) -> None:
-        self._interval = 60.0 / requests_per_minute if requests_per_minute > 0 else 0.0
-        self._clock = clock
-        self._sleep = sleep
-        self._lock = threading.Lock()
-        self._next_start = 0.0
-
-    def acquire(self) -> None:
-        if self._interval <= 0:
-            return
-        with self._lock:
-            now = self._clock()
-            wait = max(0.0, self._next_start - now)
-            if wait:
-                self._sleep(wait)
-                now = self._clock()
-            self._next_start = max(now, self._next_start) + self._interval
+__all__ = ["LlmRateLimiter", "LlmTransportError", "get_llm_rate_limiter", "post_chat_completion"]
 
 
 _limiter_lock = threading.Lock()
@@ -61,23 +30,6 @@ def get_llm_rate_limiter() -> LlmRateLimiter:
             _limiter = LlmRateLimiter(rate)
             _limiter_rate = rate
         return _limiter
-
-
-def _retry_after(response: requests.Response) -> float | None:
-    value = response.headers.get("Retry-After")
-    try:
-        parsed = float(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed is not None and parsed >= 0 else None
-
-
-def _is_retryable(exc: BaseException) -> bool:
-    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
-        return True
-    if isinstance(exc, requests.HTTPError) and exc.response is not None:
-        return exc.response.status_code == 429 or 500 <= exc.response.status_code < 600
-    return False
 
 
 def post_chat_completion(
@@ -105,46 +57,20 @@ def post_chat_completion(
         if retry_backoff_seconds is None
         else retry_backoff_seconds
     )
-    payload: dict[str, Any] = {
-        "model": model,
-        "temperature": temperature,
-        "stream": stream,
-        "messages": messages,
-    }
-    if max_tokens is not None:
-        payload["max_tokens"] = max_tokens
-    if response_format is not None:
-        payload["response_format"] = response_format
-    connection = require_connection(base_url, api_key)
-    provider_security.warn_insecure_base_url(connection.base_url)
-    active_limiter = limiter or get_llm_rate_limiter()
-    last_error: BaseException | None = None
-    for attempt in range(max(0, retries) + 1):
-        try:
-            active_limiter.acquire()
-            response = post(
-                connection.endpoint("chat/completions"),
-                headers={
-                    "Authorization": f"Bearer {connection.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=timeout,
-                stream=stream,
-            )
-            response.raise_for_status()
-            return response
-        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
-            last_error = exc
-            if attempt >= max(0, retries) or not _is_retryable(exc):
-                break
-            delay = (
-                _retry_after(exc.response)
-                if isinstance(exc, requests.HTTPError) and exc.response
-                else None
-            )
-            if delay is None:
-                delay = max(0.0, float(backoff)) * (2**attempt) + random.uniform(0.0, 0.1)
-            if delay:
-                sleep(delay)
-    raise LlmTransportError("chat completion failed after retry policy") from last_error
+    adapter = OpenAIChatAdapter(
+        connection=require_connection(base_url, api_key),
+        model=model,
+        timeout=timeout,
+        max_retries=retries,
+        retry_backoff_seconds=backoff,
+        limiter=limiter or get_llm_rate_limiter(),
+        post=post,
+        sleep=sleep,
+    )
+    return adapter.complete(
+        messages,
+        stream=stream,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        response_format=response_format,
+    )
