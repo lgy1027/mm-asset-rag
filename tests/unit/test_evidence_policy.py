@@ -35,3 +35,14 @@ def test_accepts_relevant_raw_rerank_hit() -> None:
         Settings(),
     )
     assert result.sufficient is True
+
+
+def test_rerank_score_does_not_bypass_lexical_gate_when_threshold_disabled() -> None:
+    result = assess_answer_evidence(
+        "美国联邦基金利率",
+        [_hit(evidence="Docker Compose 启动服务", metadata={"rerank_score": 0.1})],
+        Settings(answer_min_rerank_score=0.0),
+    )
+
+    assert result.sufficient is False
+    assert result.reason == "weak_lexical_coverage"

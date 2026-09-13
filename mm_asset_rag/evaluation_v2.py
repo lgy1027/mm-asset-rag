@@ -22,7 +22,7 @@ from importlib.resources import files
 from pathlib import Path
 
 from .metrics import _is_relevant, aggregate_metrics
-from .paths import get_asset_index_path, get_assets_dir, get_eval_report
+from .paths import get_assets_dir, get_eval_report
 from .schema import SearchHit
 from .search_service import SearchCommand, SearchMode, get_search_service
 
@@ -138,37 +138,6 @@ def load_cases(path: str | Path | None = None, *, version: str) -> dict[str, lis
             loaded_cases.append({**dict(case), "qrels": dict(qrels[query_id])})
         loaded[group] = loaded_cases
     return loaded
-
-
-def _load_full_ids() -> set[str]:
-    """Legacy answer-evaluation seam; retrieval qrels never call this.
-
-    Answer-quality evaluation still owns an independent asset-citation case
-    format.  Keep its lazy import working until that evaluator is migrated,
-    without allowing these physical identifiers into retrieval scoring.
-    """
-    index_path = get_asset_index_path()
-    if not index_path.exists():
-        return set()
-    full_ids: set[str] = set()
-    with index_path.open(encoding="utf-8") as source:
-        for line in source:
-            if not line.strip():
-                continue
-            try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            asset_id = row.get("asset_id")
-            if not row.get("deleted") and isinstance(asset_id, str) and asset_id:
-                full_ids.add(asset_id)
-    return full_ids
-
-
-def _expand(prefix: str, full_ids: set[str]) -> list[str]:
-    """Legacy answer-citation expansion; never used by retrieval qrels."""
-    matches = sorted(asset_id for asset_id in full_ids if asset_id.startswith(prefix))
-    return matches or [prefix]
 
 
 @dataclass

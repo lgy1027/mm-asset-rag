@@ -67,7 +67,7 @@ from pathlib import Path
 import requests
 
 from .llm_transport import LlmTransportError, post_chat_completion
-from .paths import get_answer_eval_report
+from .paths import get_answer_eval_report, get_asset_index_path
 from .schema import SearchHit
 from .search_service import SearchCommand, SearchMode, get_search_service
 from .settings import get_settings
@@ -93,6 +93,30 @@ class AnswerEvalResult:
     faithfulness_skipped: bool
     faithfulness_error: str | None
     group: str
+
+
+def _load_full_ids() -> set[str]:
+    index_path = get_asset_index_path()
+    if not index_path.exists():
+        return set()
+    full_ids: set[str] = set()
+    with index_path.open(encoding="utf-8") as source:
+        for line in source:
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            asset_id = row.get("asset_id")
+            if not row.get("deleted") and isinstance(asset_id, str) and asset_id:
+                full_ids.add(asset_id)
+    return full_ids
+
+
+def _expand(prefix: str, full_ids: set[str]) -> list[str]:
+    matches = sorted(asset_id for asset_id in full_ids if asset_id.startswith(prefix))
+    return matches or [prefix]
 
 
 # ─── Public runner ────────────────────────────────────────────────────────
@@ -128,7 +152,6 @@ def run_answer_eval(
     # Default-fn resolution deferred so tests can monkeypatch modules
     # (see ``tests/conftest._isolate_env_file``).
     from .answer import llm_answer
-    from .evaluation_v2 import _load_full_ids as _load_full_ids_v2
 
     search = search_fn or get_search_service().execute
     answer_call = answer_fn or llm_answer
@@ -141,7 +164,7 @@ def run_answer_eval(
     _assert_no_image_cases(groups)
 
     if full_ids is None:
-        full_ids = _load_full_ids_v2()
+        full_ids = _load_full_ids()
 
     judge_count = 0  # for max_judge_cases cap
 
@@ -344,7 +367,6 @@ def _citation_metrics(
     # same way v2 retrieval does, then normalise both sides via the
     # canonical metrics._normalize_id slug so trailing _hash + casefold +
     # separator differences don't cost a point.
-    from .evaluation_v2 import _expand
     from .metrics import _normalize_id
 
     expanded: list[str] = []

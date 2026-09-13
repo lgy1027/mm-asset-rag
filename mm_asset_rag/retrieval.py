@@ -179,7 +179,7 @@ def filter_low_evidence_hits(query: str, hits: list[SearchHit]) -> list[SearchHi
     if not _terms(query):
         return hits
     threshold = get_settings().retrieval_min_lexical_coverage
-    return hits if lexical_coverage(query, hits) >= threshold else []
+    return [hit for hit in hits if lexical_coverage(query, [hit]) >= threshold]
 
 
 def hybrid_search(

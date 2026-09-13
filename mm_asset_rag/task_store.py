@@ -12,6 +12,10 @@ from pathlib import Path
 from .paths import get_data_dir
 
 
+class TaskStoreError(RuntimeError):
+    """Raised when the task database cannot be read safely."""
+
+
 @dataclass
 class TaskRecord:
     task_id: str
@@ -45,15 +49,13 @@ class TaskStore:
     def load(self) -> list[TaskRecord]:
         """Load all persisted task records."""
         db_path = self.db_path()
-        if not db_path.exists():
-            return []
         try:
+            self._ensure_schema()
             with sqlite3.connect(str(db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 rows = list(conn.execute("SELECT payload FROM tasks"))
         except sqlite3.DatabaseError as exc:
-            print(f"[tasks] warning: could not open history db: {exc}")
-            return []
+            raise TaskStoreError(f"task store cannot be opened: {exc}") from exc
 
         records: list[TaskRecord] = []
         for row in rows:
@@ -97,14 +99,12 @@ class TaskStore:
     def list(self) -> list[TaskRecord]:
         """Return persisted tasks ordered by descending update time."""
         db_path = self.db_path()
-        if not db_path.exists():
-            return []
         try:
+            self._ensure_schema()
             with sqlite3.connect(str(db_path)) as conn:
                 rows = conn.execute("SELECT payload FROM tasks ORDER BY updated_at DESC").fetchall()
         except sqlite3.DatabaseError as exc:
-            print(f"[tasks] warning: list_tasks db read failed: {exc}")
-            return []
+            raise TaskStoreError(f"task store cannot be listed: {exc}") from exc
 
         records: list[TaskRecord] = []
         for (payload,) in rows:
@@ -131,6 +131,19 @@ class TaskStore:
 
     def db_path(self) -> Path:
         return self._root() / "tasks.db"
+
+    def _ensure_schema(self) -> None:
+        db_path = self.db_path()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(db_path)) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS tasks ("
+                "task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL NOT NULL"
+                ")"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS tasks_updated_at_idx ON tasks (updated_at DESC)"
+            )
 
     def _root(self) -> Path:
         return self._data_dir if self._data_dir is not None else get_data_dir()

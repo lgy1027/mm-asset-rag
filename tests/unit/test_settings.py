@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from mm_asset_rag.settings import Settings, get_settings
 
@@ -145,6 +146,11 @@ def test_pdf_parser_validates_choice(monkeypatch):
     monkeypatch.setenv("PDF_PARSER", "totally-bogus")
     with pytest.raises(ValueError):
         Settings(_env_file=None)
+
+
+def test_unknown_constructor_settings_are_rejected() -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, removed_legacy_option="1")
 
 
 def test_get_settings_returns_singleton(monkeypatch):

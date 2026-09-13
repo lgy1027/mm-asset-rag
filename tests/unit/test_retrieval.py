@@ -132,6 +132,17 @@ def test_filter_low_evidence_hits_keeps_matching_document() -> None:
     assert retrieval.filter_low_evidence_hits("量子电池材料研究", [hit]) == [hit]
 
 
+def test_filter_low_evidence_hits_drops_individual_weak_hits() -> None:
+    weak = _make_hit("weak", "text", 0.9)
+    weak.evidence = "行政审批流程"
+    strong = _make_hit("strong", "text", 0.8)
+    strong.evidence = "量子电池材料研究介绍了电极材料"
+
+    filtered = retrieval.filter_low_evidence_hits("量子电池材料研究", [weak, strong])
+
+    assert [hit.asset_id for hit in filtered] == ["strong"]
+
+
 def test_merge_hits_rrf_top_rank_scores_higher_than_second() -> None:
     """Within a single route the rank-1 hit scores above the rank-2 hit."""
     groups = [[_make_hit(f"id{i}", "text", 1.0 / (i + 1)) for i in range(5)]]
@@ -269,6 +280,7 @@ def test_hybrid_search_forwards_min_score(monkeypatch, fixed_vector) -> None:
     monkeypatch.setattr(settings, "hybrid_weight_text_to_image", 0.2)
     # Disable reranker so we test the merge path directly.
     monkeypatch.setattr(settings, "reranker_enabled", False)
+    monkeypatch.setattr(settings, "retrieval_min_lexical_coverage", 0.0)
 
     # Default 0.0 keeps both a (rank 1) and b (rank 2).
     monkeypatch.setattr(settings, "min_score", 0.0)
@@ -289,6 +301,7 @@ def test_hybrid_search_uses_search_backend_port(monkeypatch, fixed_vector) -> No
     # Disable reranker so the merge path is the only thing exercised.
     settings = retrieval.get_settings()
     monkeypatch.setattr(settings, "reranker_enabled", False)
+    monkeypatch.setattr(settings, "retrieval_min_lexical_coverage", 0.0)
 
     backend = SimpleNamespace(
         search_text=lambda *, query, top_k: text_hits,

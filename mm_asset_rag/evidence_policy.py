@@ -55,7 +55,11 @@ def assess_answer_evidence(
     rerank_scores = [
         float(hit.metadata["rerank_score"]) for hit in text_hits if "rerank_score" in hit.metadata
     ]
-    if rerank_scores and max(rerank_scores) >= settings.answer_min_rerank_score:
+    if (
+        settings.answer_min_rerank_score > 0.0
+        and rerank_scores
+        and max(rerank_scores) >= settings.answer_min_rerank_score
+    ):
         return EvidenceAssessment(True)
     if lexical_coverage(question, text_hits) >= settings.answer_min_lexical_coverage:
         return EvidenceAssessment(True)
