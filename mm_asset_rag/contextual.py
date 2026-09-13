@@ -160,7 +160,7 @@ def generate_chunk_context(
 
 
 def enrich_docs_with_context(
-    docs: list,  # list[ParsedDocument] — typed loosely to avoid a circular import
+    docs: list,  # list[ParsedChunk] — typed loosely to avoid a circular import
     *,
     asset_title: str = "",
     cache_path=None,

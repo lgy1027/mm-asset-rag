@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mm_asset_rag.assets import Asset
+from mm_asset_rag.assets import IngestAsset
 from mm_asset_rag.parsers.markitdown_parser import build_ir_markitdown
 
 # A 1x1 transparent PNG used as the data-URL payload in several tests so
@@ -38,8 +38,8 @@ def _data_url(png: bytes = _PNG_BYTES) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
-def _asset(tmp_home: Path, *, asset_id: str = "markitdown_test") -> Asset:
-    return Asset(
+def _asset(tmp_home: Path, *, asset_id: str = "markitdown_test") -> IngestAsset:
+    return IngestAsset(
         asset_id=asset_id,
         title="MarkItDown Test",
         source_type="document",

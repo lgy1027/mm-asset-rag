@@ -337,8 +337,8 @@ class IngestWorkflow:
         )
 
     def _to_chunks(self, asset, documents: list, *, version_record=None) -> list[Chunk]:
-        """Map transient parser DTOs onto the persisted v2 document record."""
-        from .schema import ParsedDocument
+        """Attach persisted document identity to parser-owned chunks."""
+        from .schema import ParsedChunk
 
         if not documents:
             return []
@@ -349,11 +349,8 @@ class IngestWorkflow:
             )
         chunks: list[Chunk] = []
         for ordinal, document in enumerate(documents):
-            if isinstance(document, Chunk):
-                chunks.append(document)
-                continue
-            if not isinstance(document, ParsedDocument):
-                raise TypeError("parser output must be ParsedDocument or Chunk")
+            if not isinstance(document, ParsedChunk):
+                raise TypeError("parser output must be ParsedChunk")
             chunks.append(
                 Chunk.create(
                     document_version=record.version,

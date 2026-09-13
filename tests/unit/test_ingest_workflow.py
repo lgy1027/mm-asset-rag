@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from mm_asset_rag.asset_index import DocumentVersionRecord, upsert_record
-from mm_asset_rag.assets import Asset
+from mm_asset_rag.assets import IngestAsset
 from mm_asset_rag.document_store import read_documents
 from mm_asset_rag.ingest_workflow import IngestWorkflow
 from mm_asset_rag.knowledge_models import (
@@ -24,7 +24,7 @@ from mm_asset_rag.service import IngestService, ParseOptions, TaskRecord
 
 
 def test_parse_rejects_asset_without_persisted_document_version(tmp_home: Path) -> None:
-    asset = Asset(
+    asset = IngestAsset(
         asset_id="orphan",
         title="Orphan",
         source_type="image",
@@ -48,7 +48,7 @@ def test_parse_converts_transient_parser_output_to_v2_chunk(tmp_home: Path, monk
     image_path = tmp_home / "assets" / "images" / "scene.png"
     image_path.parent.mkdir(parents=True, exist_ok=True)
     image_path.write_bytes(b"png bytes")
-    asset = Asset(
+    asset = IngestAsset(
         asset_id="scene.png",
         title="Scene",
         source_type="image",

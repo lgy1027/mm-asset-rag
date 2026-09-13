@@ -17,7 +17,7 @@ from mm_asset_rag.knowledge_models import (
     Source,
 )
 from mm_asset_rag.paths import get_documents_jsonl
-from mm_asset_rag.schema import ParsedDocument
+from mm_asset_rag.schema import ParsedChunk
 
 
 def _chunk(text: str, ordinal: int = 0) -> Chunk:
@@ -121,6 +121,6 @@ def test_write_documents_rejects_transient_parsed_document(tmp_path: Path) -> No
     target = tmp_path / "docs.jsonl"
 
     with pytest.raises(TypeError, match="Chunk records only"):
-        write_documents([ParsedDocument(text="legacy", metadata={"asset_id": "a"})], path=target)
+        write_documents([ParsedChunk(text="legacy", metadata={"asset_id": "a"})], path=target)
 
     assert not target.exists()

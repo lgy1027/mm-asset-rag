@@ -11,13 +11,13 @@ from pathlib import Path
 import pytest
 import responses
 
-from mm_asset_rag.assets import Asset
+from mm_asset_rag.assets import IngestAsset
 from mm_asset_rag.parsers.image_parser import parse_image
 from mm_asset_rag.parsers.pdf_parser import parse_pdf
 
 
-def _make_asset(assets_dir: Path, asset_id: str, file_path: Path, source_type: str) -> Asset:
-    return Asset(
+def _make_asset(assets_dir: Path, asset_id: str, file_path: Path, source_type: str) -> IngestAsset:
+    return IngestAsset(
         asset_id=asset_id,
         title=f"Test {asset_id}",
         source_type=source_type,
@@ -29,7 +29,7 @@ def _make_asset(assets_dir: Path, asset_id: str, file_path: Path, source_type: s
 
 
 @pytest.fixture()
-def pdf_asset(tmp_home: Path) -> Asset:
+def pdf_asset(tmp_home: Path) -> IngestAsset:
     try:
         import fitz
     except ImportError:
@@ -47,7 +47,7 @@ def pdf_asset(tmp_home: Path) -> Asset:
 
 
 @pytest.fixture()
-def image_asset(tmp_home: Path) -> Asset:
+def image_asset(tmp_home: Path) -> IngestAsset:
     try:
         from PIL import Image
     except ImportError:
@@ -60,7 +60,7 @@ def image_asset(tmp_home: Path) -> Asset:
     return _make_asset(assets_dir, "img_fish", p, "image")
 
 
-def test_parse_pdf_pymupdf(pdf_asset: Asset) -> None:
+def test_parse_pdf_pymupdf(pdf_asset: IngestAsset) -> None:
     docs = parse_pdf(pdf_asset, parser="pymupdf")
     assert len(docs) >= 1
     assert any("retrieval" in doc.text.lower() for doc in docs)
@@ -68,12 +68,12 @@ def test_parse_pdf_pymupdf(pdf_asset: Asset) -> None:
     assert all(doc.metadata["asset_id"] == "pdf_rag" for doc in docs)
 
 
-def test_parse_pdf_invalid_parser_raises(pdf_asset: Asset) -> None:
+def test_parse_pdf_invalid_parser_raises(pdf_asset: IngestAsset) -> None:
     with pytest.raises(ValueError, match="Unsupported PDF parser"):
         parse_pdf(pdf_asset, parser="bogus")
 
 
-def test_parse_image_via_caption_only(image_asset: Asset, monkeypatch) -> None:
+def test_parse_image_via_caption_only(image_asset: IngestAsset, monkeypatch) -> None:
     """OCR off, VLM on; one document that includes title + caption."""
     monkeypatch.setenv("VLM_BASE_URL", "https://api.example.com/v1")
     monkeypatch.setenv("VLM_API_KEY", "k")
@@ -95,7 +95,7 @@ def test_parse_image_via_caption_only(image_asset: Asset, monkeypatch) -> None:
     assert "tropical fish" in text
 
 
-def test_parse_image_without_vlm_or_ocr(image_asset: Asset) -> None:
+def test_parse_image_without_vlm_or_ocr(image_asset: IngestAsset) -> None:
     # Title + tags are still set on the fixture asset, so the parser has a
     # signal to emit — the new contract is "skip when *all* of title /
     # tags / VLM caption / OCR text are empty".
@@ -122,7 +122,7 @@ def test_parse_image_skips_when_no_signal(tmp_home: Path) -> None:
     img_dir.mkdir(parents=True)
     p = img_dir / "picsum.jpg"
     Image.new("RGB", (32, 32), color=(255, 128, 0)).save(p, "JPEG")
-    asset = Asset(
+    asset = IngestAsset(
         asset_id="picsum_no_signal",
         title="",
         source_type="image",
@@ -146,7 +146,7 @@ def test_parse_image_emits_chunk_when_only_title_present(tmp_home: Path) -> None
     img_dir.mkdir(parents=True)
     p = img_dir / "titled.jpg"
     Image.new("RGB", (32, 32), color=(0, 128, 255)).save(p, "JPEG")
-    asset = Asset(
+    asset = IngestAsset(
         asset_id="img_titled",
         title="Linux logo",
         source_type="image",
@@ -161,7 +161,7 @@ def test_parse_image_emits_chunk_when_only_title_present(tmp_home: Path) -> None
 
 
 def test_run_ocr_dispatches_to_local_by_default(
-    image_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    image_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """OCR_BACKEND defaults to ``local`` — run_ocr calls the in-process
     rapidocr path, not the HTTP server. We stub the rapidocr handle so no
@@ -180,7 +180,7 @@ def test_run_ocr_dispatches_to_local_by_default(
 
 
 def test_run_ocr_dispatches_to_http_when_configured(
-    image_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    image_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """OCR_BACKEND=http keeps the legacy external /ocr server contract."""
     import mm_asset_rag.parsers.image_parser as ip
@@ -201,7 +201,7 @@ def test_run_ocr_dispatches_to_http_when_configured(
 
 
 def test_call_ocr_local_raises_friendly_when_extra_missing(
-    image_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    image_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Without the [ocr] extra installed, the local path raises a hint that
     names the extra rather than a bare ImportError. We force the import to
@@ -223,7 +223,7 @@ def test_call_ocr_local_raises_friendly_when_extra_missing(
         ip.call_ocr_local(image_asset.file_path)
 
 
-def test_parse_image_via_local_ocr(image_asset: Asset, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parse_image_via_local_ocr(image_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch) -> None:
     """OCR on via the default local backend — extracted text enters the
     chunk and is retrievable. Stub the rapidocr handle so no model loads."""
     import mm_asset_rag.parsers.image_parser as ip
@@ -241,7 +241,7 @@ def test_parse_image_via_local_ocr(image_asset: Asset, monkeypatch: pytest.Monke
 
 
 def test_parse_pdf_auto_falls_back_to_paddle_on_scan(
-    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """auto now runs PyMuPDF first and falls back to PaddleOCR-VL only when
     the result looks scanned (near-zero text). The fallback needs the
@@ -255,7 +255,7 @@ def test_parse_pdf_auto_falls_back_to_paddle_on_scan(
     get_settings.cache_clear()
     called = {}
 
-    def fake_paddle(asset: Asset):
+    def fake_paddle(asset: IngestAsset):
         called["parser"] = "paddle"
         return []
 
@@ -263,7 +263,7 @@ def test_parse_pdf_auto_falls_back_to_paddle_on_scan(
 
     # Force PyMuPDF to look scanned: build_ir_pymupdf returns an IR whose
     # blocks carry almost no text, so looks_scanned() is True → fallback.
-    def fake_build_ir_pymupdf(asset: Asset):
+    def fake_build_ir_pymupdf(asset: IngestAsset):
         from mm_asset_rag.parsers.document_ir import Block
 
         return DocumentIR(
@@ -279,7 +279,7 @@ def test_parse_pdf_auto_falls_back_to_paddle_on_scan(
 
 
 def test_parse_pdf_auto_stays_on_pymupdf_for_text_pdf(
-    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A text-rich PDF stays on PyMuPDF even when a PaddleOCR token is
     configured — the old auto behaviour OCR'd every PDF unnecessarily."""
@@ -290,7 +290,7 @@ def test_parse_pdf_auto_stays_on_pymupdf_for_text_pdf(
     get_settings.cache_clear()
     called = {"paddle": 0}
 
-    def fake_paddle(asset: Asset):
+    def fake_paddle(asset: IngestAsset):
         called["paddle"] += 1
         return []
 
@@ -300,7 +300,7 @@ def test_parse_pdf_auto_stays_on_pymupdf_for_text_pdf(
     assert called == {"paddle": 0}
 
 
-def _scanned_ir(asset: Asset):
+def _scanned_ir(asset: IngestAsset):
     """A DocumentIR so text-poor that looks_scanned() is True."""
     from mm_asset_rag.parsers.document_ir import Block, DocumentIR
 
@@ -308,7 +308,7 @@ def _scanned_ir(asset: Asset):
 
 
 def test_parse_pdf_auto_falls_back_to_local_ppocr_without_token(
-    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Zero-config default: a scanned PDF with no online token routes to the
     local PP-OCRv6 page-OCR path, never touching the network."""
@@ -338,7 +338,7 @@ def test_parse_pdf_auto_falls_back_to_local_ppocr_without_token(
 
 
 def test_parse_pdf_auto_uses_online_when_token_configured(
-    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A deployer who set PADDLEOCR_VL_API_TOKEN keeps using the online API
     for scans — the default ``auto`` routing respects the explicit opt-in."""
@@ -365,7 +365,7 @@ def test_parse_pdf_auto_uses_online_when_token_configured(
 
 
 def test_parse_pdf_explicit_ppocr_skips_online(
-    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``--pdf-parser ppocr`` force-routes to local page-OCR even when an
     online token is configured — the explicit override wins."""
@@ -392,7 +392,7 @@ def test_parse_pdf_explicit_ppocr_skips_online(
 
 
 def test_build_ir_from_page_ocr_renders_and_builds_blocks(
-    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``build_ir_from_page_ocr`` (the local PP-OCRv6 scanned-PDF path) is
     normally mocked away in the routing tests above. This exercises the real
@@ -424,7 +424,7 @@ def test_build_ir_from_page_ocr_renders_and_builds_blocks(
 
 
 def test_submit_paddleocr_vl_job_uses_settings(
-    pdf_asset: Asset, monkeypatch: pytest.MonkeyPatch
+    pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from mm_asset_rag.parsers import pdf_parser
     from mm_asset_rag.parsers.pdf_parser import submit_paddleocr_vl_job

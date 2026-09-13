@@ -17,14 +17,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mm_asset_rag.assets import Asset
+from mm_asset_rag.assets import IngestAsset
 from mm_asset_rag.parsers.docling_parser import build_ir_docling
 
 
-def _asset(tmp_path: Path) -> Asset:
+def _asset(tmp_path: Path) -> IngestAsset:
     # build_ir_docling calls converter.convert(asset.file_path); the path
     # need not exist because the converter is stubbed.
-    return Asset(
+    return IngestAsset(
         asset_id="docling_test",
         title="Docling Test",
         source_type="document",
@@ -146,7 +146,7 @@ def test_build_ir_docling_saves_pictures(tmp_home, monkeypatch) -> None:
         pictures=[picture],
     )
 
-    asset = Asset(
+    asset = IngestAsset(
         asset_id="docling_test",
         title="Docling Test",
         source_type="document",

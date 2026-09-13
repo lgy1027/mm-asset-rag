@@ -5,9 +5,9 @@ from pathlib import Path
 
 import requests
 
-from ..assets import Asset
+from ..assets import IngestAsset
 from ..paths import get_captions_dir, get_parsed_dir
-from ..schema import ParsedDocument
+from ..schema import ParsedChunk
 from ..settings import get_settings
 
 # Process-wide RapidOCR handle. The PP-OCRv6 small models (det + cls + rec)
@@ -147,7 +147,7 @@ def call_vlm_caption(image_path: Path) -> str:
     return str(content).strip()
 
 
-def parse_image(asset: Asset, enable_ocr: bool, enable_vlm: bool) -> list[ParsedDocument]:
+def parse_image(asset: IngestAsset, enable_ocr: bool, enable_vlm: bool) -> list[ParsedChunk]:
     output_dir = get_parsed_dir() / asset.asset_id
     output_dir.mkdir(parents=True, exist_ok=True)
     ocr_path = output_dir / "ocr.json"
@@ -209,7 +209,7 @@ def parse_image(asset: Asset, enable_ocr: bool, enable_vlm: bool) -> list[Parsed
         f"原图：{asset.relative_path}"
     ).strip()
     return [
-        ParsedDocument(
+        ParsedChunk(
             text=text,
             metadata={
                 "asset_id": asset.asset_id,

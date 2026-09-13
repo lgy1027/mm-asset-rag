@@ -66,6 +66,7 @@ from pathlib import Path
 
 import requests
 
+from .evaluation_reporting import build_report
 from .llm_transport import LlmTransportError, post_chat_completion
 from .paths import get_answer_eval_report, get_asset_index_path
 from .schema import SearchHit
@@ -608,29 +609,30 @@ def _aggregate_answer_metrics(results: list[AnswerEvalResult]) -> dict:
     # Aggregate over all groups (simple mean of group means, weighted by
     # group size — keeps per-group skew visible while exposing one headline).
     all_n = max(len(results), 1)
-    payload = {
-        "version": "answer_v1",
-        "total": len(results),
-        "answer_source_breakdown": answer_source_breakdown,
-        "per_group": payload_groups,
-        "metrics": {
-            "all": {
-                "coverage_mean": round(sum(r.coverage for r in results) / all_n, 4),
-                "citation_precision_mean": round(
-                    sum(r.citation_precision for r in results) / all_n, 4
-                ),
-                "citation_recall_mean": round(sum(r.citation_recall for r in results) / all_n, 4),
-                "citation_present_rate": round(
-                    sum(1 for r in results if r.citation_present) / all_n, 4
-                ),
-                "faithfulness_mean": _safe_mean(
-                    [r.faithfulness for r in results if not r.faithfulness_skipped]
-                ),
-                "faithfulness_skipped": sum(1 for r in results if r.faithfulness_skipped),
-            }
-        },
+    metrics = {
+        "all": {
+            "coverage_mean": round(sum(r.coverage for r in results) / all_n, 4),
+            "citation_precision_mean": round(sum(r.citation_precision for r in results) / all_n, 4),
+            "citation_recall_mean": round(sum(r.citation_recall for r in results) / all_n, 4),
+            "citation_present_rate": round(
+                sum(1 for r in results if r.citation_present) / all_n, 4
+            ),
+            "faithfulness_mean": _safe_mean(
+                [r.faithfulness for r in results if not r.faithfulness_skipped]
+            ),
+            "faithfulness_skipped": sum(1 for r in results if r.faithfulness_skipped),
+        }
     }
-    return payload
+    return build_report(
+        kind="answer_quality",
+        summary={"total": len(results), "answer_sources": answer_source_breakdown},
+        groups={
+            name: {key: value for key, value in group.items() if key != "per_query"}
+            for name, group in payload_groups.items()
+        },
+        metrics=metrics,
+        per_query=[row for group in payload_groups.values() for row in group["per_query"]],
+    )
 
 
 def _safe_mean(values: list[float]) -> float | None:

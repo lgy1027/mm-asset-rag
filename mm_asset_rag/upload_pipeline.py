@@ -15,7 +15,7 @@ distinct stages:
 * **confirm** (``/upload/confirm``) — takes the previews plus the
   user's edits, moves the cached files into their final home under
   ``assets/pdfs/`` or ``assets/images/``, and returns a list of
-  ``Asset`` objects ready to hand to the ingest service. The ingest
+  ``IngestAsset`` objects ready to hand to the ingest service. The ingest
   step itself (parsing + indexing) still runs asynchronously via
   ``IngestService``; this module's job ends at "files are on disk
   with sensible metadata".
@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover - exercised only on non-Unix platforms
     fcntl = None  # type: ignore[assignment]
 
 from . import asset_index, auto_meta
-from .assets import Asset, from_sniffed, persisted_asset
+from .assets import IngestAsset, from_sniffed, persisted_asset
 from .auto_meta import AutoMeta
 from .knowledge_models import AccessPolicy, Document, DocumentVersion, Source
 from .paths import physical_cache_id
@@ -109,7 +109,7 @@ class UploadCommitError(RuntimeError):
 class _PreparedAsset:
     source_path: Path
     target_path: Path
-    asset: Asset
+    asset: IngestAsset
     sha256: str
     document_id: str
     document_version: int
@@ -458,7 +458,7 @@ class UploadPipeline:
         self,
         cache_id: str,
         edits: list[UserEdits],
-    ) -> list[Asset]:
+    ) -> list[IngestAsset]:
         """Move cached files into ``assets/{pdfs,images}/`` and build Assets.
 
         Files marked ``rejected=True`` are deleted with the cache and
@@ -546,7 +546,7 @@ class UploadPipeline:
                     shutil.move(str(candidate), str(canonical))
                 prepared[position] = replace(
                     item,
-                    asset=Asset(
+                    asset=IngestAsset(
                         asset_id=physical_cache_id(persisted.asset.relative_path),
                         title=item.asset.title,
                         source_type=item.asset.source_type,

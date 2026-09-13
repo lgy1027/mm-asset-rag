@@ -17,8 +17,8 @@ from .answer import answer_json
 from .config import load_env
 from .evaluation import run_eval, write_eval_report
 from .paths import get_documents_jsonl
-from .search_service import SearchInputError, get_search_service
-from .service import ParseOptions, dispatch_search, get_service
+from .search_service import SearchInputError, dispatch_search, get_search_service
+from .service import ParseOptions, get_service
 from .upload_pipeline import UserEdits, get_pipeline
 
 
@@ -237,7 +237,7 @@ def command_eval(args: argparse.Namespace) -> None:
         from .answer_evaluation import _aggregate_answer_metrics
 
         payload = _aggregate_answer_metrics(results)
-        breakdown = payload.get("answer_source_breakdown") or {}
+        breakdown = payload.get("summary", {}).get("answer_sources") or {}
         skipped = payload.get("metrics", {}).get("all", {}).get("faithfulness_skipped", 0)
         if breakdown.get("fallback") and not breakdown.get("llm"):
             safe_print(

@@ -21,6 +21,7 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 from pathlib import Path
 
+from .evaluation_reporting import build_report
 from .metrics import _is_relevant, aggregate_metrics
 from .paths import get_assets_dir, get_eval_report
 from .schema import SearchHit
@@ -369,20 +370,22 @@ def write_eval_report_v2(results_by_group: dict[str, list[V2Result]], path=None)
     """Write per-query qrels and required document-level aggregate metrics."""
     target = path or get_eval_report().with_name("eval_report_v2.json")
     all_results = [result for results in results_by_group.values() for result in results]
-    payload = {
-        "version": "v2",
-        "scenarios": aggregate_retrieval_scenarios(all_results),
-        "per_group": {
+    groups = {
             group: {
                 "total": len(results),
                 "hits": sum(result.hit for result in results),
                 "hit_rate": sum(result.hit for result in results) / max(len(results), 1),
                 "metrics": aggregate_metrics(_metric_rows(results)) if results else {},
-                "per_query": [asdict(result) for result in results],
             }
             for group, results in results_by_group.items()
-        },
     }
+    payload = build_report(
+        kind="retrieval",
+        summary={"total": len(all_results), "scenarios": aggregate_retrieval_scenarios(all_results)},
+        groups=groups,
+        metrics={"all": aggregate_metrics(_metric_rows(all_results)) if all_results else {}},
+        per_query=[asdict(result) for result in all_results],
+    )
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

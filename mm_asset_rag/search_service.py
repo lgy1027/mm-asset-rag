@@ -133,6 +133,30 @@ def coerce_search_mode(mode: str | SearchMode) -> SearchMode:
         ) from exc
 
 
+def dispatch_search(
+    *,
+    query: str,
+    mode: str | SearchMode,
+    image_path: str | Path | None,
+    top_k: int,
+    collection: str | None = None,
+    metadata_filter: dict[str, object] | None = None,
+    principal: str | None = None,
+) -> list[SearchHit]:
+    """Execute one primitive request through the typed search command boundary."""
+    return get_search_service().execute(
+        SearchCommand(
+            query=query,
+            mode=coerce_search_mode(mode),
+            image_path=image_path,
+            top_k=top_k,
+            collection=collection,
+            metadata_filter=metadata_filter,
+            principal=principal,
+        )
+    )
+
+
 class SearchService:
     """Execute typed retrieval commands through the active search backend."""
 

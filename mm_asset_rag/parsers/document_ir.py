@@ -1,9 +1,9 @@
 """Document IR — structured intermediate between a format adapter and the
-flat ``ParsedDocument`` chunk list.
+flat ``ParsedChunk`` chunk list.
 
 Format adapters produce a ``DocumentIR`` (blocks + images); the shared
 ``ir_to_documents`` layer turns one into the chunk list, reusing the
-splitter / image association / enrichment. ``ParsedDocument`` and
+splitter / image association / enrichment. ``ParsedChunk`` and
 ``documents.jsonl`` are untouched — the IR is a pure intermediate.
 """
 
@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..assets import Asset
+    from ..assets import IngestAsset
 
 
 # BBox in page space as (x0, y0, x1, y1). None when the adapter has no
@@ -77,7 +77,7 @@ class DocumentIR:
 
     blocks: list[Block]
     images: list[ImageRef]
-    asset: Asset
+    asset: IngestAsset
     parser: str  # "pymupdf" | "paddleocr-vl-api" | "docling" | …
     markdown_paths: list[str] = field(default_factory=list)
     images_dir: str = ""
@@ -207,9 +207,9 @@ def _coalesce_blocks(blocks: list[Block], *, target_chars: int) -> list[Block]:
 
 
 def ir_to_documents(ir: DocumentIR) -> list:
-    """Turn one ``DocumentIR`` into the flat ``ParsedDocument`` chunk list.
+    """Turn one ``DocumentIR`` into the flat ``ParsedChunk`` chunk list.
 
-    The shared "IR → ParsedDocument" half. Encapsulates the four steps
+    The shared "IR → ParsedChunk" half. Encapsulates the four steps
     that used to be duplicated in each format adapter: token-budget
     chunking, image↔chunk association, keyword enrichment, and metadata
     assembly. The output ``metadata`` shape is identical to the pre-IR
@@ -225,7 +225,7 @@ def ir_to_documents(ir: DocumentIR) -> list:
     """
     # Local imports to keep document_ir.py free of parser-internal deps
     # at import time (chunk_splitter pulls in transformers lazily).
-    from ..schema import ParsedDocument
+    from ..schema import ParsedChunk
     from ..settings import get_settings
     from .chunk_splitter import _make_token_counter, recursive_split, split_with_recursion
     from .pdf_images import (
@@ -251,7 +251,7 @@ def ir_to_documents(ir: DocumentIR) -> list:
         if page is not None and 0 <= page < len(ir.markdown_paths):
             markdown_path_by_page[page] = ir.markdown_paths[page]
 
-    docs: list[ParsedDocument] = []
+    docs: list[ParsedChunk] = []
     # Global per-asset chunk counter: ``enumerate(sections)`` inside the
     # per-block loop would reset to 0 for every block (PyMuPDF emits one
     # block per page), so a multi-page asset would have N chunks all tagged
@@ -384,7 +384,7 @@ def ir_to_documents(ir: DocumentIR) -> list:
                 meta["images_dir"] = ir.images_dir
             if chunk_images:
                 meta["images"] = chunk_images
-            docs.append(ParsedDocument(text=enriched_text, metadata=meta))
+            docs.append(ParsedChunk(text=enriched_text, metadata=meta))
     return docs
 
 

@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from ..assets import Asset
+from ..assets import IngestAsset
 from ..paths import get_parsed_dir
 from .document_ir import BBox, Block, DocumentIR, ImageRef
 
@@ -31,7 +31,7 @@ from .document_ir import BBox, Block, DocumentIR, ImageRef
 _HEADING_LABELS = {"section_header", "title", "page_header", "title1", "title2", "title3"}
 
 
-def build_ir_docling(asset: Asset) -> DocumentIR:
+def build_ir_docling(asset: IngestAsset) -> DocumentIR:
     """Parse any docling-supported format → ``DocumentIR``.
 
     Walks the ``DoclingDocument`` in reading order: text items become

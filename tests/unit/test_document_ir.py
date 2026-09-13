@@ -1,7 +1,7 @@
 """Tests for the Document IR layer (``mm_asset_rag.parsers.document_ir``).
 
 The IR is a pure intermediate: format adapters produce a ``DocumentIR``,
-and ``ir_to_documents`` turns it into the flat ``ParsedDocument`` chunk
+and ``ir_to_documents`` turns it into the flat ``ParsedChunk`` chunk
 list. These tests pin the two contracts the downstream relies on:
 
 1. ``looks_scanned`` — corpus-agnostic char-density threshold that gates
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mm_asset_rag.assets import Asset
+from mm_asset_rag.assets import IngestAsset
 from mm_asset_rag.parsers.document_ir import (
     Block,
     DocumentIR,
@@ -27,8 +27,8 @@ from mm_asset_rag.parsers.document_ir import (
 )
 
 
-def _asset(tmp_path: Path) -> Asset:
-    return Asset(
+def _asset(tmp_path: Path) -> IngestAsset:
+    return IngestAsset(
         asset_id="ir_test",
         title="IR Test",
         source_type="pdf",
@@ -41,7 +41,7 @@ def _asset(tmp_path: Path) -> Asset:
 # ─── looks_scanned ─────────────────────────────────────────────────────────
 
 
-def _ir(blocks: list[Block], asset: Asset, parser: str = "pymupdf") -> DocumentIR:
+def _ir(blocks: list[Block], asset: IngestAsset, parser: str = "pymupdf") -> DocumentIR:
     return DocumentIR(blocks=blocks, images=[], asset=asset, parser=parser)
 
 

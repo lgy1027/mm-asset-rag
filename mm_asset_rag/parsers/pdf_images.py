@@ -4,7 +4,7 @@ Tier-1 of multimodal PDF handling: PyMuPDF parses text only, dropping
 every embedded figure. This module recovers those images so a text hit
 that references "如图3所示" can carry the actual figure path alongside
 its evidence — the figure is *not* embedded into the vector index (that
-is tier 2), it lives in ``ParsedDocument.metadata["images"]`` and is
+is tier 2), it lives in ``ParsedChunk.metadata["images"]`` and is
 surfaced to the LLM / web UI as an attachment of the text hit.
 
 The association chain is:

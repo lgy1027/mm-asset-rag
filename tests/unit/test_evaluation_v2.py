@@ -195,13 +195,15 @@ def test_write_v2_report_includes_required_metrics(tmp_path: Path) -> None:
     write_eval_report_v2({"text_to_text": [result]}, path=path)
     payload = json.loads(path.read_text(encoding="utf-8"))
 
-    assert set(payload["per_group"]["text_to_text"]["metrics"]) == {
+    assert payload["schema_version"] == "evaluation.v1"
+    assert payload["kind"] == "retrieval"
+    assert set(payload["groups"]["text_to_text"]["metrics"]) == {
         "recall",
         "mrr",
         "map",
         "ndcg",
     }
-    assert payload["per_group"]["text_to_text"]["per_query"][0]["qrels"] == {"doc": 2}
+    assert payload["per_query"][0]["qrels"] == {"doc": 2}
 
 
 @dataclass
@@ -232,6 +234,7 @@ def test_eval_endpoint_v2_returns_document_qrels_shape() -> None:
 
     assert response.status_code == 200
     assert response.json() == {
+        "kind": "retrieval",
         "version": "v2",
         "results": [
             {

@@ -509,7 +509,7 @@ def test_image_route_cases_raise(tmp_home) -> None:
 
 def test_report_writes_to_eval_report_answer_json(tmp_home) -> None:
     """Report lands at ``$MM_ASSET_RAG_HOME/eval_report_answer.json`` with the
-    expected payload shape (version / answer_source_breakdown / per_group / metrics)."""
+    shared evaluation report envelope."""
     cases_path = (
         Path(__file__).resolve().parents[2] / "mm_asset_rag" / "eval_data" / "answer_v1_cases.json"
     )
@@ -526,9 +526,10 @@ def test_report_writes_to_eval_report_answer_json(tmp_home) -> None:
     out = tmp_home / "eval_report_answer.json"
     assert out.exists()
     payload = json.loads(out.read_text(encoding="utf-8"))
-    assert payload["version"] == "answer_v1"
-    assert "answer_source_breakdown" in payload
-    assert "per_group" in payload
+    assert payload["schema_version"] == "evaluation.v1"
+    assert payload["kind"] == "answer_quality"
+    assert "answer_sources" in payload["summary"]
+    assert "groups" in payload
     assert "metrics" in payload
     assert "all" in payload["metrics"]
 

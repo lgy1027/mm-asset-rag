@@ -32,7 +32,7 @@ Design notes
 - Image routes (``text-to-image`` / ``image-to-image``) skip rewrite
   entirely — variants only help the text side; an LLM-generated
   variant does not improve a CLIP cosine match. The decision lives
-  in :func:`mm_asset_rag.service.dispatch_search`, not here.
+  in :func:`mm_asset_rag.search_service.dispatch_search`, not here.
 - ``hybrid_search`` is a blocking Qdrant round-trip; we use
   ``concurrent.futures.ThreadPoolExecutor`` (not asyncio) so the
   rewrite path composes with the rest of the synchronous service
@@ -530,7 +530,7 @@ def _multi_query_text(
     only** — ``backend.search_text`` is the dense + BM25-en + BM25-zh
     prefetch inside Qdrant, so the fusion stays single-route even though
     we still get the multi-query RRF cross-variant accumulation. This is
-    what :func:`mm_asset_rag.service.dispatch_search` routes
+    what :func:`mm_asset_rag.search_service.dispatch_search` routes
     ``mode="text"`` through when rewrite is enabled, preserving the
     pre-rewrite "text mode = text-only" semantics.
 

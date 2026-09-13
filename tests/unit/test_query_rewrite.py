@@ -22,7 +22,7 @@ import requests
 from mm_asset_rag import query_rewrite as qr
 from mm_asset_rag.llm_transport import LlmTransportError
 from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.service import dispatch_search
+from mm_asset_rag.search_service import dispatch_search
 from mm_asset_rag.settings import Settings, get_settings
 
 # ─── Fixtures ────────────────────────────────────────────────────────────

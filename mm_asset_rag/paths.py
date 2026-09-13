@@ -13,7 +13,7 @@ All data lives under a single directory pointed to by ``MM_ASSET_RAG_HOME``
     ├── captions/<cache_id>.jsonl  # VLM captions (image asset: .json single-object)
     ├── indexes/
     │   └── qdrant/              # Qdrant local persistence
-    ├── documents.jsonl          # unified ParsedDocument store
+    ├── documents.jsonl          # unified ParsedChunk store
     ├── tasks.db                 # background task history (SQLite)
     ├── asset_index.jsonl        # content-hash → asset_id index (append-only)
     └── eval_report.json

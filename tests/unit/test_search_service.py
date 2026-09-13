@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from mm_asset_rag import search_service, service
+from mm_asset_rag import search_service
 from mm_asset_rag.protocols import SearchFilter
 from mm_asset_rag.schema import SearchHit
 from mm_asset_rag.search_service import (
@@ -28,10 +28,10 @@ def test_search_service_has_no_concrete_qdrant_dependency() -> None:
 def test_dispatch_search_builds_one_transport_neutral_command(monkeypatch) -> None:
     commands = []
     monkeypatch.setattr(
-        service, "get_search_service", lambda: SimpleNamespace(execute=commands.append)
+        search_service, "get_search_service", lambda: SimpleNamespace(execute=commands.append)
     )
 
-    assert service.dispatch_search(query="needle", mode="hybrid", image_path=None, top_k=3) is None
+    assert search_service.dispatch_search(query="needle", mode="hybrid", image_path=None, top_k=3) is None
     assert commands == [SearchCommand(query="needle", mode=SearchMode.HYBRID, top_k=3)]
 
 

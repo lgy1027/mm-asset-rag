@@ -23,16 +23,16 @@ from pathlib import Path
 import fitz
 import requests
 
-from ..assets import Asset
+from ..assets import IngestAsset
 from ..paths import get_parsed_dir
-from ..schema import ParsedDocument
+from ..schema import ParsedChunk
 from ..settings import get_settings
 from .document_ir import Block, DocumentIR, ImageRef, PageHint
 
 # ─── PyMuPDF ──────────────────────────────────────────────────────────────
 
 
-def build_ir_pymupdf(asset: Asset) -> DocumentIR:
+def build_ir_pymupdf(asset: IngestAsset) -> DocumentIR:
     """Local PyMuPDF extraction → ``DocumentIR`` (text blocks + images).
 
     The "format → IR" half of the parse. Walks ``page.get_text("dict")``
@@ -136,7 +136,7 @@ def build_ir_pymupdf(asset: Asset) -> DocumentIR:
     )
 
 
-def parse_pdf_with_pymupdf(asset: Asset) -> list[ParsedDocument]:
+def parse_pdf_with_pymupdf(asset: IngestAsset) -> list[ParsedChunk]:
     """PyMuPDF parse — ``build_ir_pymupdf`` + shared ``ir_to_documents``.
 
     Thin wrapper kept so existing callers (registry, tests) keep working
@@ -363,7 +363,7 @@ def _ocr_image_url_allowed(url: str) -> bool:
     return host in allowed
 
 
-def build_ir_paddleocr_vl(asset: Asset) -> DocumentIR:
+def build_ir_paddleocr_vl(asset: IngestAsset) -> DocumentIR:
     """Remote PaddleOCR-VL OCR → ``DocumentIR`` (markdown blocks + images).
 
     The "format → IR" half. Submits/polls/downloads the OCR JSONL (with
@@ -453,7 +453,7 @@ def build_ir_paddleocr_vl(asset: Asset) -> DocumentIR:
     )
 
 
-def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
+def parse_with_paddleocr_vl(asset: IngestAsset) -> list[ParsedChunk]:
     """PaddleOCR-VL parse — ``build_ir_paddleocr_vl`` + shared ``ir_to_documents``.
 
     Thin wrapper kept so existing callers (registry, tests) keep working
@@ -464,7 +464,7 @@ def parse_with_paddleocr_vl(asset: Asset) -> list[ParsedDocument]:
     return ir_to_documents(build_ir_paddleocr_vl(asset))
 
 
-def build_ir_from_page_ocr(asset: Asset) -> DocumentIR:
+def build_ir_from_page_ocr(asset: IngestAsset) -> DocumentIR:
     """Local scanned-PDF fallback: render each page to an image with PyMuPDF
     and OCR it page-by-page via the in-process PP-OCRv6 (:func:`run_ocr`).
 
@@ -513,7 +513,7 @@ def build_ir_from_page_ocr(asset: Asset) -> DocumentIR:
     )
 
 
-def parse_pdf(asset: Asset, parser: str) -> list[ParsedDocument]:
+def parse_pdf(asset: IngestAsset, parser: str) -> list[ParsedChunk]:
     """Dispatch a PDF parse by backend name.
 
     ``auto`` (the default) runs the fast local PyMuPDF extraction first, and
@@ -574,7 +574,7 @@ def parse_pdf(asset: Asset, parser: str) -> list[ParsedDocument]:
     raise ValueError(f"Unsupported PDF parser: {parser}")
 
 
-def parse_with_docling(asset: Asset) -> list[ParsedDocument]:
+def parse_with_docling(asset: IngestAsset) -> list[ParsedChunk]:
     """docling parse — lazy, raises a friendly error when the extra is missing.
 
     docling is the optional heavy backend (torch / transformers); the
@@ -592,7 +592,7 @@ def parse_with_docling(asset: Asset) -> list[ParsedDocument]:
     return ir_to_documents(build_ir_docling(asset))
 
 
-def parse_with_markitdown(asset: Asset) -> list[ParsedDocument]:
+def parse_with_markitdown(asset: IngestAsset) -> list[ParsedChunk]:
     """MarkItDown parse — ``build_ir_markitdown`` + shared ``ir_to_documents``.
 
     MarkItDown is the default ``document`` backend (core dependency, so

@@ -24,11 +24,11 @@ from mm_asset_rag.contextual import (
 from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, DocumentVersion, Source
 from mm_asset_rag.knowledge_models import Asset as PersistedAsset
 from mm_asset_rag.llm_transport import LlmRateLimiter
-from mm_asset_rag.schema import ParsedDocument
+from mm_asset_rag.schema import ParsedChunk
 
 
-def _doc(text: str, *, chunk_index: int | None = 0, section: str = "") -> ParsedDocument:
-    return ParsedDocument(
+def _doc(text: str, *, chunk_index: int | None = 0, section: str = "") -> ParsedChunk:
+    return ParsedChunk(
         text=text,
         metadata={"asset_id": "a1", "chunk_index": chunk_index, "section": section},
     )

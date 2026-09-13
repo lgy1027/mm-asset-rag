@@ -25,11 +25,11 @@ from mm_asset_rag.backends.qdrant.indexing import (
 from mm_asset_rag.backends.qdrant.search import _filter_by_relevance, _is_collection_missing
 from mm_asset_rag.protocols import IndexBackend, SearchBackend, SearchFilter
 from mm_asset_rag.registry import get_backend
-from mm_asset_rag.schema import ParsedDocument
+from mm_asset_rag.schema import ParsedChunk
 
 
-def _doc(text: str, asset_id: str, title: str | None = None) -> ParsedDocument:
-    return ParsedDocument(
+def _doc(text: str, asset_id: str, title: str | None = None) -> ParsedChunk:
+    return ParsedChunk(
         text=text,
         metadata={"asset_id": asset_id, "asset_title": title or asset_id},
     )

@@ -8,25 +8,21 @@ __all__ = [
     "Chunk",
     "Document",
     "DocumentVersion",
-    "ParsedDocument",
+    "ParsedChunk",
     "SearchHit",
     "Source",
 ]
 
 
 @dataclass
-class ParsedDocument:
-    """Transient parser output during the v2 parser migration.
-
-    This compatibility DTO is deliberately not accepted by
-    :mod:`mm_asset_rag.document_store`; only ``Chunk`` values are persisted.
-    """
+class ParsedChunk:
+    """Parser-owned text and metadata before document identity is assigned."""
 
     text: str
     metadata: dict[str, object]
 
     def to_json(self) -> dict[str, object]:
-        """Serialize the transient parser DTO for non-persistence callers."""
+        """Serialize parser output for in-process enrichment stages."""
         return {"text": self.text, "metadata": dict(self.metadata)}
 
 

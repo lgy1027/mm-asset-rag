@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from mm_asset_rag.asset_index import DocumentVersionRecord, load_records, upsert_record
-from mm_asset_rag.assets import Asset
+from mm_asset_rag.assets import IngestAsset
 from mm_asset_rag.document_store import append_documents, read_documents
 from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, DocumentVersion, Source
 from mm_asset_rag.knowledge_models import Asset as PersistedAsset
@@ -28,7 +28,7 @@ def _clear_settings_cache():
     get_settings.cache_clear()
 
 
-def _make_asset(tmp_home: Path, name: str = "fish.png") -> Asset:
+def _make_asset(tmp_home: Path, name: str = "fish.png") -> IngestAsset:
     try:
         from PIL import Image
     except ImportError:
@@ -37,7 +37,7 @@ def _make_asset(tmp_home: Path, name: str = "fish.png") -> Asset:
     images_dir.mkdir(parents=True, exist_ok=True)
     file_path = images_dir / name
     Image.new("RGB", (8, 8), color=(120, 120, 0)).save(file_path)
-    return Asset(
+    return IngestAsset(
         asset_id=name,
         title=name,
         source_type="image",
@@ -97,8 +97,8 @@ def _persist_version(
     return record
 
 
-def _transient_asset(record: DocumentVersionRecord, tmp_home: Path) -> Asset:
-    return Asset(
+def _transient_asset(record: DocumentVersionRecord, tmp_home: Path) -> IngestAsset:
+    return IngestAsset(
         asset_id=physical_cache_id(record.asset.relative_path),
         title=record.document.title,
         source_type=record.asset.source_type,
@@ -581,7 +581,7 @@ def test_retry_failed_only_uses_recorded_statuses(tmp_home: Path) -> None:
         name="bad1.png",
     )
     assets = [
-        Asset(
+        IngestAsset(
             asset_id=physical_cache_id(record.asset.relative_path),
             title=record.document.title,
             source_type=record.asset.source_type,
@@ -619,7 +619,7 @@ def test_retry_failed_only_all_ok_raises(tmp_home: Path) -> None:
         name="ok1.png",
     )
     assets = [
-        Asset(
+        IngestAsset(
             asset_id="ok1",
             title="ok1",
             source_type=ok.asset.source_type,
@@ -679,7 +679,7 @@ def test_force_retry_clears_parsed_cache(tmp_home: Path, monkeypatch) -> None:
         version_hash="d" * 64,
         name="force.png",
     )
-    asset = Asset(
+    asset = IngestAsset(
         asset_id=physical_cache_id(version.asset.relative_path),
         title="force",
         source_type=version.asset.source_type,
@@ -716,9 +716,9 @@ def test_force_retry_clears_parsed_cache(tmp_home: Path, monkeypatch) -> None:
 
     def fake_parser(asset_obj, **kwargs):
         called.append(asset_obj.asset_id)
-        from mm_asset_rag.schema import ParsedDocument
+        from mm_asset_rag.schema import ParsedChunk
 
-        return [ParsedDocument(text="x", metadata={"asset_id": asset_obj.asset_id})]
+        return [ParsedChunk(text="x", metadata={"asset_id": asset_obj.asset_id})]
 
     import mm_asset_rag.service as svc_mod
 
@@ -746,7 +746,7 @@ def test_force_retry_clears_parsed_cache(tmp_home: Path, monkeypatch) -> None:
 
 def test_force_retry_replaces_only_current_document_version_chunks(tmp_home: Path) -> None:
     import mm_asset_rag.service as svc_mod
-    from mm_asset_rag.schema import ParsedDocument
+    from mm_asset_rag.schema import ParsedChunk
     from mm_asset_rag.service import ParseOptions, _do_parse
 
     sibling = _persist_version(
@@ -767,7 +767,7 @@ def test_force_retry_replaces_only_current_document_version_chunks(tmp_home: Pat
         version_hash="9" * 64,
         name="handbook.png",
     )
-    asset = Asset(
+    asset = IngestAsset(
         asset_id=physical_cache_id(current.asset.relative_path),
         title="guide",
         source_type=current.asset.source_type,
@@ -790,7 +790,7 @@ def test_force_retry_replaces_only_current_document_version_chunks(tmp_home: Pat
         class P:
             def parse(self, asset_obj, **kwargs):
                 return [
-                    ParsedDocument(text="fresh chunk", metadata={"asset_id": asset_obj.asset_id})
+                    ParsedChunk(text="fresh chunk", metadata={"asset_id": asset_obj.asset_id})
                 ]
 
         return P()
@@ -856,7 +856,7 @@ def test_ingest_task_records_indexed_status_on_success(tmp_home: Path) -> None:
         version_hash="5" * 64,
         name="ing.png",
     )
-    asset = Asset(
+    asset = IngestAsset(
         asset_id=physical_cache_id(version.asset.relative_path),
         title=version.document.title,
         source_type=version.asset.source_type,
@@ -903,7 +903,7 @@ def test_ingest_task_records_failed_index_on_upsert_crash(tmp_home: Path) -> Non
         version_hash="6" * 64,
         name="crash.png",
     )
-    asset = Asset(
+    asset = IngestAsset(
         asset_id=physical_cache_id(version.asset.relative_path),
         title=version.document.title,
         source_type=version.asset.source_type,
@@ -951,7 +951,7 @@ def test_retry_failed_only_includes_failed_index(tmp_home: Path) -> None:
         name="bad1.png",
     )
     assets = [
-        Asset(
+        IngestAsset(
             asset_id=physical_cache_id(record.asset.relative_path),
             title=record.document.title,
             source_type=record.asset.source_type,
@@ -998,7 +998,7 @@ def test_retry_force_and_failed_only_clear_only_failed_cache(
         name="bad1.png",
     )
     assets = [
-        Asset(
+        IngestAsset(
             asset_id=physical_cache_id(record.asset.relative_path),
             title=record.document.title,
             source_type=record.asset.source_type,
@@ -1033,10 +1033,10 @@ def test_retry_force_and_failed_only_clear_only_failed_cache(
 
     class StubParser:
         def parse(self, asset, **_kwargs):
-            from mm_asset_rag.schema import ParsedDocument
+            from mm_asset_rag.schema import ParsedChunk
 
             called.append(asset.asset_id)
-            return [ParsedDocument(text="x", metadata={"asset_id": asset.asset_id})]
+            return [ParsedChunk(text="x", metadata={"asset_id": asset.asset_id})]
 
     monkeypatch.setattr(svc_mod, "get_parser", lambda kind, name: StubParser())
 
@@ -1104,40 +1104,40 @@ def test_dispatch_search_rejects_absolute_image_path(tmp_home: Path) -> None:
     traversal bounce at the API boundary so the CLIP encoder can't be
     pointed at ``/etc/passwd`` or similar.
     """
-    from mm_asset_rag.service import _resolve_sandboxed_image_path
+    from mm_asset_rag.search_service import resolve_sandboxed_image_path
 
     with pytest.raises(ValueError, match="must be relative"):
-        _resolve_sandboxed_image_path("/etc/passwd")
+        resolve_sandboxed_image_path("/etc/passwd")
     with pytest.raises(ValueError, match="must be relative"):
-        _resolve_sandboxed_image_path("/absolute/image.png")
+        resolve_sandboxed_image_path("/absolute/image.png")
 
 
 def test_dispatch_search_rejects_parent_traversal(tmp_home: Path) -> None:
-    from mm_asset_rag.service import _resolve_sandboxed_image_path
+    from mm_asset_rag.search_service import resolve_sandboxed_image_path
 
     with pytest.raises(ValueError, match="outside assets"):
-        _resolve_sandboxed_image_path("../escape.png")
+        resolve_sandboxed_image_path("../escape.png")
     with pytest.raises(ValueError, match="outside assets"):
-        _resolve_sandboxed_image_path("images/../../escape.png")
+        resolve_sandboxed_image_path("images/../../escape.png")
 
 
 def test_dispatch_search_rejects_missing_file(tmp_home: Path) -> None:
-    from mm_asset_rag.service import _resolve_sandboxed_image_path
+    from mm_asset_rag.search_service import resolve_sandboxed_image_path
 
     assets_dir = tmp_home / "assets"
     assets_dir.mkdir()
     with pytest.raises(ValueError, match="not found"):
-        _resolve_sandboxed_image_path("images/ghost.png")
+        resolve_sandboxed_image_path("images/ghost.png")
 
 
 def test_dispatch_search_accepts_file_inside_assets(tmp_home: Path) -> None:
-    from mm_asset_rag.service import _resolve_sandboxed_image_path
+    from mm_asset_rag.search_service import resolve_sandboxed_image_path
 
     assets_dir = tmp_home / "assets"
     target = assets_dir / "images" / "ok.png"
     target.parent.mkdir(parents=True)
     target.write_bytes(b"\x89PNG\r\n\x1a\n")
-    resolved = _resolve_sandboxed_image_path("images/ok.png")
+    resolved = resolve_sandboxed_image_path("images/ok.png")
     assert resolved is not None
     assert resolved.is_relative_to(assets_dir)
     assert resolved.name == "ok.png"
@@ -1152,7 +1152,7 @@ def test_dispatch_search_rejects_symlink_escape(tmp_home: Path) -> None:
     CLIP encoder would happily follow the link. ``resolve(strict=False)``
     followed by ``is_relative_to(assets_dir)`` catches this case.
     """
-    from mm_asset_rag.service import _resolve_sandboxed_image_path
+    from mm_asset_rag.search_service import resolve_sandboxed_image_path
 
     assets_dir = tmp_home / "assets"
     images_dir = assets_dir / "images"
@@ -1168,7 +1168,7 @@ def test_dispatch_search_rejects_symlink_escape(tmp_home: Path) -> None:
         pytest.skip(f"symlink unavailable: {exc}")
 
     with pytest.raises(ValueError, match="outside assets"):
-        _resolve_sandboxed_image_path("images/leak.png")
+        resolve_sandboxed_image_path("images/leak.png")
 
 
 def test_list_tasks_orders_by_updated_at_desc(tmp_home: Path) -> None:
@@ -1372,7 +1372,7 @@ def test_ingest_task_invalidates_caches_on_success(tmp_home: Path, monkeypatch) 
         version_hash="7" * 64,
         name="ing.png",
     )
-    asset = Asset(
+    asset = IngestAsset(
         asset_id=physical_cache_id(version.asset.relative_path),
         title=version.document.title,
         source_type=version.asset.source_type,
@@ -1517,7 +1517,7 @@ def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
     cancel_task unit tests, which only exercise the flag-set path).
     """
     import mm_asset_rag.service as svc_mod
-    from mm_asset_rag.schema import ParsedDocument
+    from mm_asset_rag.schema import ParsedChunk
     from mm_asset_rag.service import _do_parse
 
     records = [
@@ -1545,7 +1545,7 @@ def test_worker_stops_at_checkpoint_when_cancelled(tmp_home: Path) -> None:
         if asset.asset_id == a1.asset_id:
             service._cancel_flags[rec.task_id].set()
             service._patch(rec, status="cancelled", finished_at=time.time(), current="cancelled")
-        return [ParsedDocument(text="x", metadata={"asset_id": asset.asset_id})]
+        return [ParsedChunk(text="x", metadata={"asset_id": asset.asset_id})]
 
     def fake_get_parser(kind, name):
         class P:
@@ -1580,7 +1580,7 @@ def test_do_parse_keeps_cancelled_when_cancel_during_last_asset(tmp_home: Path) 
     the final patch only set finished_at/current, not status, when the
     cancel flag was set."""
     import mm_asset_rag.service as svc_mod
-    from mm_asset_rag.schema import ParsedDocument
+    from mm_asset_rag.schema import ParsedChunk
     from mm_asset_rag.service import _do_parse
 
     records = [
@@ -1607,7 +1607,7 @@ def test_do_parse_keeps_cancelled_when_cancel_during_last_asset(tmp_home: Path) 
         if asset.asset_id == a2.asset_id:
             service._cancel_flags[rec.task_id].set()
             # Deliberately do NOT patch status — leave it "running".
-        return [ParsedDocument(text="x", metadata={"asset_id": asset.asset_id})]
+        return [ParsedChunk(text="x", metadata={"asset_id": asset.asset_id})]
 
     def fake_get_parser(kind, name):
         class P:

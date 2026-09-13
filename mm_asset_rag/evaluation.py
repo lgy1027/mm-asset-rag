@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .evaluation_reporting import build_report
 from .evaluation_v2 import (
     _document_ids,
     _first_relevant_rank,
@@ -99,17 +100,31 @@ def write_eval_report(results: list[EvalResult], path=None) -> None:
     by_group: dict[str, list[EvalResult]] = {"all": list(results)}
     for result in results:
         by_group.setdefault(result.group, []).append(result)
-    payload = {
-        "total": len(results),
-        "hit_count": sum(result.hit for result in results),
-        "hit_rate": sum(result.hit for result in results) / max(len(results), 1),
-        "per_query": [asdict(result) for result in results],
-        "metrics": {
-            group: aggregate_metrics(_metric_rows(group_results)) if group_results else {}
-            for group, group_results in by_group.items()
-        },
-        "scenarios": aggregate_retrieval_scenarios(results),
+    groups = {
+        group: {
+            "total": len(group_results),
+            "hits": sum(result.hit for result in group_results),
+            "hit_rate": sum(result.hit for result in group_results) / max(len(group_results), 1),
+        }
+        for group, group_results in by_group.items()
+        if group != "all"
     }
+    metrics = {
+        group: aggregate_metrics(_metric_rows(group_results)) if group_results else {}
+        for group, group_results in by_group.items()
+    }
+    payload = build_report(
+        kind="retrieval",
+        summary={
+            "total": len(results),
+            "hits": sum(result.hit for result in results),
+            "hit_rate": sum(result.hit for result in results) / max(len(results), 1),
+            "scenarios": aggregate_retrieval_scenarios(results),
+        },
+        groups=groups,
+        metrics=metrics,
+        per_query=[asdict(result) for result in results],
+    )
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

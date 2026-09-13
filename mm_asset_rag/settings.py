@@ -294,7 +294,7 @@ class Settings(BaseSettings):
     # When ``pdf_extract_images`` is on, ``pdf_images.extract_page_images``
     # pulls every image a page references into ``parsed/<id>/images/`` and
     # ``associate_images`` attaches the figures a chunk references (or sits
-    # next to) to ``ParsedDocument.metadata["images"]`` — surfaced to the
+    # next to) to ``ParsedChunk.metadata["images"]`` — surfaced to the
     # LLM (as a 关联图片 hint) and the web UI (as a thumbnail). Images are
     # NOT embedded into the vector index (that is tier 2); they ride in the
     # text hit's payload. ``pdf_image_min_dim`` filters logos/icons.

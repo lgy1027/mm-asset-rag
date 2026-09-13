@@ -29,7 +29,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from ..assets import Asset
+from ..assets import IngestAsset
 from ..paths import get_parsed_dir
 from .document_ir import Block, DocumentIR, ImageRef
 
@@ -62,7 +62,7 @@ _SUFFIX_BY_MIME: dict[str, str] = {
 _ATX_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
-def build_ir_markitdown(asset: Asset) -> DocumentIR:
+def build_ir_markitdown(asset: IngestAsset) -> DocumentIR:
     """Parse any MarkItDown-supported format → ``DocumentIR``.
 
     MarkItDown converts the source to a single markdown string

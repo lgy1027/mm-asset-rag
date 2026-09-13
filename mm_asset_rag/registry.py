@@ -9,7 +9,7 @@ identifier:
   ``"pdf" / "paddleocr_vl"``).
 * ``embedders``: ``(modality, name)`` → ``Embedder`` — each modality can
   have a default plus experimental variants.
-* ``backends``: ``name`` → ``VectorBackend`` — at most one backend per name;
+* ``backends``: ``name`` → ``KnowledgeBackend`` — at most one backend per name;
   the active backend is selected by ``VECTOR_BACKEND`` env or constructor arg.
 
 Registration is idempotent: re-registering an existing key replaces the
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Generic, TypeVar
 
-from .protocols import Embedder, Parser, VectorBackend
+from .protocols import Embedder, KnowledgeBackend, Parser
 
 T = TypeVar("T")
 
@@ -59,7 +59,7 @@ class Registry(Generic[T]):
 
 parsers: Registry[Parser] = Registry("parser")
 embedders: Registry[Embedder] = Registry("embedder")
-backends: Registry[VectorBackend] = Registry("backend")
+backends: Registry[KnowledgeBackend] = Registry("backend")
 
 
 # ─── Convenience helpers ────────────────────────────────────────────────
@@ -75,7 +75,7 @@ def register_embedder(embedder: Embedder, *, replace: bool = False) -> None:
     embedders.register((embedder.modality, embedder.name), embedder, replace=replace)
 
 
-def register_backend(backend: VectorBackend, *, replace: bool = False) -> None:
+def register_backend(backend: KnowledgeBackend, *, replace: bool = False) -> None:
     """Register ``backend`` under ``backend.name``."""
     backends.register(backend.name, backend, replace=replace)
 
@@ -88,7 +88,7 @@ def get_embedder(modality: str, name: str) -> Embedder:
     return embedders.get((modality, name))
 
 
-def get_backend(name: str) -> VectorBackend:
+def get_backend(name: str) -> KnowledgeBackend:
     if name not in backends:
         from .backends import register_builtin_backends
 

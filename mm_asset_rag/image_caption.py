@@ -234,7 +234,7 @@ def _strip_reasoning_preface(raw: str) -> str:
 
 
 def enrich_docs_with_image_captions(
-    docs: list,  # list[ParsedDocument] — typed loosely to avoid a circular import
+    docs: list,  # list[ParsedChunk] — typed loosely to avoid a circular import
     *,
     asset_id: str,
     cache_path: Path | None = None,

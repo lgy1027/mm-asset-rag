@@ -1,4 +1,4 @@
-"""Asset dataclass + factory for the auto-ingest upload pipeline.
+"""IngestAsset dataclass + factory for the auto-ingest upload pipeline.
 
 This module used to host the manifest loader and atomic manifest
 writer. Those responsibilities moved out: assets are no longer
@@ -21,13 +21,13 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class Asset:
+class IngestAsset:
     """A unit of content the pipeline can parse and index.
 
     ``source_type`` is ``"pdf"``, ``"image"``, or ``"document"`` (office /
     text formats the document parser handles). ``relative_path`` is always
     relative to ``asset_dir`` (which defaults to ``$MM_ASSET_RAG_HOME/assets``)
-    so the same Asset object survives a move of the home directory.
+    so the same IngestAsset object survives a move of the home directory.
     """
 
     asset_id: str
@@ -54,8 +54,8 @@ def from_sniffed(
     auto_tags: list[str] | None = None,
     asset_id_override: str | None = None,
     title_override: str | None = None,
-) -> Asset:
-    """Construct an ``Asset`` from a ``SniffedAsset`` plus optional metadata.
+) -> IngestAsset:
+    """Construct an ``IngestAsset`` from a ``SniffedAsset`` plus optional metadata.
 
     Resolution order for each user-facing field:
 
@@ -78,7 +78,7 @@ def from_sniffed(
         else []
     )
 
-    return Asset(
+    return IngestAsset(
         asset_id=asset_id_override or sniffed.asset_id,
         title=title,
         source_type=sniffed.source_type,
@@ -90,7 +90,7 @@ def from_sniffed(
     )
 
 
-def persisted_asset(asset: Asset, content_hash: str) -> PersistedAsset:
+def persisted_asset(asset: IngestAsset, content_hash: str) -> PersistedAsset:
     """Map transient parse input to the v2 physical-asset record.
 
     The parser-facing object remains local to the ingest worker during the

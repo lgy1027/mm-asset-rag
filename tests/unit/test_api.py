@@ -351,15 +351,19 @@ def test_search_response_exposes_document_version_chunk_without_asset_id(
 
 
 def test_eval_endpoint_runs_cases(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.run_eval", return_value=[]):
+    service = MagicMock()
+    service.execute.return_value = {"kind": "retrieval", "version": "v1", "results": []}
+    with patch("mm_asset_rag.api.get_evaluation_service", return_value=service):
         response = client.post("/eval", json={"collection": "team", "principal": "alice"})
     assert response.status_code == 200
-    assert response.json() == {"results": []}
+    assert response.json() == {"kind": "retrieval", "version": "v1", "results": []}
 
 
 def test_eval_endpoint_requires_and_forwards_access_context(client: TestClient) -> None:
     assert client.post("/eval", json={}).status_code == 422
-    with patch("mm_asset_rag.api.run_eval", return_value=[]) as run_eval_stub:
+    service = MagicMock()
+    service.execute.return_value = {"kind": "retrieval", "version": "v1", "results": []}
+    with patch("mm_asset_rag.api.get_evaluation_service", return_value=service):
         response = client.post(
             "/eval",
             json={
@@ -370,9 +374,10 @@ def test_eval_endpoint_requires_and_forwards_access_context(client: TestClient) 
         )
 
     assert response.status_code == 200
-    assert run_eval_stub.call_args.kwargs["collection"] == "team"
-    assert run_eval_stub.call_args.kwargs["principal"] == "alice"
-    assert run_eval_stub.call_args.kwargs["metadata_filter"] == {"department": "research"}
+    command = service.execute.call_args.args[0]
+    assert command.collection == "team"
+    assert command.principal == "alice"
+    assert command.metadata_filter == {"department": "research"}
 
 
 def test_chat_refusal_has_no_outer_sources(client: TestClient) -> None:
@@ -432,13 +437,9 @@ def test_eval_endpoint_resolves_cases_in_eval_cases_dir(client: TestClient) -> N
     case_file = get_eval_cases_dir() / "user_case.json"
     case_file.write_text('{"version":"v1","groups":{}}', encoding="utf-8")
 
-    captured: dict[str, object] = {}
-
-    def fake_run_eval(top_k, *, cases_path=None, collection, principal, metadata_filter=None):
-        captured["cases_path"] = cases_path
-        return []
-
-    with patch("mm_asset_rag.api.run_eval", side_effect=fake_run_eval):
+    service = MagicMock()
+    service.execute.return_value = {"kind": "retrieval", "version": "v1", "results": []}
+    with patch("mm_asset_rag.api.get_evaluation_service", return_value=service):
         response = client.post(
             "/eval",
             json={
@@ -448,7 +449,7 @@ def test_eval_endpoint_resolves_cases_in_eval_cases_dir(client: TestClient) -> N
             },
         )
     assert response.status_code == 200
-    forwarded = captured.get("cases_path")
+    forwarded = service.execute.call_args.args[0].cases_path
     assert forwarded is not None
     assert Path(forwarded).name == "user_case.json"
     assert Path(forwarded).is_file()

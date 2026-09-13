@@ -58,7 +58,7 @@ def test_document_qrels_regression_metrics(tmp_path: Path) -> None:
     )
     report = tmp_path / "report.json"
     write_eval_report_v2({"text_to_text": results}, path=report)
-    metrics = json.loads(report.read_text(encoding="utf-8"))["per_group"]["text_to_text"]["metrics"]
+    metrics = json.loads(report.read_text(encoding="utf-8"))["groups"]["text_to_text"]["metrics"]
 
     assert metrics["recall"]["1"] == pytest.approx(0.25)
     assert metrics["recall"]["3"] == 1.0

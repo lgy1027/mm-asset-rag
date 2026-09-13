@@ -51,7 +51,7 @@ from .api_streaming import (
 )
 from .api_streaming import _STREAM_ERR_MAX_CHARS as _STREAM_ERR_MAX_CHARS
 from .backends.qdrant.client import get_qdrant_client
-from .evaluation import run_eval
+from .evaluation_service import EvaluationCommand, get_evaluation_service
 from .paths import (
     get_assets_dir,
     get_documents_jsonl,
@@ -59,12 +59,8 @@ from .paths import (
     physical_cache_id,
     safe_parsed_image_path,
 )
-from .search_service import get_search_service
-from .service import (
-    ParseOptions,
-    dispatch_search,
-    get_service,
-)
+from .search_service import dispatch_search, get_search_service
+from .service import ParseOptions, get_service
 from .settings import get_settings
 from .upload_pipeline import UploadCommitError, UploadManifestError, UserEdits, get_pipeline
 
@@ -421,47 +417,18 @@ async def eval_endpoint(
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
     cases_path = _resolve_cases_path(request.cases_path)
-    if request.answer_quality:
-        from .answer_evaluation import run_answer_eval, write_answer_eval_report
-
-        results = await asyncio.to_thread(
-            run_answer_eval,
+    return await asyncio.to_thread(
+        get_evaluation_service().execute,
+        EvaluationCommand(
             top_k=request.top_k,
             cases_path=cases_path,
             collection=request.collection,
             metadata_filter=request.metadata_filter,
             principal=request.principal,
-        )
-        # Persist to disk so the CLI surface and the API surface share
-        # the same report path; the JSON returned below mirrors that.
-        write_answer_eval_report(results)
-        return {"results": [asdict(r) for r in results], "version": "answer_v1"}
-    if request.v2:
-        from .evaluation_v2 import run_eval_v2
-
-        results = await asyncio.to_thread(
-            run_eval_v2,
-            top_k=request.top_k,
-            cases_path=cases_path,
-            collection=request.collection,
-            metadata_filter=request.metadata_filter,
-            principal=request.principal,
-        )
-        # ``V2Result`` mirrors v1's ``EvalResult`` (same fields:
-        # query_id / query / qrels / actual_document_ids / hit / rank / group),
-        # so ``asdict`` produces the same row shape the v1
-        # branch returns; the only addition is a ``version`` tag so
-        # clients can tell which set ran.
-        return {"results": [asdict(r) for r in results], "version": "v2"}
-    results = await asyncio.to_thread(
-        run_eval,
-        top_k=request.top_k,
-        cases_path=cases_path,
-        collection=request.collection,
-        metadata_filter=request.metadata_filter,
-        principal=request.principal,
+            v2=request.v2,
+            answer_quality=request.answer_quality,
+        ),
     )
-    return {"results": [r.__dict__ for r in results]}
 
 
 @app.post("/chat")

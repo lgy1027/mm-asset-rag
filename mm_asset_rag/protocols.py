@@ -22,17 +22,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from .assets import Asset
-from .schema import ParsedDocument
+from .assets import IngestAsset
+from .schema import ParsedChunk
 
 # ─── Parser ──────────────────────────────────────────────────────────────
 
 
 @runtime_checkable
 class Parser(Protocol):
-    """Parse a single source asset into a flat list of ``ParsedDocument``.
+    """Parse a single source asset into a flat list of ``ParsedChunk``.
 
-    Each ``ParsedDocument`` carries modality-neutral ``metadata`` — callers
+    Each ``ParsedChunk`` carries modality-neutral ``metadata`` — callers
     store ``asset_id`` / ``source_type`` / ``page`` / ``parser`` / etc. and
     downstream embedding / retrieval steps don't need to special-case the
     parser that produced them.
@@ -45,7 +45,7 @@ class Parser(Protocol):
     name: str
     source_type: str  # "pdf" | "image" | "audio" | "video"
 
-    def parse(self, asset: Asset, **options: object) -> list[ParsedDocument]: ...
+    def parse(self, asset: IngestAsset, **options: object) -> list[ParsedChunk]: ...
 
 
 # ─── Embedder ────────────────────────────────────────────────────────────
@@ -188,56 +188,6 @@ class IndexBackend(Protocol):
     ) -> tuple[int, str]: ...
 
 
-# ─── Legacy aggregate backend port ──────────────────────────────────────
-
-
 @runtime_checkable
-class VectorBackend(Protocol):
-    """A vector store backend (qdrant, milvus, pinecone, …).
-
-    Collections are identified by a string ``name``. Dense and sparse
-    vectors are passed as a single ``vector: dict[str, list[float] |
-    SparseVector]`` mapping so the backend doesn't need to know the
-    embedding model layout.
-    """
-
-    name: str  # "qdrant"
-
-    def ensure_collection(
-        self,
-        *,
-        name: str,
-        dim: int,
-        sparse: bool = False,
-    ) -> None: ...
-
-    def drop_collection(self, name: str) -> None: ...
-
-    def upsert(
-        self,
-        *,
-        collection: str,
-        points: list[object],
-        wait: bool = True,
-    ) -> int: ...
-
-    def retrieve_existing_ids(self, *, collection: str, ids: list[str]) -> set[str]: ...
-
-    def search_points(
-        self,
-        *,
-        collection: str,
-        query_vector: list[float],
-        sparse_vector: object | None,
-        vector_name_dense: str,
-        vector_name_sparse: str,
-        top_k: int,
-    ) -> list[object]: ...
-
-    def search_image_to_image(
-        self,
-        *,
-        collection: str,
-        image_path: Path,
-        top_k: int,
-    ) -> list[object]: ...
+class KnowledgeBackend(SearchBackend, IndexBackend, Protocol):
+    """Backend capability used by both retrieval and ingestion workflows."""

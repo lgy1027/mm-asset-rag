@@ -54,29 +54,6 @@ class QdrantBackend:
             Path(image_path), top_k=top_k, search_filter=search_filter
         )
 
-    # Compatibility with the pre-capability aggregate VectorBackend port.
-    def search_points(
-        self,
-        *,
-        collection,
-        query_vector,
-        sparse_vector,
-        vector_name_dense,
-        vector_name_sparse,
-        top_k,
-    ):
-        return search.hybrid_text_query(
-            self._client(),
-            collection,
-            query_vector,
-            sparse_vector,
-            None,
-            top_k,
-        )
-
-    def search_image_to_image(self, *, collection, image_path, top_k):
-        return search.image_to_image_search(Path(image_path), top_k=top_k)
-
     @staticmethod
     def _client():
         return client.get_qdrant_client()

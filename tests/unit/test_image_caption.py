@@ -21,11 +21,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mm_asset_rag.image_caption import enrich_docs_with_image_captions
-from mm_asset_rag.schema import ParsedDocument
+from mm_asset_rag.schema import ParsedChunk
 
 
-def _doc(text: str, images: list[dict] | None = None) -> ParsedDocument:
-    return ParsedDocument(
+def _doc(text: str, images: list[dict] | None = None) -> ParsedChunk:
+    return ParsedChunk(
         text=text,
         metadata={"asset_id": "a1", "chunk_index": 0, "images": images or []},
     )

@@ -11,7 +11,7 @@ import pytest
 from qdrant_client import models
 
 from mm_asset_rag import bm25_zh
-from mm_asset_rag.schema import ParsedDocument
+from mm_asset_rag.schema import ParsedChunk
 
 # ─── tokenize_zh ─────────────────────────────────────────────────────────
 
@@ -124,8 +124,8 @@ def test_encode_query_indices_are_stable_sha1_hashes() -> None:
 # ─── build_bm25_zh_index ─────────────────────────────────────────────────
 
 
-def _doc(text: str) -> ParsedDocument:
-    return ParsedDocument(text=text, metadata={"asset_id": "test"})
+def _doc(text: str) -> ParsedChunk:
+    return ParsedChunk(text=text, metadata={"asset_id": "test"})
 
 
 def test_build_index_returns_one_sparse_vector_per_doc() -> None:
@@ -182,7 +182,7 @@ def test_build_index_injects_context_preamble_into_tokens() -> None:
     Pins the contract: a doc whose body lacks term ``扩散`` but whose
     context carries it must produce a vector whose tokens include ``扩散``.
     """
-    doc = ParsedDocument(
+    doc = ParsedChunk(
         text="这一节讨论具体实现细节",  # body without "扩散"
         metadata={"asset_id": "a1", "context": "关于DDPM去噪扩散概率模型的前缀"},
     )
@@ -207,7 +207,7 @@ def test_build_index_without_context_matches_legacy_behaviour() -> None:
     """A doc with no ``context`` key tokenises the bare body — identical to
     the pre-contextual behaviour, so the zh channel doesn't regress on
     non-contextual corpora."""
-    doc = ParsedDocument(text="猫 狗", metadata={"asset_id": "a1"})
+    doc = ParsedChunk(text="猫 狗", metadata={"asset_id": "a1"})
     vectors, _ = bm25_zh.build_bm25_zh_index([doc])
     expected = {bm25_zh._term_to_index(t) for t in bm25_zh.tokenize_zh("猫 狗")}
     assert expected == set(vectors[0].indices)

@@ -94,13 +94,13 @@ def test_cli_search_translates_invalid_image_path_to_system_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The CLI renders search validation failures without a Python traceback."""
-    import mm_asset_rag.service as service_mod
+    import mm_asset_rag.search_service as search_service_mod
     from mm_asset_rag.search_service import SearchService
 
     class _Backend:
         pass
 
-    monkeypatch.setattr(service_mod, "get_search_service", lambda: SearchService(_Backend()))
+    monkeypatch.setattr(search_service_mod, "get_search_service", lambda: SearchService(_Backend()))
     args = build_parser().parse_args(
         [
             "search",

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
-from mm_asset_rag.schema import ParsedDocument, SearchHit
+from mm_asset_rag.schema import ParsedChunk, SearchHit
 
 
 def test_parsed_document_to_json_roundtrip() -> None:
-    doc = ParsedDocument(text="hello", metadata={"asset_id": "a1", "page": 0})
+    doc = ParsedChunk(text="hello", metadata={"asset_id": "a1", "page": 0})
     payload = doc.to_json()
     assert payload == {"text": "hello", "metadata": {"asset_id": "a1", "page": 0}}
     # serializable

@@ -21,7 +21,7 @@ from typing import Any
 
 from . import asset_index
 from . import parsers as _parsers  # noqa: F401  # register built-in parsers
-from .assets import Asset, from_sniffed
+from .assets import IngestAsset, from_sniffed
 from .backends.qdrant.client import get_qdrant_client
 from .backends.qdrant.collections import (
     IMAGE_COLLECTION_BASE,
@@ -44,22 +44,11 @@ from .paths import (
 from .query_preprocess import invalidate_vocab_cache
 from .registry import get_backend
 from .registry import get_parser as get_parser
-from .search_service import (
-    SearchCommand,
-    coerce_search_mode,
-    get_search_service,
-    resolve_sandboxed_image_path,
-)
 from .settings import Settings, get_settings
 from .sniff import sniff
 from .task_store import TaskRecord, TaskStore
 
 # ─── Helpers shared by api.py and cli.py ──────────────────────────────────
-
-
-def _resolve_sandboxed_image_path(image_path: str | Path | None) -> Path | None:
-    """Compatibility alias for the image-path resolver now owned by SearchService."""
-    return resolve_sandboxed_image_path(image_path)
 
 
 def coerce_bool(form_val: str | bool | None, default: bool) -> bool:
@@ -76,30 +65,6 @@ def coerce_bool(form_val: str | bool | None, default: bool) -> bool:
     if isinstance(form_val, bool):
         return form_val
     return str(form_val).strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def dispatch_search(
-    *,
-    query: str,
-    mode: str,
-    image_path: str | Path | None,
-    top_k: int,
-    collection: str | None = None,
-    metadata_filter: dict[str, object] | None = None,
-    principal: str | None = None,
-) -> list:
-    """Adapt the legacy primitive arguments into one typed search command."""
-    return get_search_service().execute(
-        SearchCommand(
-            query=query,
-            mode=coerce_search_mode(mode),
-            image_path=image_path,
-            top_k=top_k,
-            collection=collection,
-            metadata_filter=metadata_filter,
-            principal=principal,
-        )
-    )
 
 
 # ─── Enums ──────────────────────────────────────────────────────────────
@@ -139,7 +104,7 @@ _RETRY_ELIGIBLE_VERSION_STATUSES = {"failed", "skipped", "failed_index", None}
 class ParseOptions:
     """Per-task parse configuration for uploaded assets."""
 
-    assets: list[Asset] = field(default_factory=list)
+    assets: list[IngestAsset] = field(default_factory=list)
     pdf_parser: str = "auto"
     document_parser: str = "markitdown"
     enable_ocr: bool = False
@@ -199,7 +164,7 @@ class IngestService:
 
     # ─── Public API used by both FastAPI and CLI ─────────────────────────
 
-    def parse_assets(self, assets: list[Asset], options: ParseOptions | None = None) -> TaskRecord:
+    def parse_assets(self, assets: list[IngestAsset], options: ParseOptions | None = None) -> TaskRecord:
         """Parse explicitly provided assets.
 
         This is the only parse entry in the upload-first architecture: assets
@@ -229,7 +194,7 @@ class IngestService:
         self._spawn(_run_parse_task, rec, options)
         return rec
 
-    def ingest_assets(self, assets: list[Asset], options: ParseOptions | None = None) -> TaskRecord:
+    def ingest_assets(self, assets: list[IngestAsset], options: ParseOptions | None = None) -> TaskRecord:
         """Parse + index explicitly provided assets."""
         options = options or ParseOptions()
         options.assets = list(assets)
@@ -252,7 +217,7 @@ class IngestService:
     ) -> TaskRecord:
         """Re-run a previously failed/partial/interrupted task.
 
-        Reconstructs ``Asset`` objects from the original task's
+        Reconstructs ``IngestAsset`` objects from the original task's
         ``uploaded_files`` (best-effort via re-sniff), and spawns a new
         background task that mirrors the original ``kind`` and
         ``parse_options``. The new task is recorded with
@@ -856,7 +821,7 @@ class IngestService:
         }
 
     @staticmethod
-    def _deserialise_options(raw: dict[str, object], assets: list[Asset]) -> ParseOptions:
+    def _deserialise_options(raw: dict[str, object], assets: list[IngestAsset]) -> ParseOptions:
         """Rehydrate a ``ParseOptions`` from a persisted snapshot."""
         options = ParseOptions(assets=list(assets))
         if isinstance(raw, dict):
@@ -883,8 +848,8 @@ class IngestService:
         return options
 
     @staticmethod
-    def _rebuild_assets_for_retry(relative_paths: list[str]) -> list[Asset]:
-        """Reconstruct ``Asset`` objects from confirmed upload paths.
+    def _rebuild_assets_for_retry(relative_paths: list[str]) -> list[IngestAsset]:
+        """Reconstruct ``IngestAsset`` objects from confirmed upload paths.
 
         Best-effort: re-sniffs each file under ``get_assets_dir()`` and
         uses ``from_sniffed()`` so the retry task gets a coherent asset
@@ -893,7 +858,7 @@ class IngestService:
         must check that the returned list is non-empty.
         """
         assets_dir = get_assets_dir()
-        rebuilt: list[Asset] = []
+        rebuilt: list[IngestAsset] = []
         for rel in relative_paths:
             if not isinstance(rel, str) or not rel:
                 continue
@@ -926,7 +891,7 @@ class IngestService:
         return rebuilt
 
     @staticmethod
-    def _version_status_key(asset: Asset) -> str:
+    def _version_status_key(asset: IngestAsset) -> str:
         record = asset_index.find_by_relative_path(asset.relative_path)
         if record is None:
             raise ValueError(
