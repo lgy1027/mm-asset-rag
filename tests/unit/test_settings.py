@@ -24,9 +24,6 @@ def test_defaults_applied_when_no_env(monkeypatch):
     # ``Settings(_env_file=None)`` (it still reads os.environ).
     for key in (
         "MM_ASSET_RAG_HOME",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "OPENAI_MODEL",
         "PDF_PARSER",
         "IMAGE_PROVIDER",
         "ENABLE_OCR",
@@ -133,8 +130,6 @@ def test_text_embedding_uses_common_connection_but_requires_own_model(monkeypatc
 
 
 def test_text_embedding_creds_overrides_take_precedence(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "llm-key")
-    monkeypatch.setenv("OPENAI_BASE_URL", "http://llm")
     monkeypatch.setenv("EMBEDDING_API_KEY", "embed-key")
     monkeypatch.setenv("EMBEDDING_BASE_URL", "http://embed")
     monkeypatch.setenv("EMBEDDING_MODEL", "custom-model")

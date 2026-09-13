@@ -179,7 +179,7 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 | 变量 | 作用 | 默认 |
 | --- | --- | --- |
 | `MM_ASSET_RAG_HOME` | 上传素材、parsed data、索引、任务历史放哪 | `~/.mm_asset_rag` |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | `/answer` 和 `/chat` 用的 LLM | — |
+| `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_BASE_URL` / `LLM_MODEL` | `/answer` 和 `/chat` 的可选 LLM | — |
 | `EMBEDDING_*` | 文本 embedding provider(默认 OpenAI 兼容) | — |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server 模式(不填走本地文件) | — |
 | `CLIP_MODEL` | sentence-transformers CLIP 模型名(配 `[clip]` extra) | `clip-ViT-B-32` |

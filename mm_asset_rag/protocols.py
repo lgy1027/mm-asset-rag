@@ -94,7 +94,7 @@ class TextEmbedderProtocol(Protocol):
     ``getattr(embedder, "embed_text_colbert", None)`` so an embedder
     that only emits dense vectors (the OpenAI-compatible
     :class:`TextEmbedder`) is still a valid participant. The
-    ``SentenceTransformerTextEmbedder`` only exposes these methods when
+    Some optional embedders may expose these methods when
     its model supports them (e.g. ``BAAI/bge-m3``).
     """
 

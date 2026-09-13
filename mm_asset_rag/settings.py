@@ -91,7 +91,6 @@ class Settings(BaseSettings):
     # setting will surface as a schema mismatch at upsert time.
     embedding_dim: int | None = None
     # Sparse / ColBERT capability switches. ``auto`` (default) probes the
-    # active text embedder at runtime: ``SentenceTransformerTextEmbedder``
     # exposes ``embed_text_sparse`` / ``embed_text_colbert`` only when the
     # model is bge-m3 (or another model that supports
     # ``return_sparse`` / ``return_colbert_vecs``); the OpenAI-compatible
@@ -268,7 +267,7 @@ class Settings(BaseSettings):
     # (百炼 gte-rerank-v2 / qwen3-vl-rerank also work at the native endpoint.)
     reranker_api_model: str | None = None
     # Rerank API key (HTTP providers). Bearer auth. Falls back to
-    # ``OPENAI_API_KEY`` when unset (same as the embedding / LLM creds).
+    # the shared OpenAI-compatible key when unset.
     reranker_api_key: str | None = None
     # HTTP timeout (seconds) for the rerank API call. 30s is generous for a
     # single batched request of ~30 candidates.

@@ -309,7 +309,7 @@ Synchronous answer: retrieval + grounded LLM completion in one call.
 }
 ```
 
-If no LLM is configured (missing `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`), the response contains an evidence-summary `answer` instead of failing.
+If no LLM is configured (missing `LLM_MODEL` or its resolved connection), the response contains an evidence-summary `answer` instead of failing.
 
 ## `POST /chat`
 

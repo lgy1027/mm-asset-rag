@@ -56,9 +56,9 @@ EMBEDDING_API_KEY=ollama          # ollama 不校验 key,随便填即可占位
 可选:接上一步的 LLM(不接则 `/answer` 返回 evidence 摘要):
 
 ```bash
-OPENAI_BASE_URL=http://127.0.0.1:11434/v1
-OPENAI_MODEL=gemma3:4b
-OPENAI_API_KEY=ollama
+OPENAI_COMPAT_BASE_URL=http://127.0.0.1:11434/v1
+OPENAI_COMPAT_API_KEY=ollama
+LLM_MODEL=gemma3:4b
 ```
 
 **建议新手先把 reranker 关掉**(默认是开的,但需要 `sentence-transformers`,没装时会自动降级——不过为了干净起见):

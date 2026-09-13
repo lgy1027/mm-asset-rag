@@ -167,7 +167,7 @@ All settings come from environment variables (a `.env` file in the current direc
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `MM_ASSET_RAG_HOME` | Where to put uploaded assets, parsed data, indexes, task log. | `~/.mm_asset_rag` |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | LLM for `/answer` and `/chat`. | — |
+| `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_BASE_URL` / `LLM_MODEL` | Optional LLM for `/answer` and `/chat`. | — |
 | `EMBEDDING_*` | Text embedding provider (defaults to OpenAI-compatible). | — |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server mode (omit to use local file mode). | — |
 | `CLIP_MODEL` | Sentence-transformers CLIP model name (with `[clip]` extra). | `clip-ViT-B-32` |

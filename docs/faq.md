@@ -65,7 +65,7 @@ curl http://127.0.0.1:8011/health
 
 如果是端口占用,改 `MM_ASSET_RAG_PORT`(在 `.env` 里设)再启。
 
-### `/health` 说 `embedder_configured=false`,但我已经设了 `OPENAI_API_KEY`
+### `/health` 说 `embedder_configured=false`,但我已经设了 `OPENAI_COMPAT_API_KEY`
 
 `OPENAI_*` 是给 LLM 用的,embedder 默认走 OpenAI-compatible `/v1/embeddings` 端点 — 但需要设的是 `EMBEDDING_*` 系列(见 `.env.example`):
 

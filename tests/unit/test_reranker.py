@@ -744,7 +744,7 @@ def test_http_score_empty_documents_returns_empty(tmp_home, monkeypatch):
 
 def test_http_rerank_falls_back_to_common_api_key(tmp_home, monkeypatch):
     """When ``RERANKER_API_KEY`` is unset, the HTTP provider reuses
-    ``OPENAI_API_KEY`` — same fallback as the embedding / LLM creds, so a
+    the shared API key — same connection contract as embedding / LLM, so a
     single key configures the whole stack."""
     monkeypatch.setenv("RERANKER_ENABLED", "true")
     monkeypatch.setenv("RERANKER_PROVIDER", "siliconflow")
@@ -789,7 +789,7 @@ def test_http_reranker_unconfigured_returns_none(tmp_home, monkeypatch):
     and degrades on every query."""
     monkeypatch.setenv("RERANKER_ENABLED", "true")
     monkeypatch.setenv("RERANKER_PROVIDER", "siliconflow")
-    # No key, no OPENAI_API_KEY → unconfigured (base+model have defaults).
+    # No explicit or shared key → unconfigured (base+model have defaults).
     reset_reranker()
     from mm_asset_rag.settings import get_settings
 

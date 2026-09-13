@@ -63,9 +63,9 @@ Supported types:
 
 `mm_asset_rag/auto_meta.py` calls an OpenAI-compatible VLM endpoint using JSON mode. It reuses the VLM settings:
 
-- `VLM_BASE_URL` / fallback `OPENAI_BASE_URL`
-- `VLM_API_KEY` / fallback `OPENAI_API_KEY`
-- `VLM_MODEL` / fallback `OPENAI_MODEL`
+- `VLM_BASE_URL` / shared `OPENAI_COMPAT_BASE_URL`
+- `VLM_API_KEY` / shared `OPENAI_COMPAT_API_KEY`
+- `VLM_MODEL`
 
 If any of those are missing, or the request fails, preview falls back to sniff-only metadata. Upload still works.
 

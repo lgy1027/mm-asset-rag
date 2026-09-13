@@ -28,9 +28,6 @@ def _clear_settings_cache():
 def _isolated_settings(monkeypatch) -> Settings:
     """Strip embedding env vars and return a Settings with no .env fallback."""
     for key in (
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "OPENAI_MODEL",
         "EMBEDDING_API_KEY",
         "EMBEDDING_BASE_URL",
         "EMBEDDING_MODEL",

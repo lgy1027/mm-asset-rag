@@ -435,7 +435,7 @@ def build_qdrant_text_index(
     # Probe the embedder's optional sparse / ColBERT capabilities. The
     # OpenAI-compatible ``TextEmbedder`` returns False for both so the
     # collection schema and the per-point vectors stay identical to
-    # the pre-capability path. ``SentenceTransformerTextEmbedder`` with
+    # the pre-capability path. An optional capable embedder with
     # bge-m3 enables them; the schema-mismatch check in
     # ``_create_collection`` then prompts a ``mmrag reindex`` when the
     # deployer switches embedder.

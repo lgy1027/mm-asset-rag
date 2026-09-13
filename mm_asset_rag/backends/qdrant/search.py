@@ -90,7 +90,7 @@ def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
 
 # ─── Embedder sparse / ColBERT capability probes ──────────────────────────
 # The active text embedder may optionally expose ``embed_text_sparse``
-# and ``embed_text_colbert`` (only the SentenceTransformerTextEmbedder
+# and ``embed_text_colbert`` (only optional capable embedders
 # with bge-m3 does). We probe with ``getattr`` so the OpenAI-compatible
 # ``TextEmbedder`` — which does not implement these — returns ``None``
 # and the collection schema stays dense + bm25 + bm25_zh (zero schema

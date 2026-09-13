@@ -199,7 +199,7 @@ PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXT
 
 ## Tier-3 multimodal answer
 
-When `ANSWER_WITH_IMAGES` is on, `/answer` and `/chat/stream` inject each hit's associated images (base64 data URLs) into the chat request as `image_url` content parts alongside the text evidence, so a vision-capable LLM can *see* figure pixels and answer questions whose answer lives in the figure (numbers / tables / flowcharts the body text doesn't repeat). Requires a vision-capable chat model (`OPENAI_MODEL` must be multimodal — e.g. MiniMax-M3, or ollama `gemma3` / `llama3.2-vision`). If the configured model rejects images, the call is retried text-only so the feature is safe to toggle without breaking `/answer`. No effect when `PDF_EXTRACT_IMAGES` is off (no images on the hits to inject).
+When `ANSWER_WITH_IMAGES` is on, `/answer` and `/chat/stream` inject each hit's associated images (base64 data URLs) into the chat request as `image_url` content parts alongside the text evidence. It requires a vision-capable `LLM_MODEL`. If the configured model rejects images, the call is retried text-only. No effect when `PDF_EXTRACT_IMAGES` is off.
 
 **Most deployments should leave this off.** Tier-1 already attaches every hit's figures as `metadata.images` so the web UI shows thumbnails below each source — the user sees the figures directly without the LLM having to "read" them, and the LLM context still carries a `关联图片: 图N: <caption>` line so the answer can reference figures by number. Tier-3 is only worth enabling when users frequently ask questions whose answer lives *only* in the image pixels (chart numbers, table values, flowchart steps the body text doesn't repeat) and the deployment has a vision-capable LLM available. For text-only LLMs the tier-3 toggle has no benefit — leave it off.
 
@@ -215,7 +215,7 @@ Anthropic-style chunk context: each chunk gets a short LLM-generated preamble si
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `CONTEXTUAL_ENABLED` | `true` | Master switch (default on; set `false` to opt out) |
-| `CONTEXTUAL_MODEL` | unset (→ `OPENAI_MODEL`) | LLM model override |
+| `CONTEXTUAL_MODEL` | unset (→ `LLM_MODEL`) | LLM model override |
 | `CONTEXTUAL_CONCURRENCY` | `4` | Parallel chunk-context calls |
 | `CONTEXTUAL_CHUNK_MAX_CHARS` | `8000` | Cap chunk text fed to the LLM |
 | `CONTEXTUAL_TIMEOUT` | `60` | Per-call HTTP timeout (seconds) |
@@ -243,11 +243,11 @@ Two provider backends, selected by `RERANKER_PROVIDER`:
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `RERANKER_ENABLED` | `true` | Master switch (default on; set `false` to opt out) |
-| `RERANKER_PROVIDER` | `local` | `local` \| `siliconflow` \| `dashscope` |
+| `RERANKER_PROVIDER` | `siliconflow` | `siliconflow` \| `dashscope` |
 | `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | HuggingFace cross-encoder model id (local provider) |
 | `RERANKER_API_BASE` | provider default | Rerank API URL (HTTP providers). SiliconFlow `https://api.siliconflow.cn/v1/rerank` (flat Cohere form); 百炼 `https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank` (DashScope-native nested form, universal host — no workspaceId needed) |
 | `RERANKER_API_MODEL` | provider default | Rerank API model (HTTP providers). SiliconFlow `BAAI/bge-reranker-v2-m3`; 百炼 `qwen3-rerank` |
-| `RERANKER_API_KEY` | → `OPENAI_API_KEY` | Rerank API key, Bearer auth. Falls back to `OPENAI_API_KEY` when unset (shared key config) |
+| `RERANKER_API_KEY` | shared key | Explicit Rerank API key override |
 | `RERANKER_API_TIMEOUT` | `30.0` | HTTP timeout (seconds) for the rerank API call |
 | `RERANKER_TOP_N` | `30` | Candidates fetched from each route before rerank (≤ `QDRANT_HYBRID_PREFETCH_LIMIT`) |
 | `RERANKER_TOP_K` | unset (→ caller's `top_k`) | Final result count after rerank |
@@ -260,7 +260,7 @@ Two provider backends, selected by `RERANKER_PROVIDER`:
 ```bash
 RERANKER_ENABLED=true
 RERANKER_PROVIDER=siliconflow
-RERANKER_API_KEY=sk-xxx           # or reuse OPENAI_API_KEY
+RERANKER_API_KEY=sk-xxx           # or reuse OPENAI_COMPAT_API_KEY
 ```
 
 **百炼 (dashscope)** — uses the universal DashScope-native endpoint, only the key is needed (the OpenAI-compatible flat endpoint would need a per-user workspaceId subdomain and is not used):
@@ -327,7 +327,7 @@ set; they are not a retrieval-quality threshold.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `EVAL_JUDGE_TIMEOUT` | `30.0` | Per-judge-call timeout (s). Tighter than `LLM_TIMEOUT` (120s) since judge is a single-shot JSON response. |
-| `EVAL_JUDGE_MODEL` | unset | Judge model name. Unset → reuse `OPENAI_MODEL` (or `VLM_MODEL` fallback). Override with e.g. `gpt-4o-mini` to save tokens (judge prompt is ~3-5K tokens per case). |
+| `EVAL_JUDGE_MODEL` | unset | Judge model name. Unset → reuse `LLM_MODEL`. |
 | `EVAL_JUDGE_MAX_CASES` | unset | Cap the number of cases the judge runs per eval (CI cost guard). Unset = judge every case. Over the cap → `faithfulness_skipped=True, faithfulness_error="max cases reached"`. |
 
 Coverage + citation always run (no LLM needed). Faithfulness is the only LLM-dependent scorer; without it the report still surfaces the answer-quality signal — it's just missing the hallucination dimension. The output lives at `$MM_ASSET_RAG_HOME/eval_report_answer.json` (payload version `answer_v1`).
@@ -398,9 +398,9 @@ These cover the legacy `http` OCR backend and the VLM channels; the default `loc
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `VLM_BASE_URL` | `OPENAI_BASE_URL` fallback | VLM endpoint for image captions / auto metadata |
-| `VLM_API_KEY` | `OPENAI_API_KEY` fallback | VLM API key |
-| `VLM_MODEL` | `OPENAI_MODEL` fallback | VLM model |
+| `VLM_BASE_URL` | shared base URL | Explicit VLM endpoint override |
+| `VLM_API_KEY` | shared key | Explicit VLM API key override |
+| `VLM_MODEL` | unset | Optional VLM model |
 | `VLM_TEMPERATURE` | `0.1` | Caption temperature |
 | `VLM_MAX_TOKENS` | `2000` | Caption token budget |
 | `VLM_TIMEOUT` | `120.0` | Caption timeout |
@@ -462,9 +462,9 @@ The threshold default of `10` is tuned for genuinely scanned (image-only) PDFs, 
 ```dotenv
 MM_ASSET_RAG_HOME=~/.mm_asset_rag
 
-OPENAI_BASE_URL=http://127.0.0.1:11434/v1
-OPENAI_API_KEY=ollama
-OPENAI_MODEL=gemma4:latest
+OPENAI_COMPAT_BASE_URL=http://127.0.0.1:11434/v1
+OPENAI_COMPAT_API_KEY=ollama
+LLM_MODEL=gemma4:latest
 
 EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
 EMBEDDING_API_KEY=ollama

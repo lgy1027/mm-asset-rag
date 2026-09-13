@@ -30,9 +30,6 @@ def _clear_settings_cache():
 def _ollama_settings(monkeypatch) -> Settings:
     """Strip OPENAI_* then populate EMBEDDING_* with the ollama bge-m3 triple."""
     for key in (
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-        "OPENAI_MODEL",
         "EMBEDDING_API_KEY",
         "EMBEDDING_BASE_URL",
         "EMBEDDING_MODEL",
