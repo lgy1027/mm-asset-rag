@@ -31,6 +31,15 @@ def _searchable_text(hit: SearchHit) -> str:
     return f"{hit.title} {hit.evidence} {extra}"
 
 
+def lexical_coverage(question: str, hits: list[SearchHit]) -> float:
+    """Return the fraction of query terms supported by retrieved evidence."""
+    query_terms = _terms(question)
+    if not query_terms:
+        return 0.0
+    matched = set().union(*(_terms(_searchable_text(hit)) for hit in hits)) & query_terms
+    return len(matched) / len(query_terms)
+
+
 def assess_answer_evidence(
     question: str, hits: list[SearchHit], settings: Settings
 ) -> EvidenceAssessment:
@@ -48,10 +57,6 @@ def assess_answer_evidence(
     ]
     if rerank_scores and max(rerank_scores) >= settings.answer_min_rerank_score:
         return EvidenceAssessment(True)
-    query_terms = _terms(question)
-    if not query_terms:
-        return EvidenceAssessment(False, "weak_lexical_coverage")
-    matched = set().union(*(_terms(_searchable_text(hit)) for hit in text_hits)) & query_terms
-    if len(matched) / len(query_terms) >= settings.answer_min_lexical_coverage:
+    if lexical_coverage(question, text_hits) >= settings.answer_min_lexical_coverage:
         return EvidenceAssessment(True)
     return EvidenceAssessment(False, "weak_lexical_coverage")

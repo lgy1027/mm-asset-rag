@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .embedders import get_default_reranker
+from .evidence_policy import _terms, lexical_coverage
 from .query_intent import (
     IntentWeights,
     classify_intent,
@@ -173,6 +174,14 @@ def merge_hits(
     return sorted_hits[:top_k]
 
 
+def filter_low_evidence_hits(query: str, hits: list[SearchHit]) -> list[SearchHit]:
+    """Suppress results that cannot support enough of the query terms."""
+    if not _terms(query):
+        return hits
+    threshold = get_settings().retrieval_min_lexical_coverage
+    return hits if lexical_coverage(query, hits) >= threshold else []
+
+
 def hybrid_search(
     query: str,
     image_path: Path | None = None,
@@ -253,5 +262,5 @@ def hybrid_search(
     merged = merge_hits(groups, weights, top_k=fetch_k, min_score=effective_min)
     if reranker is not None:
         return_k = settings.reranker_top_k if settings.reranker_top_k is not None else top_k
-        return reranker.rerank(query, merged, top_k=return_k)
-    return merged
+        merged = reranker.rerank(query, merged, top_k=return_k)
+    return filter_low_evidence_hits(query, merged)

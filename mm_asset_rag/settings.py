@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # signals, never on final RRF or min-max normalized ranking scores.
     answer_min_rerank_score: float = 0.0
     answer_min_lexical_coverage: float = 0.2
+    retrieval_min_lexical_coverage: float = 0.2
 
     # ─── Text embedding ───────────────────────────────────────────────────
     # Text embedding is always remote OpenAI-compatible `/embeddings`.
