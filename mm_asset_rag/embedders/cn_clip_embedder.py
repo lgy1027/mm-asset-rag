@@ -14,7 +14,7 @@ name``。中文图文检索必须经 ``ChineseCLIPProcessor``(RoBERTa-wwm 分词
 而非 ``sentence-transformers``,这是官方支持的路径。
 
 接口形态镜像 ``ImageEmbedder``:满足 ``Embedder`` 与 ``ImageEmbedderProtocol``
-两个 Protocol,所以 ``qdrant_backend`` 的 ``isinstance`` 自动识别。
+两个 Protocol,所以 Qdrant adapter 的 ``isinstance`` 自动识别。
 """
 
 from __future__ import annotations

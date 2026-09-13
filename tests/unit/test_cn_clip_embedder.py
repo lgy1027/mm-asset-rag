@@ -420,15 +420,14 @@ def test_build_default_image_embedder_returns_cn_clip_for_cn_clip_provider(monke
     assert isinstance(emb, CnClipImageEmbedder)
 
 
-def test_build_default_image_embedder_returns_sentence_transformers_by_default(monkeypatch) -> None:
-    """``image_provider == "lite"``(默认)工厂仍返回 ``ImageEmbedder``。"""
+def test_build_default_image_embedder_returns_clip_by_default(monkeypatch) -> None:
     from mm_asset_rag.embedders import build_default_image_embedder
     from mm_asset_rag.embedders.image_embedder import ImageEmbedder
     from mm_asset_rag.settings import get_settings
 
     # 隔离 ImageEmbedder 构造时的 [clip] 检查 — 我们只测 dispatch,不动 model
     monkeypatch.setattr(ImageEmbedder, "_check_available", staticmethod(lambda: None))
-    monkeypatch.setattr(get_settings(), "image_provider", "lite")
+    monkeypatch.setattr(get_settings(), "image_provider", "clip")
 
     emb = build_default_image_embedder()
     assert isinstance(emb, ImageEmbedder)

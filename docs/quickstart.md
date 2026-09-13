@@ -130,7 +130,7 @@ mmrag answer "这篇论文讲了什么?"
 
 | 想要 | 装什么 | 开什么 |
 | --- | --- | --- |
-| 图像检索 / 以图搜图 | `[clip]`(sentence-transformers + CLIP) | `IMAGE_PROVIDER=sentence_transformers` |
+| 图像检索 / 以图搜图 | `[clip]`(sentence-transformers + CLIP) | `IMAGE_PROVIDER=clip` |
 | 更好的 reranker(本地) | `[clip]`(同上,bge-reranker-v2-m3) | `RERANKER_ENABLED=true` |
 | 云 reranker(不装本地模型) | 无额外依赖 | `RERANKER_ENABLED=true` + `RERANKER_PROVIDER=siliconflow`(或 `dashscope`)+ `RERANKER_API_KEY=sk-xxx` |
 | docx/pptx/xlsx 复杂版面 | `[docling]` | `DOCUMENT_PARSER=docling` |

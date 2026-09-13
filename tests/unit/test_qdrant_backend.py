@@ -1,4 +1,4 @@
-"""Tests for ``mm_asset_rag.backends.qdrant_backend``.
+"""Tests for the Qdrant adapter modules.
 
 Covers the BM25 Okapi helpers used by ``_select_top_chunks_per_pdf`` —
 pure functions, no Qdrant / no embedding model required.
@@ -12,16 +12,17 @@ from unittest.mock import MagicMock
 import pytest
 from qdrant_client import QdrantClient, models
 
-from mm_asset_rag.backends import qdrant_backend
 from mm_asset_rag.backends.qdrant import client as qdrant_client
 from mm_asset_rag.backends.qdrant import indexing as qdrant_indexing
 from mm_asset_rag.backends.qdrant import search as qdrant_search
-from mm_asset_rag.backends.qdrant_backend import (
+from mm_asset_rag.backends.qdrant.indexing import (
     _bm25_okapi_scores,
-    _filter_by_relevance,
+    _embedder_colbert_capability,
+    _embedder_sparse_capability,
     _select_top_chunks_per_pdf,
     _tokenize_for_bm25,
 )
+from mm_asset_rag.backends.qdrant.search import _filter_by_relevance, _is_collection_missing
 from mm_asset_rag.protocols import IndexBackend, SearchBackend, SearchFilter
 from mm_asset_rag.registry import get_backend
 from mm_asset_rag.schema import ParsedDocument
@@ -34,17 +35,11 @@ def _doc(text: str, asset_id: str, title: str | None = None) -> ParsedDocument:
     )
 
 
-def test_registered_qdrant_backend_implements_search_and_index_ports() -> None:
+def test_registered_qdrant_adapter_implements_search_and_index_ports() -> None:
     backend = get_backend("qdrant")
 
     assert isinstance(backend, SearchBackend)
     assert isinstance(backend, IndexBackend)
-
-
-def test_legacy_qdrant_text_search_reexports_adapter_implementation(monkeypatch) -> None:
-    monkeypatch.setattr(qdrant_search, "text_search", lambda query, top_k=5: ["hit"])
-
-    assert qdrant_backend.qdrant_text_search("needle") == ["hit"]
 
 
 def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
@@ -457,8 +452,6 @@ def test_qdrant_text_search_filter_excludes_image_keeps_pdf_and_document(monkeyp
     ``must`` clause matching ``pdf``). This is the regression the fix guards:
     before the fix, a document chunk could never be returned.
     """
-    from mm_asset_rag.backends import qdrant_backend
-
     captured: dict = {}
 
     def _fake_hybrid(*args, **kwargs):
@@ -476,7 +469,7 @@ def test_qdrant_text_search_filter_excludes_image_keeps_pdf_and_document(monkeyp
     monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
     monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
-    qdrant_backend.qdrant_text_search("query", top_k=5, include_image_sources=False)
+    qdrant_search.text_search("query", top_k=5)
 
     flt = captured["filter"]
     assert flt is not None, "default search must apply a source_type filter"
@@ -489,8 +482,6 @@ def test_qdrant_text_search_filter_excludes_image_keeps_pdf_and_document(monkeyp
 
 def test_qdrant_text_search_no_filter_when_include_image_sources(monkeypatch) -> None:
     """``include_image_sources=True`` disables the source_type filter entirely."""
-    from mm_asset_rag.backends import qdrant_backend
-
     captured: dict = {}
 
     def _fake_hybrid(*args, **kwargs):
@@ -507,7 +498,7 @@ def test_qdrant_text_search_no_filter_when_include_image_sources(monkeypatch) ->
     monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
     monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
-    qdrant_backend.qdrant_text_search("query", top_k=5, include_image_sources=True)
+    qdrant_search.text_search("query", top_k=5, include_image_sources=True)
     assert captured["filter"].must_not is None
 
 
@@ -522,37 +513,33 @@ def test_get_qdrant_client_returns_singleton(tmp_path, monkeypatch) -> None:
     and qdrant-client's local mode would refuse the second one
     (``Storage folder already accessed``).
     """
-    from mm_asset_rag.backends import qdrant_backend
-
     # Redirect indexes_dir so the test uses a private storage location.
     monkeypatch.setattr(
         "mm_asset_rag.backends.qdrant.client.get_indexes_dir",
         lambda: tmp_path / "indexes",
     )
-    qdrant_backend.reset_qdrant_client_cache()
+    qdrant_client.reset_qdrant_client_cache()
     try:
-        c1 = qdrant_backend.get_qdrant_client()
-        c2 = qdrant_backend.get_qdrant_client()
+        c1 = qdrant_client.get_qdrant_client()
+        c2 = qdrant_client.get_qdrant_client()
         assert c1 is c2
     finally:
-        qdrant_backend.reset_qdrant_client_cache()
+        qdrant_client.reset_qdrant_client_cache()
 
 
 def test_get_qdrant_client_resets_after_reset(tmp_path, monkeypatch) -> None:
     """``reset_qdrant_client_cache()`` drops the cached instance so a
     subsequent call returns a new client (used by tests)."""
-    from mm_asset_rag.backends import qdrant_backend
-
     monkeypatch.setattr(
         "mm_asset_rag.backends.qdrant.client.get_indexes_dir",
         lambda: tmp_path / "indexes",
     )
-    qdrant_backend.reset_qdrant_client_cache()
-    c1 = qdrant_backend.get_qdrant_client()
-    qdrant_backend.reset_qdrant_client_cache()
-    c2 = qdrant_backend.get_qdrant_client()
+    qdrant_client.reset_qdrant_client_cache()
+    c1 = qdrant_client.get_qdrant_client()
+    qdrant_client.reset_qdrant_client_cache()
+    c2 = qdrant_client.get_qdrant_client()
     assert c1 is not c2
-    qdrant_backend.reset_qdrant_client_cache()
+    qdrant_client.reset_qdrant_client_cache()
 
 
 # ─── Embedder sparse / ColBERT capability probes ────────────────────────────
@@ -599,40 +586,28 @@ class _BgeM3StubReturningNoneEmbedder:
 
 def test_embedder_sparse_capability_openai_embedder_is_false() -> None:
     """The OpenAI-compatible embedder (no ``embed_text_sparse``) → False."""
-    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
-
     assert _embedder_sparse_capability(_NoSparseEmbedder()) is False
 
 
 def test_embedder_colbert_capability_openai_embedder_is_false() -> None:
-    from mm_asset_rag.backends.qdrant_backend import _embedder_colbert_capability
-
     assert _embedder_colbert_capability(_NoSparseEmbedder()) is False
 
 
 def test_embedder_sparse_capability_bge_m3_stub_is_true(monkeypatch) -> None:
-    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
-
     # auto (default) → probe returns non-None → True
     assert _embedder_sparse_capability(_BgeM3StubEmbedder()) is True
 
 
 def test_embedder_colbert_capability_bge_m3_stub_is_true(monkeypatch) -> None:
-    from mm_asset_rag.backends.qdrant_backend import _embedder_colbert_capability
-
     assert _embedder_colbert_capability(_BgeM3StubEmbedder()) is True
 
 
 def test_embedder_sparse_capability_probe_returns_none_is_false(monkeypatch) -> None:
-    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
-
     # The method exists but returns None on the probe → not supported.
     assert _embedder_sparse_capability(_BgeM3StubReturningNoneEmbedder()) is False
 
 
 def test_embedder_sparse_capability_force_false(monkeypatch) -> None:
-    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
-
     monkeypatch.setenv("EMBEDDING_SPARSE_ENABLED", "false")
     from mm_asset_rag.settings import get_settings
 
@@ -641,8 +616,6 @@ def test_embedder_sparse_capability_force_false(monkeypatch) -> None:
 
 
 def test_embedder_colbert_capability_force_false(monkeypatch) -> None:
-    from mm_asset_rag.backends.qdrant_backend import _embedder_colbert_capability
-
     monkeypatch.setenv("EMBEDDING_COLBERT_ENABLED", "false")
     from mm_asset_rag.settings import get_settings
 
@@ -652,8 +625,6 @@ def test_embedder_colbert_capability_force_false(monkeypatch) -> None:
 
 def test_embedder_sparse_capability_force_true_on_unsupported_is_false(monkeypatch) -> None:
     """Force-true on an embedder without the method is still False."""
-    from mm_asset_rag.backends.qdrant_backend import _embedder_sparse_capability
-
     monkeypatch.setenv("EMBEDDING_SPARSE_ENABLED", "true")
     from mm_asset_rag.settings import get_settings
 
@@ -670,7 +641,6 @@ def test_embedder_sparse_capability_force_true_on_unsupported_is_false(monkeypat
 
 def test_qdrant_text_search_degrades_when_collection_missing(monkeypatch) -> None:
     """``_hybrid_text_query`` raising "not found" → empty list, not a raise."""
-    from mm_asset_rag.backends import qdrant_backend
 
     def _raise_not_found(*args, **kwargs):
         raise ValueError("Collection `multimodal_text_2560d` not found")
@@ -685,12 +655,11 @@ def test_qdrant_text_search_degrades_when_collection_missing(monkeypatch) -> Non
     monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
     monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
-    assert qdrant_backend.qdrant_text_search("query", top_k=5) == []
+    assert qdrant_search.text_search("query", top_k=5) == []
 
 
 def test_qdrant_text_search_re_raises_non_missing_value_error(monkeypatch) -> None:
     """A ValueError that isn't "collection not found" must still propagate."""
-    from mm_asset_rag.backends import qdrant_backend
 
     def _raise_other(*args, **kwargs):
         raise ValueError("totally unrelated error")
@@ -706,7 +675,7 @@ def test_qdrant_text_search_re_raises_non_missing_value_error(monkeypatch) -> No
     monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
     with pytest.raises(ValueError, match="unrelated"):
-        qdrant_backend.qdrant_text_search("query", top_k=5)
+        qdrant_search.text_search("query", top_k=5)
 
 
 def test_qdrant_text_search_degrades_on_remote_404(monkeypatch) -> None:
@@ -717,8 +686,6 @@ def test_qdrant_text_search_degrades_on_remote_404(monkeypatch) -> None:
     ``UnexpectedResponse`` and ``hybrid_search`` crashed on a remote
     instance that had only ingested one modality."""
     from qdrant_client.http.exceptions import UnexpectedResponse
-
-    from mm_asset_rag.backends import qdrant_backend
 
     def _raise_remote_404(*args, **kwargs):
         raise UnexpectedResponse(
@@ -735,15 +702,13 @@ def test_qdrant_text_search_degrades_on_remote_404(monkeypatch) -> None:
     monkeypatch.setattr(qdrant_search, "_embedder_sparse_capability", lambda e: False)
     monkeypatch.setattr(qdrant_search, "_embedder_colbert_capability", lambda e: False)
 
-    assert qdrant_backend.qdrant_text_search("query", top_k=5) == []
+    assert qdrant_search.text_search("query", top_k=5) == []
 
 
 def test_qdrant_image_to_image_search_degrades_when_collection_missing(
     monkeypatch, fake_qdrant_client
 ) -> None:
     """image→image route degrades to [] when the image collection is absent."""
-    from mm_asset_rag.backends import qdrant_backend
-
     fake_qdrant_client.query_points.side_effect = ValueError(
         "Collection `multimodal_image_512d` not found"
     )
@@ -756,15 +721,13 @@ def test_qdrant_image_to_image_search_degrades_when_collection_missing(
 
     monkeypatch.setattr(qdrant_search, "get_default_image_embedder", lambda: _Provider())
 
-    assert qdrant_backend.qdrant_image_to_image_search(Path("any.png"), top_k=5) == []
+    assert qdrant_search.image_to_image_search(Path("any.png"), top_k=5) == []
 
 
 def test_qdrant_image_to_image_search_returns_empty_when_query_image_unencodable(
     monkeypatch, fake_qdrant_client
 ) -> None:
     """image→image 查询图无法编码时直接返回 [],不打 qdrant。"""
-    from mm_asset_rag.backends import qdrant_backend
-
     monkeypatch.setattr(qdrant_search, "get_qdrant_client", lambda: fake_qdrant_client)
 
     class _UnencodableProvider:
@@ -773,7 +736,7 @@ def test_qdrant_image_to_image_search_returns_empty_when_query_image_unencodable
 
     monkeypatch.setattr(qdrant_search, "get_default_image_embedder", lambda: _UnencodableProvider())
 
-    assert qdrant_backend.qdrant_image_to_image_search(Path("bad.png"), top_k=5) == []
+    assert qdrant_search.image_to_image_search(Path("bad.png"), top_k=5) == []
     # 没去 qdrant 查
     assert fake_qdrant_client.query_points.call_count == 0
 
@@ -789,8 +752,6 @@ def test_is_collection_missing_predicate() -> None:
     crashed ``hybrid_search`` instead of returning an empty route.
     """
     from qdrant_client.http.exceptions import UnexpectedResponse
-
-    from mm_asset_rag.backends.qdrant_backend import _is_collection_missing
 
     # Local file mode: ValueError with "not found".
     assert _is_collection_missing(ValueError("Collection X not found")) is True
@@ -823,20 +784,16 @@ def test_is_collection_missing_predicate() -> None:
 
 def test_invalidate_bm25_zh_idf_cache_clears_cache() -> None:
     """Calling ``invalidate_bm25_zh_idf_cache`` resets the module cache to None."""
-    from mm_asset_rag.backends import qdrant_backend
-
     # Seed the cache with a sentinel (mtime, table) pair; the function drops it.
     qdrant_indexing._BM25_ZH_IDF_CACHE = (1234567890, {"sentinel": 1.0})
-    qdrant_backend.invalidate_bm25_zh_idf_cache()
+    qdrant_indexing.invalidate_bm25_zh_idf_cache()
     assert qdrant_indexing._BM25_ZH_IDF_CACHE is None
 
 
 def test_invalidate_bm25_zh_idf_cache_idempotent_on_none() -> None:
     """Invalidating when the cache is already None is a no-op."""
-    from mm_asset_rag.backends import qdrant_backend
-
     qdrant_indexing._BM25_ZH_IDF_CACHE = None
-    qdrant_backend.invalidate_bm25_zh_idf_cache()
+    qdrant_indexing.invalidate_bm25_zh_idf_cache()
     assert qdrant_indexing._BM25_ZH_IDF_CACHE is None
 
 
@@ -888,8 +845,6 @@ def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
     monkeypatch, tmp_path
 ) -> None:
     """Switching to remote mode closes the cached local client."""
-    from mm_asset_rag.backends import qdrant_backend
-
     # Build a fake local client whose close() is observable.
     closed_calls: list[int] = []
 
@@ -907,7 +862,7 @@ def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
         "mm_asset_rag.backends.qdrant.client.get_indexes_dir",
         lambda: tmp_path / "indexes",
     )
-    qdrant_backend.reset_qdrant_client_cache()
+    qdrant_client.reset_qdrant_client_cache()
     fake_local = _FakeLocalClient()
     qdrant_client._QDRANT_CLIENT = fake_local
     qdrant_client._QDRANT_CLIENT_KEY = str(tmp_path / "indexes" / "qdrant")
@@ -931,9 +886,9 @@ def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
     monkeypatch.setattr(qdrant_client, "QdrantClient", _FakeRemoteClient)
 
     try:
-        client = qdrant_backend.get_qdrant_client()
+        client = qdrant_client.get_qdrant_client()
     finally:
-        qdrant_backend.reset_qdrant_client_cache()
+        qdrant_client.reset_qdrant_client_cache()
         # Restore env cache for other tests.
         monkeypatch.delenv("QDRANT_URL", raising=False)
         get_settings.cache_clear()
@@ -951,13 +906,11 @@ def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
 
 def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> None:
     """Switching to remote when no local client is cached is a no-op on close."""
-    from mm_asset_rag.backends import qdrant_backend
-
     monkeypatch.setattr(
         "mm_asset_rag.backends.qdrant.client.get_indexes_dir",
         lambda: None,  # not used in remote branch
     )
-    qdrant_backend.reset_qdrant_client_cache()
+    qdrant_client.reset_qdrant_client_cache()
     monkeypatch.setenv("QDRANT_URL", "http://example:6333")
     from mm_asset_rag.settings import get_settings
 
@@ -974,9 +927,9 @@ def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> N
 
     monkeypatch.setattr(qdrant_client, "QdrantClient", _FakeRemoteClient)
     try:
-        qdrant_backend.get_qdrant_client()
+        qdrant_client.get_qdrant_client()
     finally:
-        qdrant_backend.reset_qdrant_client_cache()
+        qdrant_client.reset_qdrant_client_cache()
         monkeypatch.delenv("QDRANT_URL", raising=False)
         get_settings.cache_clear()
 

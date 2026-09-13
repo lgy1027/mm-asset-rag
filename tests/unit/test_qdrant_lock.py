@@ -1,4 +1,4 @@
-"""Tests for ``mm_asset_rag.backends.qdrant_backend`` lock handling.
+"""Tests for Qdrant lock handling.
 
 The qdrant local-mode ``.lock`` file is process-local, so two
 ``mm-asset-rag`` processes can't open the same storage at once.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from mm_asset_rag.backends.qdrant_backend import (
+from mm_asset_rag.backends.qdrant.client import (
     QdrantLockHeldError,
     _clean_stale_lock,
     _lock_holder_pid,

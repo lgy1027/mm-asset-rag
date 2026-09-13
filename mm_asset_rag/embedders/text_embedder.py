@@ -5,8 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-import requests
-
+from ..openai_adapters import OpenAIEmbeddingAdapter
 from ..openai_compatible import require_connection
 
 
@@ -38,6 +37,12 @@ class TextEmbedder:
                 "and EMBEDDING_MODEL (or explicit EMBEDDING_* overrides)."
             )
         self.connection = require_connection(self.base_url, self.api_key)
+        self.adapter = OpenAIEmbeddingAdapter(
+            connection=self.connection,
+            model=self.model,
+            timeout=self.timeout,
+            retry_count=self.retry_count,
+        )
 
     @property
     def name(self) -> str:
@@ -66,30 +71,7 @@ class TextEmbedder:
         return vectors
 
     def _remote_batch(self, texts: list[str]) -> list[list[float]]:
-        error = None
-        for attempt in range(self.retry_count):
-            try:
-                response = requests.post(
-                    self.connection.endpoint("embeddings"),
-                    headers={
-                        "Authorization": f"Bearer {self.api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json={"model": self.model, "input": texts},
-                    timeout=self.timeout,
-                )
-                response.raise_for_status()
-                return [
-                    [float(v) for v in item["embedding"]]
-                    for item in sorted(
-                        response.json()["data"], key=lambda item: item.get("index", 0)
-                    )
-                ]
-            except Exception as exc:
-                error = exc
-                if attempt + 1 < self.retry_count:
-                    time.sleep(min(2**attempt, 20))
-        raise error or RuntimeError("Embedding request failed")
+        return self.adapter.embed_batch(texts)
 
 
 def build_default_text_embedder() -> TextEmbedder:

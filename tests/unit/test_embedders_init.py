@@ -26,7 +26,6 @@ def test_build_default_image_embedder_picks_cn_clip(monkeypatch) -> None:
 
 
 def test_build_default_image_embedder_picks_image_embedder_by_default(monkeypatch) -> None:
-    """默认 ``lite`` / ``sentence_transformers`` → ``ImageEmbedder`` instance。"""
     from mm_asset_rag.embedders import build_default_image_embedder
     from mm_asset_rag.embedders.image_embedder import ImageEmbedder
     from mm_asset_rag.settings import get_settings
@@ -34,10 +33,9 @@ def test_build_default_image_embedder_picks_image_embedder_by_default(monkeypatc
     # [clip] 检查注入绕过
     monkeypatch.setattr(ImageEmbedder, "_check_available", staticmethod(lambda: None))
 
-    for provider in ("lite", "sentence_transformers"):
-        monkeypatch.setattr(get_settings(), "image_provider", provider)
-        emb = build_default_image_embedder()
-        assert isinstance(emb, ImageEmbedder)
+    monkeypatch.setattr(get_settings(), "image_provider", "clip")
+    emb = build_default_image_embedder()
+    assert isinstance(emb, ImageEmbedder)
 
 
 def test_build_default_image_embedder_missing_cn_clip_deps_raises(monkeypatch) -> None:
@@ -67,7 +65,7 @@ def test_ensure_image_registered_swallows_unavailable(monkeypatch, capsys) -> No
     from mm_asset_rag.registry import embedders as _embedders
     from mm_asset_rag.settings import get_settings
 
-    monkeypatch.setattr(get_settings(), "image_provider", "lite")
+    monkeypatch.setattr(get_settings(), "image_provider", "clip")
 
     # 清空 registry 让 ensure 真正跑(没有 unregister,直接操作 _items)
     _embedders._items.clear()

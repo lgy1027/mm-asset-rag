@@ -22,12 +22,13 @@ from typing import Any
 from . import asset_index
 from . import parsers as _parsers  # noqa: F401  # register built-in parsers
 from .assets import Asset, from_sniffed
-from .backends.qdrant_backend import (
+from .backends.qdrant.client import get_qdrant_client
+from .backends.qdrant.collections import (
     IMAGE_COLLECTION_BASE,
     TEXT_COLLECTION_BASE,
     _strict_existing_collections_for,
-    get_qdrant_client,
 )
+from .backends.qdrant.indexing import invalidate_bm25_zh_idf_cache
 from .config import load_env
 from .document_store import documents_jsonl_lock
 from .ingest_workflow import IngestWorkflow
@@ -40,6 +41,7 @@ from .paths import (
     get_parsed_dir,
     physical_cache_id,
 )
+from .query_preprocess import invalidate_vocab_cache
 from .registry import get_backend
 from .registry import get_parser as get_parser
 from .search_service import (
@@ -50,7 +52,7 @@ from .search_service import (
 )
 from .settings import Settings, get_settings
 from .sniff import sniff
-from .task_store import TaskRecord, TaskStore, task_from_dict
+from .task_store import TaskRecord, TaskStore
 
 # ─── Helpers shared by api.py and cli.py ──────────────────────────────────
 
@@ -135,24 +137,13 @@ _RETRY_ELIGIBLE_VERSION_STATUSES = {"failed", "skipped", "failed_index", None}
 
 @dataclass
 class ParseOptions:
-    """Per-task parse configuration for uploaded/auto-sniffed assets.
-
-    Note on ``image_provider``: the embedder dispatch in
-    ``mm_asset_rag.embedders.build_default_image_embedder`` only reads
-    ``Settings.image_provider`` — the per-task override here is currently
-    round-tripped through ``_serialise_options`` / ``_deserialise_options``
-    (so old task records keep their value) but is *not* consulted at
-    dispatch time. To change the image backend, set ``IMAGE_PROVIDER`` in
-    the environment / ``.env`` before launching ``mmrag-api``; mid-run
-    switches require ``register_embedder(..., replace=True)``.
-    """
+    """Per-task parse configuration for uploaded assets."""
 
     assets: list[Asset] = field(default_factory=list)
     pdf_parser: str = "auto"
     document_parser: str = "markitdown"
     enable_ocr: bool = False
     enable_vlm: bool = False
-    image_provider: str = "lite"
     contextual: bool = False
 
 
@@ -361,7 +352,7 @@ class IngestService:
         successful ingest.
 
         ``query_preprocess`` caches the corpus vocab used for query
-        expansion / hyphenisation, and ``qdrant_backend`` caches the
+        expansion / hyphenisation, and the Qdrant index caches the
         IDF vector used by the BM25-zh sparse index. Both caches are
         derived from the *current* Qdrant collection state, so after a
         ``force_recreate=True`` reindex (or any successful ``upsert_text``
@@ -376,14 +367,8 @@ class IngestService:
         crash the task-completion path — at worst we print nothing
         and the next query pays the cache-miss cost.
         """
-        with suppress(Exception):
-            from .query_preprocess import invalidate_vocab_cache
-
-            invalidate_vocab_cache()
-        with suppress(Exception):
-            from .backends.qdrant_backend import invalidate_bm25_zh_idf_cache
-
-            invalidate_bm25_zh_idf_cache()
+        invalidate_vocab_cache()
+        invalidate_bm25_zh_idf_cache()
 
     def list_tasks(self) -> list[TaskRecord]:
         """Return the task history ordered by most recent ``updated_at``.
@@ -435,15 +420,7 @@ class IngestService:
             return self._tasks.get(task_id)
 
     def load_history(self) -> None:
-        """Restore tasks from SQLite (auto-migrate from legacy ``tasks.jsonl``).
-
-        Tasks still in ``running`` state when the previous process
-        exited are marked ``interrupted``. If a legacy ``tasks.jsonl``
-        is found alongside (no ``tasks.db`` yet), we migrate every
-        line into SQLite once and rename the source file to
-        ``tasks.jsonl.migrated`` so we don't redo the migration on the
-        next boot.
-        """
+        """Restore tasks from SQLite and interrupt stale running records."""
         records = self._task_store.load()
 
         interrupted = 0
@@ -463,31 +440,6 @@ class IngestService:
             print(
                 f"[tasks] loaded {len(records)} task(s) from disk; {interrupted} marked interrupted"
             )
-
-    def _maybe_legacy_migrate(self, db_path: Path) -> None:
-        """One-shot migration: if ``tasks.db`` is missing but a legacy
-        ``tasks.jsonl`` exists, import every line into SQLite and
-        rename the source file to ``tasks.jsonl.migrated`` so we never
-        redo it.
-
-        A pre-existing ``tasks.db`` short-circuits the migration so we
-        do not clobber the new store on a partial-boot upgrade.
-        """
-        self._task_store._maybe_legacy_migrate(db_path)
-
-    def _tasks_log_path_legacy(self) -> Path:
-        """Return the *legacy* ``tasks.jsonl`` location.
-
-        Retained so the migration in :meth:`_maybe_legacy_migrate`
-        can find the pre-SQLite history file. New writes go to
-        :meth:`_tasks_db_path` / :meth:`_tasks_jsonl_path`.
-        """
-        return self._task_store.legacy_path()
-
-    @staticmethod
-    def _task_from_dict(obj: dict[str, object]) -> TaskRecord:
-        """Build a ``TaskRecord`` from a JSONL row, tolerating legacy records."""
-        return task_from_dict(obj)
 
     def delete_document(self, document_id: str) -> DocumentLifecycleReport:
         """Delete every immutable version belonging to one logical document."""
@@ -879,14 +831,10 @@ class IngestService:
                         self._stream_events.pop(task_id, None)
 
     def _persist(self, rec: TaskRecord) -> None:
-        """Compatibility delegate to the injected task store."""
         self._task_store.save(rec)
 
     def _tasks_db_path(self) -> Path:
         return self._task_store.db_path()
-
-    def _tasks_jsonl_path(self) -> Path:
-        return self._task_store.jsonl_path()
 
     @staticmethod
     def _serialise_options(options: ParseOptions) -> dict[str, object]:
@@ -900,7 +848,6 @@ class IngestService:
             "document_parser": options.document_parser,
             "enable_ocr": options.enable_ocr,
             "enable_vlm": options.enable_vlm,
-            "image_provider": options.image_provider,
             # Persisted so a retry of a ``--contextual`` task keeps the
             # per-task override; without this the retry silently falls back
             # to the global ``CONTEXTUAL_ENABLED`` and produces chunks
@@ -931,13 +878,6 @@ class IngestService:
                 options.enable_ocr = raw["enable_ocr"]
             if isinstance(raw.get("enable_vlm"), bool):
                 options.enable_vlm = raw["enable_vlm"]
-            image_provider = raw.get("image_provider")
-            if isinstance(image_provider, str) and image_provider in {
-                "lite",
-                "sentence_transformers",
-                "cn_clip",
-            }:
-                options.image_provider = image_provider
             if isinstance(raw.get("contextual"), bool):
                 options.contextual = raw["contextual"]
         return options

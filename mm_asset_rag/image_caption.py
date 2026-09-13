@@ -34,12 +34,11 @@ behavior. Nothing here raises.
 
 from __future__ import annotations
 
-import contextlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import provider_security
+from .llm_transport import post_chat_completion
 from .paths import get_parsed_dir
 from .settings import get_settings
 
@@ -151,23 +150,19 @@ def _caption_one(asset_id: str, image_rel_path: str) -> str:
         return ""
     import base64
 
-    import requests
-
     s = get_settings()
     base_url, api_key, model = s.vlm_creds
     if not base_url or not api_key or not model:
         return ""
-    with contextlib.suppress(Exception):
-        provider_security.warn_insecure_base_url(base_url)
     try:
         image_base64 = base64.b64encode(abs_path.read_bytes()).decode("ascii")
         suffix = abs_path.suffix.lower().replace(".", "") or "png"
         mime = "jpeg" if suffix == "jpg" else suffix
-        payload = {
-            "model": model,
-            "temperature": s.vlm_temperature,
-            "max_tokens": s.vlm_max_tokens,
-            "messages": [
+        response = post_chat_completion(
+            base_url,
+            api_key,
+            model,
+            [
                 {
                     "role": "user",
                     "content": [
@@ -186,14 +181,10 @@ def _caption_one(asset_id: str, image_rel_path: str) -> str:
                     ],
                 }
             ],
-        }
-        response = requests.post(
-            base_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
             timeout=s.vlm_timeout,
+            temperature=s.vlm_temperature,
+            max_tokens=s.vlm_max_tokens,
         )
-        response.raise_for_status()
         message = response.json()["choices"][0]["message"]
         content = str(message.get("content") or "").strip()
         # Reasoning-model fallback: when content is empty the answer may live

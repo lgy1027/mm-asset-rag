@@ -86,7 +86,7 @@ When `auto` resolves to enabled (bge-m3), the text collection gains extra sparse
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `CLIP_MODEL` | `clip-ViT-B-32` | Sentence-transformers CLIP model name |
-| `IMAGE_PROVIDER` | `lite` | 占位字符串,无独立 lite embedder 实现。实际图片索引依赖 `[clip]` extra 的 sentence-transformers CLIP(`get_default_image_embedder` 只实例化 CLIP);`lite` 在缺 `[clip]` 时效果是"图片跳过索引"而非"用轻量 embedder",`sentence_transformers` 显式要求 CLIP。保留 `lite` 仅为兼容旧 `.env`,行为等价于"未配置图片 embedder" |
+| `IMAGE_PROVIDER` | `clip` | `clip` 使用 sentence-transformers CLIP；`cn_clip` 使用 Chinese-CLIP |
 
 Install `[clip]` to use sentence-transformers CLIP:
 
@@ -235,16 +235,12 @@ This is the **text-route** path only: embedded figures are *not* sent to the CLI
 
 bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a candidate pool with dense + BM25, then score each `(query, doc)` pair with a cross-encoder. Catches high-score false positives that `MIN_SCORE` cannot. **Enabled by default**.
 
-Two provider backends, selected by `RERANKER_PROVIDER`:
-
-- **`local`** (default) — runs `sentence_transformers.CrossEncoder` in-process. Same dep family as the bge-m3 embedder; no network. Needs the model downloaded (~2GB first run). Disable with `RERANKER_ENABLED=false` when latency / download cost is a concern.
-- **`siliconflow` / `dashscope`** — call a hosted rerank API. No local model, no `sentence-transformers` dep; latency is a single network round-trip, predictable for interactive search. The two providers speak **different wire shapes** (see below), handled by the same client.
+Remote providers are selected with `RERANKER_PROVIDER`: `siliconflow` or `dashscope`.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `RERANKER_ENABLED` | `true` | Master switch (default on; set `false` to opt out) |
 | `RERANKER_PROVIDER` | `siliconflow` | `siliconflow` \| `dashscope` |
-| `RERANKER_MODEL` | `BAAI/bge-reranker-v2-m3` | HuggingFace cross-encoder model id (local provider) |
 | `RERANKER_API_BASE` | provider default | Rerank API URL (HTTP providers). SiliconFlow `https://api.siliconflow.cn/v1/rerank` (flat Cohere form); 百炼 `https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank` (DashScope-native nested form, universal host — no workspaceId needed) |
 | `RERANKER_API_MODEL` | provider default | Rerank API model (HTTP providers). SiliconFlow `BAAI/bge-reranker-v2-m3`; 百炼 `qwen3-rerank` |
 | `RERANKER_API_KEY` | shared key | Explicit Rerank API key override |

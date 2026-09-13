@@ -35,9 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import requests
-
-from . import provider_security
+from .llm_transport import post_chat_completion
 from .settings import get_settings
 
 log = logging.getLogger(__name__)
@@ -123,32 +121,20 @@ def _vlm_chat_json(
     if creds is None:
         raise RuntimeError("VLM is not configured (missing base_url/api_key/model)")
     base_url, api_key, model = creds
-    with contextlib.suppress(Exception):
-        provider_security.warn_insecure_base_url(base_url)
-
     prompt = prompt_override or DEFAULT_IMAGE_PROMPT
     user_content: list[dict[str, Any]] = [{"type": "text", "text": prompt + "\n" + text}]
     if image_data_url is not None:
         user_content.append({"type": "image_url", "image_url": {"url": image_data_url}})
 
-    payload = {
-        "model": model,
-        "temperature": 0.1,
-        "max_tokens": max_tokens,
-        "response_format": {"type": "json_object"},
-        "messages": [{"role": "user", "content": user_content}],
-    }
-    url = base_url.rstrip("/") + "/chat/completions"
-    response = requests.post(
-        url,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        json=payload,
+    response = post_chat_completion(
+        base_url,
+        api_key,
+        model,
+        [{"role": "user", "content": user_content}],
         timeout=get_settings().auto_meta_timeout,
+        max_tokens=max_tokens,
+        response_format={"type": "json_object"},
     )
-    response.raise_for_status()
     content = response.json()["choices"][0]["message"]["content"]
     if not isinstance(content, str):
         raise ValueError(f"VLM returned non-string content: {type(content).__name__}")

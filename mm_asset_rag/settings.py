@@ -214,47 +214,11 @@ class Settings(BaseSettings):
     # noise on very large candidate pools.
     min_score: float = 0.0
 
-    # ─── Two-stage reranker ───────────────────────────────────────────────
-    # bge-m3's model card recommends "hybrid retrieval + re-ranking": pull a
-    # candidate pool with dense + BM25, then score each (query, doc) pair
-    # with a cross-encoder. Catches high-score false positives that the
-    # global ``min_score`` floor cannot (v6b: 1.20 only dropped 1/8
-    # negatives while losing 4 positives). Enabled by default — it adds
-    # ~50-200ms latency per query and the model is ~2GB on first
-    # download (``BAAI/bge-reranker-v2-m3``), but the precision lift on
-    # the eval corpus is worth the latency. Runs locally via
-    # ``sentence_transformers.CrossEncoder`` (same dep as the bge-m3
-    # embedder); no ollama / API. When enabled, ``hybrid_search`` fetches
-    # ``reranker_top_n`` candidates, reranks, and returns
-    # ``reranker_top_k`` (or the caller's top_k if None).
-    # ``reranker_top_n`` should be ≤ ``qdrant_hybrid_prefetch_limit`` (default
-    # 50) or the candidate pool is bounded by the prefetch. Disable with
-    # ``RERANKER_ENABLED=false`` when latency / download cost is a concern.
+    # ─── Two-stage remote reranker ─────────────────────────────────────────
     reranker_enabled: bool = False
-    reranker_model: str = "BAAI/bge-reranker-v2-m3"
     reranker_top_n: int = 30
     reranker_top_k: int | None = None
-    # Weight of the cross-encoder score in the final blended rank.
-    # ``hybrid_search`` passes the pre-rerank RRF score through to the
-    # reranker; rather than letting the cross-encoder *overwrite* the
-    # hybrid signal (which lets a long, well-structured but off-topic
-    # chunk out-score the true match), the final score is a convex blend
-    # ``blend * norm(cross_encoder) + (1-blend) * norm(hybrid_rrf)``.
-    # 0.0 = ignore the reranker (hybrid only); 1.0 = pure reranker
-    # (the pre-blend behaviour, which over-trusts the cross-encoder on
-    # long evidence). 0.6 keeps the reranker in charge while the
-    # whole-document dense + BM25 signal anchors it. Corpus- and
-    # model-agnostic: works for any embedder / reranker combination.
     reranker_hybrid_blend: float = 0.6
-    # Reranker provider backend. ``local`` runs the cross-encoder in-process
-    # via ``sentence_transformers.CrossEncoder`` (needs the [clip] extra + the
-    # model downloaded). ``siliconflow`` / ``dashscope`` call a hosted rerank
-    # API — no local model, latency is a single network round-trip and
-    # predictable for interactive search. The two providers speak *different*
-    # wire shapes (siliconflow: flat Cohere form; dashscope: DashScope-native
-    # nested form); the client handles the shape per-provider, so only
-    # ``reranker_api_key`` typically needs setting (base / model have
-    # per-provider defaults).
     reranker_provider: Literal["siliconflow", "dashscope"] = "siliconflow"
     # Rerank API base URL (HTTP providers). Resolved in ``embedders.reranker``
     # so this stays None → provider default.
@@ -446,30 +410,13 @@ class Settings(BaseSettings):
     paddleocr_vl_image_hosts: str = ""
 
     # ─── Parser defaults (drives /upload; UI can override per request) ───
-    # NOTE: pdf_parser / enable_ocr / enable_vlm / auto_index are persisted
-    # per-task via _serialise_options / _deserialise_options so a retry of
-    # an upload keeps the per-request override; the modern upload pipeline
-    # auto-decides a default at preview time but lets the user pin a value
-    # via the UI / API. ``image_provider`` is *not* per-task — the embedder
-    # dispatch in ``embedders/__init__.py`` only reads ``Settings.image_provider``
-    # (see ``ParseOptions.image_provider`` docstring).
     pdf_parser: Literal["auto", "pymupdf", "paddleocr_vl", "docling", "ppocr"] = "auto"
     # document backend: markitdown (default, core dep, no ML stack) or
     # docling (optional [docling] extra, heavy torch/transformers stack).
     document_parser: Literal["markitdown", "docling"] = "markitdown"
     enable_ocr: bool = False
     enable_vlm: bool = False
-    # 图片嵌入 provider 选择。``lite`` 与 ``sentence_transformers`` 是别名,
-    # 都走 sentence-transformers CLIP(``get_default_image_embedder`` 默认实例化
-    # ``ImageEmbedder``),需要 [clip] extra,缺则图片索引跳过;
-    # ``sentence_transformers`` 与 ``lite`` 等价,保留 ``lite`` 仅为了兼容旧 .env。
-    # ``cn_clip`` 走 Chinese-CLIP(``transformers`` 包的 ``ChineseCLIPModel`` +
-    # ``ChineseCLIPProcessor``,``OFA-Sys/chinese-clip-vit-base-patch16``,
-    # 768d, ~1 GB,中文 zero-shot Flickr30K-CN R@1 ~71%);切换 cn_clip 需
-    # `pip install transformers` ([docling] 或 [clip] extra 已传递依赖带入)。
-    # 切换 provider / 模型名都触发 image collection dim 后缀变化,
-    # 必须 ``mmrag reindex`` 重建。
-    image_provider: Literal["lite", "sentence_transformers", "cn_clip"] = "lite"
+    image_provider: Literal["clip", "cn_clip"] = "clip"
     auto_index: bool = True
 
     # ─── Upload preview safety limits ─────────────────────────────────────
