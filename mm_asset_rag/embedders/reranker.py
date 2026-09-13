@@ -1,26 +1,4 @@
-"""Two-stage reranker for hybrid retrieval.
-
-Implements the bge-m3 "hybrid retrieval + re-ranking" recipe: pull a
-candidate pool with dense + BM25, then cross-encoder-score each
-``(query, doc)`` pair and re-sort. Cross-encoders see query + doc jointly,
-so they catch high-score false positives that a global score threshold
-cannot (e.g. a query about "强化学习 PPO" matching an SSD paper that
-shares tokens).
-
-Two providers via ``Settings.reranker_provider``:
-
-- ``local`` (default) — ``sentence_transformers.CrossEncoder`` in-process.
-  Hard-sticky: a missing dep / corrupt HF cache disables reranking for the
-  process (won't self-heal without a restart).
-- ``siliconflow`` / ``dashscope`` — hosted rerank API. Soft-sticky: a
-  transient outage auto-recovers after ``RERANKER_DISABLE_TTL`` seconds.
-
-Both feed raw scores into the same normalise / blend / sort pipeline in
-:meth:`Reranker.rerank`. Image hits are never re-scored (CLIP is already a
-relevance signal). When the provider is unavailable, ``rerank`` degrades to
-returning the pre-rerank merged hits. A programming bug (``TypeError`` /
-``ValueError``) propagates rather than being swallowed into a disable.
-"""
+"""Remote two-stage reranking for hybrid retrieval."""
 
 from __future__ import annotations
 
@@ -53,104 +31,35 @@ _HTTP_RETRY_BACKOFF = 0.5
 
 _LOCK = Lock()
 _INSTANCE: Reranker | None = None
-_UNAVAILABLE = False  # set True after first failed load so we don't retry
-# 0.0 = hard sticky (local: never auto-recover, needs reset_reranker / restart).
-# >0.0 = soft-sticky expiry in monotonic seconds (HTTP: auto-recover after TTL).
+_UNAVAILABLE = False
 _UNAVAILABLE_UNTIL: float = 0.0
-# Injectable monotonic clock so the soft-sticky TTL is testable without real
-# sleeps. ``_now()`` returns seconds; tests monkeypatch this to a controllable
-# counter.
 _now = time.monotonic
 
 
 class RerankerError(RuntimeError):
-    """A reranker *provider* failed to score (network / API / model / bad body).
-
-    :meth:`Reranker.rerank` catches only this — a programming bug
-    (``TypeError`` / ``AttributeError`` / ``ValueError`` from our own blending
-    or a misconfigured defaults table) is *not* a ``RerankerError`` and
-    propagates, so it surfaces in dev instead of being silently swallowed into
-    a sticky-disable. ``_score_text_pairs`` implementations wrap their
-    provider interactions in ``try/except`` and re-raise this.
-    """
+    """The remote reranking provider could not score a request."""
 
 
 class Reranker:
-    """Two-stage reranker; provider-agnostic blend / sort pipeline.
+    """Provider-independent score blending and ordering."""
 
-    Construction is cheap (stores config only). The heavy provider resource
-    (local CrossEncoder model, or HTTP endpoint) is loaded/called lazily on
-    the first :meth:`rerank` via :meth:`_score_text_pairs`.
-
-    Subclasses extending the provider interface override :meth:`_load` and
-    :meth:`_score_text_pairs` *as a pair* (the base ``_score_text_pairs`` calls
-    ``self._load()``; an HTTP subclass overrides both so the base ``_load`` is
-    never reached on it), and declare :attr:`_sticky_ttl` to pick their
-    stickiness policy on failure.
-    """
-
-    #: Stickiness after a provider failure. ``None`` = hard sticky (local: a
-    #: corrupted HF cache / missing dep won't self-heal — needs reset_reranker
-    #: or a process restart). A number of seconds = soft sticky that
-    #: auto-recovers after the TTL (HTTP: a transient cloud outage shouldn't
-    #: disable reranking until restart). New providers set this in one line.
     _sticky_ttl: float | None = None
 
-    def __init__(self, *, model: str | None = None) -> None:
-        s = get_settings()
-        # Local provider's HF model id. HTTP providers override ``__init__`` so
-        # this HF id is never set on them (they resolve their API model via
-        # ``_config`` instead) — keeping it here would be dead state that reads
-        # as "BAAI/bge-reranker-v2-m3" even on a dashscope instance.
-        self.model = model or s.reranker_model
-        self._model = None  # local: lazy CrossEncoder; HTTP: unused
-
-    # ── provider interface ──────────────────────────────────────────────
-    @staticmethod
-    def _dep_available() -> bool:
-        """True iff the local provider's dependency is importable.
-
-        Only meaningful for the local backend; HTTP providers override this to
-        ``True`` (their "dependency" is ``requests``, a core dep). Probed once
-        at :func:`get_default_reranker` so a missing dep short-circuits before
-        ``hybrid_search`` commits to the two-stage path.
-        """
-        try:
-            import sentence_transformers  # noqa: F401
-        except ImportError:
-            return False
-        return True
-
     def _score_text_pairs(self, query: str, documents: list[str]) -> list[float]:
-        """Return one relevance score per document, aligned to input order.
-
-        Local provider: ``CrossEncoder.predict``. HTTP providers: one
-        ``POST /rerank`` whose response is reordered by ``index`` back to the
-        input order (the API returns results sorted by relevance, not by
-        input position). Provider failures raise :class:`RerankerError`;
-        programming bugs propagate.
-        """
         if not documents:
             return []
         try:
-            model = self._load()
-            scores = model.predict([(query, doc) for doc in documents], show_progress_bar=False)
+            scores = self._load().predict(
+                [(query, doc) for doc in documents], show_progress_bar=False
+            )
+            return [float(score) for score in scores]
         except RerankerError:
             raise
-        except Exception as exc:  # corrupted cache, OOM, revoked weights, …
-            raise RerankerError(f"local cross-encoder failed to score: {exc}") from exc
-        try:
-            return [float(v) for v in scores]
-        except TypeError:  # pragma: no cover — scores already a scalar
-            return [float(scores)]
+        except Exception as exc:
+            raise RerankerError(f"reranker scorer failed: {exc}") from exc
 
     def _load(self):
-        """Lazy-load the local CrossEncoder. Overridden by HTTP providers."""
-        if self._model is None:
-            from sentence_transformers import CrossEncoder
-
-            self._model = CrossEncoder(self.model)
-        return self._model
+        raise NotImplementedError
 
     # ── shared pipeline ──────────────────────────────────────────────────
     def rerank(self, query: str, hits: list[SearchHit], *, top_k: int) -> list[SearchHit]:
@@ -328,35 +237,11 @@ class HttpRerankApiReranker(Reranker):
         per-user workspaceId) is intentionally not used.
     """
 
-    #: Soft sticky — a transient cloud outage (5xx / timeout / network) auto-
-    #: recovers after 60s instead of disabling reranking until process restart.
     _sticky_ttl = 60.0
 
-    def __init__(self, *, model: str | None = None) -> None:
-        # ``model`` is the local HF id, unused on the HTTP path (the API model
-        # is resolved per-call via ``_config`` from ``reranker_api_model``).
-        # Setting ``self.model`` to the HF default here would read as
-        # "BAAI/bge-reranker-v2-m3" even on a dashscope instance — misleading.
-        self.model = None
-        self._model = None  # stateless HTTP provider has no loaded model
-
     @staticmethod
-    def _dep_available() -> bool:
-        """``requests`` importable **and** the provider is configured.
-
-        Unlike the local backend (whose only failure is a missing import), an
-        HTTP provider that lacks a key / base is *misconfigured*, not
-        *temporarily unavailable* — every ``rerank`` would 401 or 404 and
-        degrade. Surfacing that here as "unavailable" makes
-        :func:`get_default_reranker` return ``None`` so ``hybrid_search``
-        skips the two-stage path cleanly, instead of silently retrying a
-        failing call every query (the exact trap the local backend's dep
-        probe exists to avoid).
-        """
-        try:
-            import requests  # noqa: F401
-        except ImportError:  # pragma: no cover
-            return False
+    def is_configured() -> bool:
+        """Return whether the enabled remote provider has usable credentials."""
         s = get_settings()
         default_base, default_model, _ = _provider_defaults(s.reranker_provider)
         base = s.reranker_api_base or default_base
@@ -375,11 +260,6 @@ class HttpRerankApiReranker(Reranker):
         api_key = s.reranker_api_key or s.openai_compat_api_key or ""
         timeout = s.reranker_api_timeout
         return api_base, model, form, api_key, timeout
-
-    def _load(self):
-        # No persistent model to load; HTTP providers are stateless. Kept as a
-        # no-op so the base class's _load contract (called nowhere here) holds.
-        return None
 
     def _score_text_pairs(self, query: str, documents: list[str]) -> list[float]:
         if not documents:
@@ -499,30 +379,12 @@ def _exc_status(exc) -> str:
 
 
 def get_default_reranker() -> Reranker | None:
-    """Return the process-wide :class:`Reranker`, or ``None`` if unavailable.
-
-    Returns ``None`` (so the caller skips reranking) when:
-    - ``Settings.reranker_enabled`` is False, or
-    - the provider's dependency is missing, or
-    - the provider fails to construct (missing config).
-
-    Stickiness on a runtime provider failure is provider-declared
-    (:attr:`Reranker._sticky_ttl`): ``None`` (local) = hard sticky — only
-    :func:`reset_reranker` or a restart re-enables; a TTL (HTTP) = soft sticky
-    that auto-recovers after the TTL so a transient cloud outage doesn't
-    disable reranking for the whole process life.
-    """
+    """Return the enabled remote reranker, if its configuration is valid."""
     global _INSTANCE, _UNAVAILABLE, _UNAVAILABLE_UNTIL
     s = get_settings()
     if not s.reranker_enabled:
         return None
     if _UNAVAILABLE:
-        # Soft-sticky (HTTP, ``_UNAVAILABLE_UNTIL > 0``): auto-recover after the
-        # TTL. Hard-sticky (local, ``_UNAVAILABLE_UNTIL == 0``): never recover.
-        # Re-check inside the lock — between our outside read and acquiring the
-        # lock, another thread may have just set a fresh TTL via
-        # ``_mark_unavailable``; clearing unconditionally would clobber it and
-        # immediately re-probe the just-failed provider.
         with _LOCK:
             if _UNAVAILABLE_UNTIL and _now() >= _UNAVAILABLE_UNTIL:
                 _INSTANCE = None
@@ -530,25 +392,17 @@ def get_default_reranker() -> Reranker | None:
                 _UNAVAILABLE_UNTIL = 0.0
             else:
                 return None
-        # fall through and re-probe / construct
     if _INSTANCE is not None:
         return _INSTANCE
     with _LOCK:
         if _INSTANCE is not None:
             return _INSTANCE
-        cls = _provider_class(s.reranker_provider)
-        if not cls._dep_available():
-            # Common-failure path (local dep not installed, or HTTP provider
-            # misconfigured). Hard-sticky: a missing dep / bad config won't
-            # self-heal, so we don't re-probe on every search call. Explicit
-            # ``_UNAVAILABLE_UNTIL = 0.0`` pins the hard-sticky intent so a
-            # future change to the soft-sticky path can't turn this into a
-            # self-recovering one.
+        if not HttpRerankApiReranker.is_configured():
             _UNAVAILABLE = True
             _UNAVAILABLE_UNTIL = 0.0
             return None
         try:
-            _INSTANCE = cls()
+            _INSTANCE = HttpRerankApiReranker()
         except Exception:
             _UNAVAILABLE = True
             _UNAVAILABLE_UNTIL = 0.0
@@ -556,23 +410,8 @@ def get_default_reranker() -> Reranker | None:
     return _INSTANCE
 
 
-def _provider_class(provider: str) -> type[Reranker]:
-    """Map ``Settings.reranker_provider`` to a concrete class."""
-    if provider in ("siliconflow", "dashscope"):
-        return HttpRerankApiReranker
-    raise ValueError(f"unsupported remote reranker provider: {provider}")
-
-
 def reset_reranker() -> None:
-    """Clear the cached instance + unavailable flag. For tests.
-
-    Also clears the ``get_settings`` lru_cache so a test's ``monkeypatch.setenv``
-    of ``RERANKER_*`` vars is seen by the next ``get_settings()`` call — without
-    this, the first test to touch settings pins a cached instance and later
-    tests that only ``setenv`` (no explicit ``cache_clear``) silently read the
-    stale provider / base / key. Centralising it here means every test that
-    resets the reranker also gets a fresh settings read.
-    """
+    """Clear the process cache. Intended for tests."""
     global _INSTANCE, _UNAVAILABLE, _UNAVAILABLE_UNTIL
     _INSTANCE = None
     _UNAVAILABLE = False
@@ -583,13 +422,7 @@ def reset_reranker() -> None:
 def _mark_unavailable(*, ttl: float | None = None) -> None:
     """Flag the reranker unavailable for the process.
 
-    ``ttl`` (seconds) → soft sticky that auto-recovers after the TTL via
-    :func:`get_default_reranker` (HTTP providers, so a transient cloud outage
-    self-heals). ``None`` → hard sticky that only :func:`reset_reranker` clears
-    (local provider — a missing dep / corrupted HF cache won't self-heal in a
-    process lifetime). Called when the provider loads at construction (probe
-    passed) but then fails at ``rerank`` time — e.g. a corrupted local HF
-    cache, or an HTTP API 5xx / network error / revoked key / bad body.
+    ``ttl`` is the monotonic expiry time for a temporary provider failure.
     """
     global _INSTANCE, _UNAVAILABLE, _UNAVAILABLE_UNTIL
     with _LOCK:

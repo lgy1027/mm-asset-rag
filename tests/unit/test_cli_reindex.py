@@ -113,7 +113,7 @@ def test_reindex_image_only_passes_through(monkeypatch) -> None:
 
 def test_reindex_lock_held_error(monkeypatch) -> None:
     """``QdrantLockHeldError`` should surface as a clear SystemExit."""
-    from mm_asset_rag.backends.qdrant_backend import QdrantLockHeldError
+    from mm_asset_rag.backends.qdrant.client import QdrantLockHeldError
 
     monkeypatch.setattr("builtins.input", lambda _: "y")
 

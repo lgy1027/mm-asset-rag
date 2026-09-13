@@ -1,6 +1,6 @@
 """Chinese-aware BM25 sparse encoder (jieba + Okapi).
 
-Companion to :mod:`mm_asset_rag.backends.qdrant_backend` which hosts the
+Companion to :mod:`mm_asset_rag.backends.qdrant.indexing` which hosts the
 English fastembed BM25 vector. ``bm25_zh`` produces a parallel sparse
 vector (``bm25_zh``) so Chinese documents and queries get token-level
 recall instead of relying on dense embeddings alone.

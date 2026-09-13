@@ -27,12 +27,11 @@ the pre-contextual behavior. Nothing here raises.
 
 from __future__ import annotations
 
-import contextlib
 import re
 
 import requests
 
-from . import provider_security
+from .llm_transport import post_chat_completion
 from .settings import get_settings
 
 # Reasoning models (e.g. MiniMax-M3 in thinking mode) may wrap output in
@@ -70,17 +69,16 @@ def _chat(messages: list[dict[str, str]], *, temperature: float = 0.0) -> str:
     base_url, api_key, model = _llm_credentials()
     if not base_url or not api_key or not model:
         return ""
-    with contextlib.suppress(Exception):
-        provider_security.warn_insecure_base_url(base_url)
-    payload = {"model": model, "temperature": temperature, "messages": messages}
     try:
-        response = requests.post(
-            base_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
+        response = post_chat_completion(
+            base_url,
+            api_key,
+            model,
+            messages,
             timeout=float(get_settings().contextual_timeout),
+            temperature=temperature,
+            post=requests.post,
         )
-        response.raise_for_status()
         raw = response.json()["choices"][0]["message"]["content"]
     except Exception:
         return ""

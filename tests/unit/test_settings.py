@@ -43,7 +43,7 @@ def test_defaults_applied_when_no_env(monkeypatch):
     assert s.document_parser == "markitdown"
     assert s.enable_ocr is False
     assert s.enable_vlm is False
-    assert s.image_provider == "lite"
+    assert s.image_provider == "clip"
     assert s.auto_index is True
     assert s.qdrant_upsert_batch_size == 16
     assert s.llm_timeout == 120.0

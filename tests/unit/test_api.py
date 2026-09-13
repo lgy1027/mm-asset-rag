@@ -118,7 +118,7 @@ def test_qdrant_collection_alive_resolves_dim_suffix_without_active_cache(monkey
         collections=[_Coll("multimodal_text_1024d"), _Coll("multimodal_image_768d")]
     )
     monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant_backend.get_qdrant_client", lambda: fake_client
+        "mm_asset_rag.backends.qdrant.client.get_qdrant_client", lambda: fake_client
     )
 
     assert api._qdrant_collection_alive("text") is True
@@ -136,7 +136,7 @@ def test_qdrant_collection_alive_false_when_no_collection(monkeypatch):
     fake_client = MagicMock()
     fake_client.get_collections.return_value = MagicMock(collections=[_Coll("unrelated")])
     monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant_backend.get_qdrant_client", lambda: fake_client
+        "mm_asset_rag.backends.qdrant.client.get_qdrant_client", lambda: fake_client
     )
 
     assert api._qdrant_collection_alive("text") is False

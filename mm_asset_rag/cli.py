@@ -109,7 +109,7 @@ def command_reindex(args: argparse.Namespace) -> None:
     ``--yes`` skips the interactive confirmation — useful for CI / scripts
     and for the "switch CLIP model" recipe in ``docs/eval-report-v3.md``.
     """
-    from .backends.qdrant_backend import QdrantLockHeldError
+    from .backends.qdrant.client import QdrantLockHeldError
     from .service import get_service
 
     if not args.yes:

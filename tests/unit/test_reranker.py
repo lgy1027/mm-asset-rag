@@ -19,7 +19,6 @@ import pytest
 from mm_asset_rag.embedders.reranker import (
     HttpRerankApiReranker,
     Reranker,
-    RerankerError,
     get_default_reranker,
     reset_reranker,
 )
@@ -151,40 +150,33 @@ def test_get_default_reranker_disabled_by_default(tmp_home):
     assert get_default_reranker() is None
 
 
-def test_get_default_reranker_none_when_dep_missing(tmp_home, monkeypatch):
-    """Bug fix: when ``sentence_transformers`` is not importable, the reranker
-    must report unavailable *before* ``hybrid_search`` commits to the two-stage
-    path. Previously construction was import-free so a non-None Reranker was
-    returned and ``rerank`` later raised ``ModuleNotFoundError`` out of the
-    search call instead of degrading."""
+def test_get_default_reranker_is_sticky_when_remote_config_is_missing(tmp_home, monkeypatch):
     monkeypatch.setenv("RERANKER_ENABLED", "true")
     reset_reranker()
-    with patch.object(Reranker, "_dep_available", return_value=False):
-        assert get_default_reranker() is None
-    # Sticky: a second call (dep still missing) does not retry the probe.
-    with patch.object(Reranker, "_dep_available", return_value=True) as probe:
-        assert get_default_reranker() is None
-    probe.assert_not_called()
+    assert get_default_reranker() is None
+    monkeypatch.setenv("RERANKER_API_KEY", "sk-test")
+    from mm_asset_rag.settings import get_settings
+
+    get_settings.cache_clear()
+    assert get_default_reranker() is None
     reset_reranker()
 
 
-def test_get_default_reranker_load_failure_is_sticky(tmp_home, monkeypatch):
-    """A failed model load sets _UNAVAILABLE so subsequent calls don't retry."""
+def test_get_default_reranker_construction_failure_is_sticky(tmp_home, monkeypatch):
+    """A failed remote adapter construction disables reranking for the process."""
     monkeypatch.setenv("RERANKER_ENABLED", "true")
     reset_reranker()
 
     with (
-        patch.object(Reranker, "_dep_available", return_value=True),
-        patch("mm_asset_rag.embedders.reranker.Reranker", side_effect=RuntimeError("boom")),
+        patch.object(HttpRerankApiReranker, "is_configured", return_value=True),
+        patch(
+            "mm_asset_rag.embedders.reranker.HttpRerankApiReranker",
+            side_effect=RuntimeError("boom"),
+        ),
     ):
         assert get_default_reranker() is None
 
-    # Second call should not retry (sticky), even if we re-patch to succeed.
-    with (
-        patch.object(Reranker, "_dep_available", return_value=True),
-        patch("mm_asset_rag.embedders.reranker.Reranker", return_value=MagicMock()),
-    ):
-        assert get_default_reranker() is None
+    assert get_default_reranker() is None
 
     # Clean up the sticky flag so it doesn't leak into later tests now
     # that reranker is enabled by default.
@@ -867,30 +859,6 @@ def test_http_reranker_soft_sticky_recovers_after_ttl(tmp_home, monkeypatch):
     reset_reranker()
 
 
-def test_local_reranker_hard_sticky_no_recovery(tmp_home, monkeypatch):
-    """H1: a local provider failure hard-stickies — advancing the clock never
-    auto-recovers (a corrupted HF cache / missing dep won't self-heal in a
-    process lifetime). Only ``reset_reranker`` / a restart re-enables."""
-    monkeypatch.setenv("RERANKER_ENABLED", "true")
-    reset_reranker()
-    import mm_asset_rag.embedders.reranker as mod
-
-    fake_time = [0.0]
-    monkeypatch.setattr(mod, "_now", lambda: fake_time[0])
-
-    r = Reranker()
-    with patch.object(Reranker, "_load", side_effect=RuntimeError("corrupt cache")):
-        out = r.rerank("q", [_hit("A", "a", score=0.5)], top_k=1)
-    assert [h.asset_id for h in out] == ["A"]  # degraded
-    assert mod._UNAVAILABLE is True
-    assert mod._UNAVAILABLE_UNTIL == 0.0  # hard sticky: no TTL
-
-    # Way past any TTL: still None — local never auto-recovers.
-    fake_time[0] = 9999.0
-    assert get_default_reranker() is None
-    reset_reranker()
-
-
 # ─── M1 / M2: exception boundary ──────────────────────────────────────────
 
 
@@ -929,20 +897,6 @@ def test_http_rerank_bad_json_degrades(tmp_home, monkeypatch):
     # HTTP provider → soft sticky, not hard.
     assert mod._UNAVAILABLE is True
     assert mod._UNAVAILABLE_UNTIL > 0.0
-    reset_reranker()
-
-
-def test_local_score_pairs_raises_reranker_error_on_provider_failure(tmp_home, monkeypatch):
-    """M2 boundary: a local provider failure surfaces as ``RerankerError`` from
-    ``_score_text_pairs`` — the type ``rerank()`` catches to degrade."""
-    monkeypatch.setenv("RERANKER_ENABLED", "true")
-    reset_reranker()
-    reranker = Reranker()
-    with (
-        patch.object(Reranker, "_load", side_effect=RuntimeError("corrupt")),
-        pytest.raises(RerankerError),
-    ):
-        reranker._score_text_pairs("q", ["a"])
     reset_reranker()
 
 

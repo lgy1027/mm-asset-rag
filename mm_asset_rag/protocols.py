@@ -62,7 +62,7 @@ class Embedder(Protocol):
 
     Modality-specific helpers live in :class:`TextEmbedderProtocol`
     and :class:`ImageEmbedderProtocol`; an embedder opts into either
-    or both as appropriate. ``qdrant_backend`` uses ``isinstance``
+    or both as appropriate. The Qdrant adapter uses ``isinstance``
     to check the capability at the call site, so a custom audio
     embedder that implements only :class:`Embedder` is still a
     valid participant in the registry.

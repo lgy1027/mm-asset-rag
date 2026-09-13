@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from mm_asset_rag.contextual import (
     enrich_docs_with_context,
     generate_chunk_context,
@@ -21,6 +23,7 @@ from mm_asset_rag.contextual import (
 )
 from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, DocumentVersion, Source
 from mm_asset_rag.knowledge_models import Asset as PersistedAsset
+from mm_asset_rag.llm_transport import LlmRateLimiter
 from mm_asset_rag.schema import ParsedDocument
 
 
@@ -59,6 +62,13 @@ def _stored_chunks(texts: list[str], *, context: str) -> list[Chunk]:
     ]
 
 
+@pytest.fixture(autouse=True)
+def _disable_chat_pacing(monkeypatch):
+    monkeypatch.setattr(
+        "mm_asset_rag.llm_transport.get_llm_rate_limiter", lambda: LlmRateLimiter(0)
+    )
+
+
 def test_generate_doc_summary_builds_prompt_and_strips_think(tmp_home, monkeypatch):
     """Summary call posts the full text and returns the cleaned answer."""
     captured: dict = {}
@@ -70,8 +80,8 @@ def test_generate_doc_summary_builds_prompt_and_strips_think(tmp_home, monkeypat
         def json(self):
             return {"choices": [{"message": {"content": "<think>hidden</think>文档摘要内容"}}]}
 
-    def fake_post(url, headers, json, timeout):
-        captured["payload"] = json
+    def fake_post(url, **kwargs):
+        captured["payload"] = kwargs["json"]
         return FakeResp()
 
     with (
@@ -120,7 +130,7 @@ def test_enrich_docs_writes_context_and_caches(tmp_home, monkeypatch):
         def json(self):
             return {"choices": [{"message": {"content": f"ctx-{call_count['n']}"}}]}
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, **kwargs):
         call_count["n"] += 1
         return FakeResp()
 
@@ -165,7 +175,7 @@ def test_enrich_skips_when_llm_unconfigured(tmp_home, monkeypatch):
 
 def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, fixed_vector):
     """The embedding input gets the context prefix; the payload text stays raw."""
-    from mm_asset_rag.backends.qdrant_backend import build_qdrant_text_index
+    from mm_asset_rag.backends.qdrant.indexing import build_text_index
     from mm_asset_rag.document_store import write_documents
     from mm_asset_rag.registry import embedders, register_embedder
 
@@ -200,7 +210,7 @@ def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, 
 
     register_embedder(_RecordingStub(), replace=True)
     try:
-        build_qdrant_text_index(force_recreate=True)
+        build_text_index(force_recreate=True)
     finally:
         embedders._items.pop(("text", "default"), None)
 
@@ -229,7 +239,7 @@ def test_build_qdrant_text_index_probe_not_reused_when_doc0_has_context(
     context-less dense vector whose sparse sibling carries the context.
     The fix adds a ``not batch[0].metadata.get("context")`` guard so the
     first chunk goes through ``embed_batch`` with its context prefix."""
-    from mm_asset_rag.backends.qdrant_backend import build_qdrant_text_index
+    from mm_asset_rag.backends.qdrant.indexing import build_text_index
     from mm_asset_rag.document_store import write_documents
     from mm_asset_rag.registry import embedders, register_embedder
 
@@ -260,7 +270,7 @@ def test_build_qdrant_text_index_probe_not_reused_when_doc0_has_context(
 
     register_embedder(_RecordingStub(), replace=True)
     try:
-        build_qdrant_text_index(force_recreate=True)
+        build_text_index(force_recreate=True)
     finally:
         embedders._items.pop(("text", "default"), None)
 

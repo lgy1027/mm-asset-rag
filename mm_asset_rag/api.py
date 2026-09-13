@@ -50,9 +50,7 @@ from .api_streaming import (
     _safe_stream_error,
 )
 from .api_streaming import _STREAM_ERR_MAX_CHARS as _STREAM_ERR_MAX_CHARS
-from .backends.qdrant_backend import (
-    get_qdrant_client,
-)
+from .backends.qdrant.client import get_qdrant_client
 from .evaluation import run_eval
 from .paths import (
     get_assets_dir,
@@ -81,7 +79,7 @@ async def lifespan(app: FastAPI):
     yield
     # Graceful shutdown: close the qdrant client so it removes its .lock
     # file. If the process is killed before this runs, the next startup
-    # tolerates a stale .lock (see backends.qdrant_backend._clean_stale_lock).
+    # tolerates a stale local Qdrant lock.
     with suppress(Exception):
         get_qdrant_client().close()
 
@@ -380,11 +378,11 @@ def _qdrant_collection_alive(kind: str) -> bool:
     collection has been created yet.
     """
     try:
-        from .backends.qdrant_backend import (
+        from .backends.qdrant.client import get_qdrant_client
+        from .backends.qdrant.collections import (
             IMAGE_COLLECTION_BASE,
             TEXT_COLLECTION_BASE,
             _existing_collections_for,
-            get_qdrant_client,
         )
 
         client = get_qdrant_client()

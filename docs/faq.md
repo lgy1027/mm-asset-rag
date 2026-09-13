@@ -2,7 +2,7 @@
 
 > 面向刚装上 `mm-asset-rag` 的用户,也作为日常排错速查。
 >
-> 新发现的坑 → 先按表对照 → 仍无解再开 issue,并附上 `/health?deep=true` 输出 + `$MM_ASSET_RAG_HOME/tasks.jsonl` 最近一条 task。
+> 新发现的坑 → 先按表对照 → 仍无解再开 issue,并附上 `/health?deep=true` 输出 + `$MM_ASSET_RAG_HOME/tasks.db` 中最近一条 task。
 
 ## 目录
 

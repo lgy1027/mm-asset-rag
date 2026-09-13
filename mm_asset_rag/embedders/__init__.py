@@ -5,7 +5,7 @@ Adding a new modality (audio, video frame, …) is a three-line change:
 1. Drop ``audio_embedder.py`` here whose class satisfies
    ``mm_asset_rag.protocols.Embedder``.
 2. ``register_embedder(...)`` below.
-3. The active collection naming + dim lookup in ``backends.qdrant_backend``
+3. The active collection naming + dim lookup in ``backends.qdrant``
    picks it up automatically.
 """
 
@@ -96,24 +96,12 @@ def _ensure_image_registered() -> None:
 
 
 def build_default_image_embedder():
-    """工厂:依据 ``Settings.image_provider`` 选择 image embedder 实现。
-
-    - ``cn_clip`` → :class:`CnClipImageEmbedder`(Chinese-CLIP,中文 zero-shot ~71%)
-    - ``lite`` / ``sentence_transformers`` → :class:`ImageEmbedder`(sentence-transformers CLIP)
-      两者是别名,都需要 [clip] extra;缺 [clip] 时构造抛
-      ``ImageEmbeddingUnavailable``,被 :func:`_ensure_image_registered` 兜底,
-      索引 / 搜索路径返回空。
-
-    与 :func:`build_default_text_embedder` 对称,镜像 text 侧的双 backend dispatch。
-    """
+    """Build the configured CLIP image embedder."""
     from ..settings import get_settings
 
     s = get_settings()
     if s.image_provider == "cn_clip":
         return CnClipImageEmbedder()
-    # 默认 + sentence_transformers 都走 sentence-transformers CLIP
-    # (行为等价;区分只是为让旧 .env 里写 ``sentence_transformers`` 的用户
-    # 显式看到自己选了 ST 而非 "lite 兜底")。
     return ImageEmbedder()
 
 

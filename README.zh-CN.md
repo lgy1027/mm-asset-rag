@@ -183,7 +183,7 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 | `EMBEDDING_*` | 文本 embedding provider(默认 OpenAI 兼容) | — |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server 模式(不填走本地文件) | — |
 | `CLIP_MODEL` | sentence-transformers CLIP 模型名(配 `[clip]` extra) | `clip-ViT-B-32` |
-| `IMAGE_PROVIDER` | `lite` / `sentence_transformers` / `cn_clip` | `lite` |
+| `IMAGE_PROVIDER` | `clip` / `cn_clip` | `clip` |
 | `OCR_BACKEND` | 图片 OCR:`local`(PP-OCRv6,`[ocr]` extra)或 `http` | `local` |
 | `OCR_HTTP_URL` | 自建 OCR 端点(只 `OCR_BACKEND=http` 时用) | — |
 | `AUTO_META_ENABLED` | 上传 preview 时是否走 VLM title / description / tag | `true` |

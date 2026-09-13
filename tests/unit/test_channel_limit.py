@@ -14,7 +14,7 @@ import pytest
 from qdrant_client import models
 
 from mm_asset_rag.backends.qdrant import search as qdrant_search
-from mm_asset_rag.backends.qdrant_backend import RRF_K
+from mm_asset_rag.retrieval import RRF_K
 from mm_asset_rag.settings import Settings
 
 # Weighted RRF (``Rrf(weights=[...])``) was added in qdrant-client 1.17.

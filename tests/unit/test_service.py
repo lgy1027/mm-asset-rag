@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
@@ -194,26 +193,6 @@ def test_retry_task_unknown_id(tmp_home: Path) -> None:
         service.retry_task("does-not-exist")
 
 
-def test_load_history_tolerates_legacy_jsonl(tmp_home: Path) -> None:
-    tasks_path = tmp_home / "tasks.jsonl"
-    legacy = {
-        "task_id": "legacy01",
-        "kind": "ingest",
-        "status": "done",
-        "total": 1,
-        "uploaded_files": ["images/old.png"],
-    }
-    tasks_path.write_text(__import__("json").dumps(legacy) + "\n", encoding="utf-8")
-
-    service = IngestService()
-    service.load_history()
-    loaded = service.get_task("legacy01")
-    assert loaded is not None
-    assert loaded.source == "upload"
-    assert loaded.origin_task_id is None
-    assert loaded.parse_options == {}
-
-
 def test_parse_options_serialisation_roundtrip() -> None:
     options = ParseOptions(
         assets=[],
@@ -229,7 +208,6 @@ def test_parse_options_serialisation_roundtrip() -> None:
         "document_parser": "docling",
         "enable_ocr": True,
         "enable_vlm": False,
-        "image_provider": "lite",
         "contextual": True,
     }
     restored = IngestService._deserialise_options(snap, assets=[])
@@ -241,12 +219,11 @@ def test_parse_options_serialisation_roundtrip() -> None:
 
 
 def test_parse_options_serialisation_drops_invalid_values() -> None:
-    snap = {"pdf_parser": "bogus", "document_parser": "weird", "image_provider": "weird"}
+    snap = {"pdf_parser": "bogus", "document_parser": "weird"}
     options = IngestService._deserialise_options(snap, assets=[])
     assert options.pdf_parser == "auto"
     # Invalid document_parser falls back to the default, not the bogus value.
     assert options.document_parser == "markitdown"
-    assert options.image_provider == "lite"
 
 
 # ─── document lifecycle ─────────────────────────────────────────────────────
@@ -1229,56 +1206,6 @@ def test_list_tasks_orders_by_updated_at_desc(tmp_home: Path) -> None:
     assert [t.task_id for t in tasks] == ["gamma03", "beta02", "alpha01"]
 
 
-def test_legacy_jsonl_migrates_to_sqlite(tmp_home: Path) -> None:
-    """A pre-existing ``tasks.jsonl`` is imported into SQLite on first
-    load (one-shot) and renamed so the next boot doesn't redo the
-    import.
-    """
-    import sqlite3
-
-    from mm_asset_rag.service import IngestService
-
-    # Pre-populate legacy store with two tasks (last write of "same01"
-    # wins, like the previous ``reversed(load_entries)`` semantics).
-    legacy = tmp_home / "tasks.jsonl"
-    legacy.write_text(
-        json.dumps({"task_id": "same01", "kind": "parse", "status": "running"})
-        + "\n"
-        + json.dumps({"task_id": "same01", "kind": "parse", "status": "done", "current": "ok"})
-        + "\n"
-        + json.dumps({"task_id": "two01", "kind": "ingest", "status": "partial"})
-        + "\n",
-        encoding="utf-8",
-    )
-
-    service = IngestService()
-    service.load_history()
-
-    db_path = tmp_home / "tasks.db"
-    with sqlite3.connect(str(db_path)) as conn:
-        rows = list(conn.execute("SELECT task_id, payload FROM tasks ORDER BY task_id"))
-
-    assert {r[0] for r in rows} == {"same01", "two01"}
-    same01_payload = json.loads(next(r[1] for r in rows if r[0] == "same01"))
-    assert same01_payload["status"] == "done"
-    assert same01_payload["current"] == "ok"
-    # Legacy file renamed so a second boot does not redo the work.
-    assert not legacy.exists()
-    assert (tmp_home / "tasks.jsonl.migrated").exists()
-
-    # The previously-"running" row was marked interrupted + re-persisted
-    # via SQLite, so reopening should be a no-op.
-    service2 = IngestService()
-    service2.load_history()
-    interrupted = service2.get_task("same01")
-    assert interrupted is not None
-    # "same01" status was overridden to "done" by the later row of
-    # the legacy import; the interrupted-flag below therefore
-    # applies to records that are *still* running when the boot
-    # happens, not to records whose last write was already done.
-    assert interrupted.status in {"done", "interrupted"}
-
-
 def test_load_history_round_trip(tmp_home: Path) -> None:
     """Persist a record, instantiate a fresh service, and confirm
     load_history sees it in ``self._tasks``.
@@ -1309,8 +1236,7 @@ def test_persist_surfaces_oserror_on_rec(tmp_home: Path, monkeypatch) -> None:
     subsequent ``/tasks/{id}`` poll sees it instead of a misleading
     success.
 
-    The old service appended to ``tasks.jsonl``; the new one stores in
-    ``tasks.db``. Patch ``sqlite3.connect`` to raise before any real DB
+    Patch ``sqlite3.connect`` to raise before any real DB
     work happens so we exercise the failure path under the current
     write strategy.
     """
@@ -1365,7 +1291,7 @@ def test_parse_assets_empty_list_returns_done_without_thread(tmp_home: Path) -> 
 # ─── M2: search-cache invalidation on reindex / ingest success ────────
 
 
-def test_reindex_invalidates_vocab_and_bm25_idf_caches(tmp_home: Path) -> None:
+def test_reindex_invalidates_vocab_and_bm25_idf_caches(tmp_home: Path, monkeypatch) -> None:
     """``reindex`` force-recreates the Qdrant collections, so the
     in-process vocab + BM25-zh IDF caches (derived from the *previous*
     collection state) must be dropped before the next query. The
@@ -1395,39 +1321,17 @@ def test_reindex_invalidates_vocab_and_bm25_idf_caches(tmp_home: Path) -> None:
 
         return _fn
 
-    # Both invalidators exist and are called.
-    orig_mod = sys.modules.get("mm_asset_rag.query_preprocess")
-    fake_qp = type("M", (), {"invalidate_vocab_cache": staticmethod(fake_invalidate("vocab"))})
-    orig_qdrant = sys.modules.get("mm_asset_rag.backends.qdrant_backend")
-    fake_qb = type(
-        "M",
-        (),
-        {"invalidate_bm25_zh_idf_cache": staticmethod(fake_invalidate("bm25_idf"))},
-    )
-    sys.modules["mm_asset_rag.query_preprocess"] = fake_qp
-    sys.modules["mm_asset_rag.backends.qdrant_backend"] = fake_qb
+    monkeypatch.setattr(svc_mod, "invalidate_vocab_cache", fake_invalidate("vocab"))
+    monkeypatch.setattr(svc_mod, "invalidate_bm25_zh_idf_cache", fake_invalidate("bm25_idf"))
     try:
         service.reindex()
     finally:
         svc_mod.get_backend = orig_get_backend
-        if orig_mod is not None:
-            sys.modules["mm_asset_rag.query_preprocess"] = orig_mod
-        else:
-            sys.modules.pop("mm_asset_rag.query_preprocess", None)
-        if orig_qdrant is not None:
-            sys.modules["mm_asset_rag.backends.qdrant_backend"] = orig_qdrant
-        else:
-            sys.modules.pop("mm_asset_rag.backends.qdrant_backend", None)
 
     assert calls == ["vocab", "bm25_idf"]
 
 
-def test_reindex_survives_missing_invalidator(tmp_home: Path) -> None:
-    """If the BM25-zh invalidator isn't present (older build, or the
-    function hasn't been added yet), ``reindex`` must not crash — the
-    ``suppress(Exception)`` wrapper absorbs the ``ImportError`` /
-    ``AttributeError`` and the reindex still returns.
-    """
+def test_reindex_invalidates_current_caches(tmp_home: Path, monkeypatch) -> None:
     import mm_asset_rag.service as svc_mod
     from mm_asset_rag.service import IngestService
 
@@ -1443,38 +1347,22 @@ def test_reindex_survives_missing_invalidator(tmp_home: Path) -> None:
     orig_get_backend = svc_mod.get_backend
     svc_mod.get_backend = lambda name: FakeBackend()
 
-    # vocab invalidator present, BM25-zh invalidator absent.
-    orig_mod = sys.modules.get("mm_asset_rag.query_preprocess")
-    fake_qp = type("M", (), {"invalidate_vocab_cache": staticmethod(lambda: None)})
-    orig_qdrant = sys.modules.get("mm_asset_rag.backends.qdrant_backend")
-    # No invalidate_bm25_zh_idf_cache attribute on this stub.
-    fake_qb = type("M", (), {})
-    sys.modules["mm_asset_rag.query_preprocess"] = fake_qp
-    sys.modules["mm_asset_rag.backends.qdrant_backend"] = fake_qb
+    monkeypatch.setattr(svc_mod, "invalidate_vocab_cache", lambda: None)
+    monkeypatch.setattr(svc_mod, "invalidate_bm25_zh_idf_cache", lambda: None)
     try:
         results = service.reindex()
         assert any("text" in r for r in results)
     finally:
         svc_mod.get_backend = orig_get_backend
-        if orig_mod is not None:
-            sys.modules["mm_asset_rag.query_preprocess"] = orig_mod
-        else:
-            sys.modules.pop("mm_asset_rag.query_preprocess", None)
-        if orig_qdrant is not None:
-            sys.modules["mm_asset_rag.backends.qdrant_backend"] = orig_qdrant
-        else:
-            sys.modules.pop("mm_asset_rag.backends.qdrant_backend", None)
 
 
-def test_ingest_task_invalidates_caches_on_success(tmp_home: Path) -> None:
+def test_ingest_task_invalidates_caches_on_success(tmp_home: Path, monkeypatch) -> None:
     """A successful ingest (``upsert_text`` + ``upsert_image`` both
     return without raising) must drop the vocab + BM25-zh IDF caches
     after the points are written and before the task is marked
     terminal, so a query issued right after the UI flips to "done"
     rebuilds against the new collection state.
     """
-    import sys
-
     import mm_asset_rag.service as svc_mod
     from mm_asset_rag.service import IngestService, ParseOptions, TaskRecord, _run_ingest_task
 
@@ -1515,26 +1403,12 @@ def test_ingest_task_invalidates_caches_on_success(tmp_home: Path) -> None:
 
         return _fn
 
-    orig_qp = sys.modules.get("mm_asset_rag.query_preprocess")
-    orig_qb = sys.modules.get("mm_asset_rag.backends.qdrant_backend")
-    sys.modules["mm_asset_rag.query_preprocess"] = type(
-        "M", (), {"invalidate_vocab_cache": staticmethod(_record("vocab"))}
-    )
-    sys.modules["mm_asset_rag.backends.qdrant_backend"] = type(
-        "M", (), {"invalidate_bm25_zh_idf_cache": staticmethod(_record("bm25_idf"))}
-    )
+    monkeypatch.setattr(svc_mod, "invalidate_vocab_cache", _record("vocab"))
+    monkeypatch.setattr(svc_mod, "invalidate_bm25_zh_idf_cache", _record("bm25_idf"))
     try:
         _run_ingest_task(service, rec, ParseOptions(assets=[asset]))
     finally:
         svc_mod.get_backend = orig_get_backend
-        if orig_qp is not None:
-            sys.modules["mm_asset_rag.query_preprocess"] = orig_qp
-        else:
-            sys.modules.pop("mm_asset_rag.query_preprocess", None)
-        if orig_qb is not None:
-            sys.modules["mm_asset_rag.backends.qdrant_backend"] = orig_qb
-        else:
-            sys.modules.pop("mm_asset_rag.backends.qdrant_backend", None)
 
     assert calls == ["vocab", "bm25_idf"]
     assert rec.status in {"done", "partial"}
