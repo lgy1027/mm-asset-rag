@@ -201,7 +201,7 @@ def test_hybrid_search_skips_rerank_when_disabled(tmp_home, monkeypatch):
         search_image=lambda *, image_path, top_k: [],
     )
     with patch("mm_asset_rag.embedders.reranker.Reranker.rerank") as mock_rerank:
-        out = hybrid_search("query", top_k=5, backend=backend)
+        out = hybrid_search("doc", top_k=5, backend=backend)
     # merge_hits may add a "routes" key to metadata; compare by identity of
     # the surviving hit rather than full equality.
     assert len(out) == 1
@@ -243,7 +243,7 @@ def test_hybrid_search_reranks_when_enabled(tmp_home, monkeypatch):
     with patch.object(
         HttpRerankApiReranker, "rerank", side_effect=lambda _q, hits, top_k: hits[:top_k]
     ):
-        out = hybrid_search("query", top_k=5, backend=backend)
+        out = hybrid_search("doc", top_k=5, backend=backend)
 
     # Fetched the wider candidate pool, not just top_k=5
     assert captured_fetch_k["value"] == 20

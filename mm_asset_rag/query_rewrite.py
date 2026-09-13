@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 
-from .llm_transport import post_chat_completion
+from .llm_transport import LlmTransportError, post_chat_completion
 from .retrieval import hybrid_search, merge_hits
 from .schema import SearchHit
 from .settings import Settings, get_settings
@@ -168,16 +168,17 @@ def _post_chat_json(
         {"role": "system", "content": _REWRITE_SYSTEM_PROMPT},
         {"role": "user", "content": prompt},
     ]
-    response = post_chat_completion(
-        base_url,
-        api_key,
-        model,
-        messages,
-        timeout=timeout,
-        temperature=0.3,
-        max_tokens=max_tokens,
-        response_format={"type": "json_object"},
-    )
+    kwargs = {
+        "timeout": timeout,
+        "temperature": 0.3,
+        "max_tokens": max_tokens,
+    }
+    try:
+        response = post_chat_completion(
+            base_url, api_key, model, messages, response_format={"type": "json_object"}, **kwargs
+        )
+    except LlmTransportError:
+        response = post_chat_completion(base_url, api_key, model, messages, **kwargs)
     body = response.json()
     content = body["choices"][0]["message"]["content"]
     if not isinstance(content, str):

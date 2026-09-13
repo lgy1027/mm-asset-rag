@@ -118,6 +118,20 @@ def test_merge_hits_preserves_raw_score_for_reranker() -> None:
     assert merged[0].score != 0.35
 
 
+def test_filter_low_evidence_hits_rejects_unrelated_document() -> None:
+    hit = _make_hit("policy", "text", 0.9)
+    hit.evidence = "年度预算和行政审批流程"
+
+    assert retrieval.filter_low_evidence_hits("量子电池材料研究", [hit]) == []
+
+
+def test_filter_low_evidence_hits_keeps_matching_document() -> None:
+    hit = _make_hit("battery", "text", 0.9)
+    hit.evidence = "量子电池材料研究介绍了电极材料与储能性能。"
+
+    assert retrieval.filter_low_evidence_hits("量子电池材料研究", [hit]) == [hit]
+
+
 def test_merge_hits_rrf_top_rank_scores_higher_than_second() -> None:
     """Within a single route the rank-1 hit scores above the rank-2 hit."""
     groups = [[_make_hit(f"id{i}", "text", 1.0 / (i + 1)) for i in range(5)]]
@@ -258,13 +272,13 @@ def test_hybrid_search_forwards_min_score(monkeypatch, fixed_vector) -> None:
 
     # Default 0.0 keeps both a (rank 1) and b (rank 2).
     monkeypatch.setattr(settings, "min_score", 0.0)
-    hits = retrieval.hybrid_search("anything", backend=backend)
+    hits = retrieval.hybrid_search("evidence-for-a", backend=backend)
     assert {h.asset_id for h in hits} == {"a", "b"}
 
     # Floor above a's RRF score drops everything.
     a_score = 0.8 / (RRF_K + 1)
     monkeypatch.setattr(settings, "min_score", a_score + 0.001)
-    hits = retrieval.hybrid_search("anything", backend=backend)
+    hits = retrieval.hybrid_search("evidence", backend=backend)
     assert hits == []
 
 
@@ -282,7 +296,7 @@ def test_hybrid_search_uses_search_backend_port(monkeypatch, fixed_vector) -> No
         search_image=lambda *, image_path, top_k: [],
     )
 
-    hits = retrieval.hybrid_search("anything", backend=backend)
+    hits = retrieval.hybrid_search("evidence-for-a", backend=backend)
     assert {hit.asset_id for hit in hits} == {"a", "b"}
 
 

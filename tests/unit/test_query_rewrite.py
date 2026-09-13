@@ -20,6 +20,7 @@ import pytest
 import requests
 
 from mm_asset_rag import query_rewrite as qr
+from mm_asset_rag.llm_transport import LlmTransportError
 from mm_asset_rag.schema import SearchHit
 from mm_asset_rag.service import dispatch_search
 from mm_asset_rag.settings import Settings, get_settings
@@ -99,6 +100,27 @@ def test_rewrite_disabled_returns_original_only(monkeypatch) -> None:
     settings = Settings(query_rewrite_enabled=False)
     out = qr.rewrite_query("hello", settings=settings)
     assert out == ["hello"]
+
+
+def test_post_chat_json_retries_without_json_mode_after_provider_rejection(monkeypatch) -> None:
+    calls: list[object] = []
+
+    class Response:
+        def json(self):
+            return {"choices": [{"message": {"content": '{"variants": ["改写"]}'}}]}
+
+    def post(*args, **kwargs):
+        calls.append(kwargs.get("response_format"))
+        if len(calls) == 1:
+            raise LlmTransportError("JSON mode unsupported")
+        return Response()
+
+    monkeypatch.setattr(qr, "post_chat_completion", post)
+
+    assert qr._post_chat_json("https://example.test/v1", "key", "model", "query", timeout=1) == {
+        "variants": ["改写"]
+    }
+    assert calls == [{"type": "json_object"}, None]
 
 
 def test_rewrite_no_llm_returns_original_only(monkeypatch) -> None:
