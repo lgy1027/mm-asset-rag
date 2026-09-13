@@ -570,8 +570,8 @@ class Settings(BaseSettings):
     # - ``eval_judge_timeout``: judge is single-shot per case, cheaper to
     #   bound tight than the answer's 120s ``llm_timeout``. 30s is enough
     #   for a focused JSON response.
-    # - ``eval_judge_model``: None → reuse ``openai_model`` (or ``vlm_model``
-    #   fallback). Override with e.g. ``gpt-4o-mini`` to save tokens.
+    # - ``eval_judge_model``: None → reuse ``LLM_MODEL``. Override with e.g.
+    #   ``gpt-4o-mini`` to save tokens.
     # - ``eval_judge_max_cases``: cap the number of cases that hit the
     #   judge per run. CI sets this to keep token spend bounded; prod
     #   leaves it None for full coverage. Cases over the cap get
