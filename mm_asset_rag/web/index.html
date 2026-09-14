@@ -282,10 +282,9 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
         <div class="input-row">
           <textarea id="queryInput" data-i18n-placeholder="questionPlaceholder" placeholder="ask anything…   (shift+enter for newline)"></textarea>
           <div class="modes">
-            <label><input type="radio" name="mode" value="hybrid" checked> <span data-i18n="hybrid">hybrid</span></label>
-            <label><input type="radio" name="mode" value="text"> <span data-i18n="text">text</span></label>
-            <label><input type="radio" name="mode" value="text-to-image"> <span data-i18n="textToImage">text→image</span></label>
-            <label><input type="radio" name="mode" value="image-to-image"> <span data-i18n="imageToImage">image→image</span></label>
+            <label><input type="radio" name="mode" value="auto" checked> 自动</label>
+            <label><input type="radio" name="mode" value="text"> 资料</label>
+            <label><input type="radio" name="mode" value="text-to-image"> 图片</label>
             <button id="askBtn" data-i18n="ask">Ask</button>
           </div>
         </div>

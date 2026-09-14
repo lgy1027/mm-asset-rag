@@ -285,26 +285,6 @@ def test_build_qdrant_text_index_probe_not_reused_when_doc0_has_context(
         assert "CTX-前缀" in t, f"context prefix missing from input: {t!r}"
 
 
-def test_contextual_enabled_defaults_true(tmp_home) -> None:
-    """``Settings.contextual_enabled`` defaults to True so contextual runs
-    without explicit opt-in (the latency/precision trade-off favors precision).
-    Set ``CONTEXTUAL_ENABLED=false`` to opt out."""
-    from mm_asset_rag.settings import get_settings
-
-    assert get_settings().contextual_enabled is True
-
-    # Env var can opt out (backward-compatible escape hatch).
-    import os
-
-    os.environ["CONTEXTUAL_ENABLED"] = "false"
-    get_settings.cache_clear()
-    try:
-        assert get_settings().contextual_enabled is False
-    finally:
-        del os.environ["CONTEXTUAL_ENABLED"]
-    get_settings.cache_clear()
-
-
 def test_enrich_noop_without_credentials_writes_no_cache(tmp_home, monkeypatch) -> None:
     """When the LLM is unconfigured, enrich is a full no-op: no LLM call, no
     exception, and no cache file written (keeps the parse dir clean).

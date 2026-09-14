@@ -86,6 +86,24 @@ def test_execute_uses_backend_for_image_modes_and_requires_image_for_image_to_im
     assert calls == [("text-to-image", "needle", 3)]
 
 
+def test_auto_mode_routes_picture_requests_to_image_search(monkeypatch) -> None:
+    calls: list[str] = []
+    backend = SimpleNamespace(
+        search_text_to_image=lambda **kwargs: calls.append("image") or [],
+    )
+    monkeypatch.setattr(
+        search_service,
+        "hybrid_search_with_rewrite",
+        lambda *args, **kwargs: calls.append("hybrid") or [],
+    )
+    search = SearchService(backend=backend)
+
+    search.execute(SearchCommand(query="找 KO 活动照片", mode=SearchMode.AUTO))
+    search.execute(SearchCommand(query="联宝发展史是什么", mode=SearchMode.AUTO))
+
+    assert calls == ["hybrid", "hybrid"]
+
+
 def test_execute_filters_policy_and_aggregates_chunks_by_document(monkeypatch) -> None:
     hits = [
         SearchHit(

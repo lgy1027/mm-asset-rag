@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from mm_asset_rag.evaluation_v2 import (
     V2Result,
     load_cases,
+    run_auto_image_eval_v2,
     run_eval_v2,
     run_image_to_image_eval_v2,
     run_text_to_image_eval_v2,
@@ -165,6 +166,43 @@ def test_text_and_image_runners_pass_typed_commands(tmp_path: Path) -> None:
     assert text_results[0].hit is True
     assert image_results[0].actual_document_ids == ["doc-image"]
     assert image_results[0].hit is True
+
+
+def test_text_to_image_runner_can_evaluate_the_auto_user_path(tmp_path: Path) -> None:
+    cases_path = _write_cases(tmp_path / "cases.json")
+    commands: list[SearchCommand] = []
+
+    results = run_text_to_image_eval_v2(
+        search_fn=lambda command: commands.append(command) or [_hit("doc-diagram")],
+        cases_path=cases_path,
+        collection="team",
+        principal="alice",
+        mode=SearchMode.AUTO,
+    )
+
+    assert [command.mode for command in commands] == [SearchMode.AUTO]
+    assert results[0].hit is True
+
+
+def test_auto_image_runner_evaluates_positive_and_negative_qrels(tmp_path: Path) -> None:
+    cases_path = _write_cases(tmp_path / "cases.json")
+    commands: list[SearchCommand] = []
+
+    def search(command: SearchCommand) -> list[SearchHit]:
+        commands.append(command)
+        return [_hit("doc-diagram")] if command.query == "diagram" else []
+
+    results = run_auto_image_eval_v2(
+        search_fn=search,
+        cases_path=cases_path,
+        collection="team",
+        principal="alice",
+    )
+
+    assert [result.group for result in results] == ["text_to_image", "negative"]
+    assert [command.mode for command in commands] == [SearchMode.AUTO, SearchMode.AUTO]
+    assert [result.hit for result in results] == [True, False]
+    assert results[1].actual_document_ids == []
 
 
 def test_missing_image_case_keeps_its_qrels(tmp_path: Path) -> None:

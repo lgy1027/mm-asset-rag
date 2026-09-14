@@ -1,10 +1,10 @@
 # mm-asset-rag
 
-> Multimodal retrieval engine — index mixed assets (PDFs / Office docs / images), then search across four routes: text→text, text→image, image→image, and weighted hybrid, fused with RRF. An optional grounded LLM answer layer rides on top of the retrieved evidence.
+> Multimodal knowledge base — index documents and images, then automatically choose document, image, or image-to-image retrieval. Grounded answers include their evidence and associated in-document figures.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-723%20passed-orange)](.github/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-pytest-orange)](.github/workflows/test.yml)
 [![Coverage](https://img.shields.io/badge/coverage-80%25-yellow)](tests/)
 
 [English](README.md) | [中文](README.zh-CN.md)
@@ -34,20 +34,20 @@
                   │  multimodal_text_<dim>d    multimodal_image_<dim>d│
                   │   dense · bm25 · bm25_zh      CLIP / CN-CLIP     │
                   └───────────────┬─────────────────────────────────┘
-                                  │ query (text / image / hybrid)
+                                  │ query (Auto / Documents / Images)
                                   ▼
                   ┌─────────────────────────────────────────────────┐
                   │  RRF 融合 → optional rerank → /answer or /chat  │
                   └─────────────────────────────────────────────────┘
 ```
 
-Four retrieval routes, all driven by the same `mmrag search "..."` dispatcher:
+The application exposes three user-facing choices, while the dispatcher selects the appropriate internal retrieval route:
 
 ```
-  query ─┬─ text                 ──▶ qdrant_text_search          (dense + bm25 + bm25_zh)
-         ├─ text  + image_path   ──▶ + qdrant_text_to_image_search  (CLIP text → image)
-         ├─ image                ──▶ qdrant_image_to_image_search   (CLIP image → image)
-         └─ hybrid (default)     ──▶ weighted merge of above three, fused with RRF
+  query ─┬─ Documents            ──▶ document evidence retrieval
+         ├─ Images               ──▶ image-aware retrieval
+         ├─ uploaded query image ──▶ image-to-image retrieval
+         └─ Auto (default)       ──▶ chooses and fuses the relevant evidence
 ```
 
 > Looking for a hands-on walkthrough with screenshots of the web UI? See [docs/quickstart.md](docs/quickstart.md).
@@ -56,7 +56,7 @@ Four retrieval routes, all driven by the same `mmrag search "..."` dispatcher:
 
 A small, self-contained Python package for **multimodal retrieval** over user-uploaded assets — PDFs, Office documents (docx/pptx/xlsx), and images. The retrieval engine is the core; generation is an optional layer on top. It supports:
 
-- **Four retrieval routes**: text→text (dense + BM25 sparse fused with RRF), text→image (CLIP), image→image (CLIP), and a weighted hybrid that merges all routes by rank. One dispatch picks the route from the query shape.
+- **Intent-aware retrieval**: users choose Auto, Documents, or Images; Auto combines text evidence and image metadata when appropriate, while image upload enables image-to-image search.
 - **Cross-modal retrieval**: embedded figures in PDFs and Office docs are extracted and (optionally) given VLM captions so a text query can hit a figure-only slide; a `find images similar to this one` query hits the CLIP image collection. The same asset store feeds both.
 - **Upload-first ingestion**: no `asset_manifest.json`. `/upload/preview` sniffs file magic bytes, extracts dimensions / PDF metadata, optionally asks a VLM for title / description / tags, then `/upload/confirm` parses and indexes.
 - **Parsing**: PyMuPDF (local, default) or PaddleOCR-VL (API, better for scanned PDFs) or docling (local, layout-aware) for PDFs; MarkItDown (default) or docling for Office docs (docx/pptx/xlsx/html); OCR + VLM captioning for images.
@@ -68,9 +68,9 @@ VLM-based auto-tagging is also optional; upload still works with sniff-only meta
 
 ## Why this project?
 
-If you have a folder of mixed assets — papers, slide decks, photos, diagrams — and want to ask *"find images similar to this one"*, *"which document covers retrieval-augmented generation?"*, or *"show me the slide whose only content is a roadmap diagram"*, this is a working starting point. The focus is **retrieval**: four routes, cross-modal, fused by rank, with every layer replaceable.
+If you have a folder of mixed assets — papers, slide decks, photos, diagrams — and want to ask *"find images similar to this one"*, *"which document covers retrieval-augmented generation?"*, or *"show me the slide whose only content is a roadmap diagram"*, this project provides an intent-aware retrieval workflow with independently testable layers.
 
-It is not a research-grade system; it is a **modular multimodal retrieval engine** that exposes the moving parts so you can swap any layer (parser, embedder, backend, reranker, LLM) without rewriting the rest.
+It is a **modular multimodal knowledge base** whose retrieval and answer layers are independently testable.
 
 Compared to larger frameworks:
 

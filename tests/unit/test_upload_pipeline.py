@@ -254,6 +254,21 @@ def test_confirm_moves_files_into_assets(
     assert not (home / ".preview-cache" / cache_id).exists()
 
 
+def test_confirm_preserves_parent_directory_as_searchable_tag(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    """Recursive CLI uploads keep their folder label after files are flattened."""
+    monkeypatch.setattr(auto_meta, "auto_meta_image", lambda path: None)
+    [preview] = pipeline.preview([("2026年KO活动/海报.png", png_file)])
+
+    [asset] = pipeline.confirm(preview.cache_id, [_confirmed_edit(preview.preview_id)])
+
+    assert asset.tags == ["2026年KO活动"]
+
+
 def test_confirm_moves_document_into_assets_documents(
     pipeline: UploadPipeline,
     home: Path,

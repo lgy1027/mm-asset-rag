@@ -210,11 +210,10 @@ When `ANSWER_WITH_IMAGES` is on, `/answer` and `/chat/stream` inject each hit's 
 
 ## Contextual Retrieval
 
-Anthropic-style chunk context: each chunk gets a short LLM-generated preamble situating it within its document, prepended to the embedding/BM25 input so dense + sparse channels can disambiguate generic terms. **Enabled by default** — it costs ~1 LLM call per chunk, generated at parse time and cached under the version's internal `parsed/<cache_key>/context.jsonl` path so `mmrag reindex` reuses it without re-calling the LLM. Disable with `CONTEXTUAL_ENABLED=false` (or `mmrag parse --no-contextual` on the CLI) when no LLM is configured or to skip the per-chunk calls.
+Anthropic-style chunk context adds a short LLM-generated preamble to every chunk before embedding. It is opt-in: pass `mmrag parse --contextual`. Generated context is cached under `parsed/<cache_key>/context.jsonl`, so `mmrag reindex` does not call the LLM again.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
-| `CONTEXTUAL_ENABLED` | `true` | Master switch (default on; set `false` to opt out) |
 | `CONTEXTUAL_MODEL` | unset (→ `LLM_MODEL`) | LLM model override |
 | `CONTEXTUAL_CONCURRENCY` | `4` | Parallel chunk-context calls |
 | `CONTEXTUAL_CHUNK_MAX_CHARS` | `8000` | Cap chunk text fed to the LLM |

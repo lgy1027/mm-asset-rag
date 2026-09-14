@@ -690,16 +690,6 @@ def test_force_retry_clears_parsed_cache(tmp_home: Path, monkeypatch) -> None:
     (parsed_dir / "page_0.md").write_text("# cached", encoding="utf-8")
     assert parsed_dir.exists()
 
-    # This test isolates the force-cache-clear behaviour. Contextual
-    # Retrieval defaults on (``Settings.contextual_enabled=True``) and its
-    # step recreates ``parsed/<id>/`` to write ``context.jsonl`` right
-    # after the force rmtree — so with it on, the dir would reappear and
-    # mask whether the clear happened. Disable it here; the force clear
-    # is what's under test, not contextual.
-    from mm_asset_rag.settings import get_settings
-
-    monkeypatch.setattr(get_settings(), "contextual_enabled", False)
-
     rec = TaskRecord(
         task_id="force01",
         kind="parse",

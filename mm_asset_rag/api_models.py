@@ -40,7 +40,7 @@ def _validate_cases_path(value: str | None) -> str | None:
 class _RouteRequest(BaseModel):
     """Shared fields for ``SearchRequest`` and ``ChatRequest``."""
 
-    mode: str = Field(default="hybrid", pattern="^(text|text-to-image|image-to-image|hybrid)$")
+    mode: str = Field(default="auto", pattern="^(auto|text|text-to-image|image-to-image|hybrid)$")
     image_path: str | None = Field(default=None, max_length=1024)
     top_k: int = Field(default=5, ge=1, le=200)
     collection: str = Field(..., min_length=1, max_length=200)

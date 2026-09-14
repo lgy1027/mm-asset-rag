@@ -232,17 +232,13 @@ def qdrant_text_search(
     query: str,
     top_k: int = 5,
     *,
-    include_image_sources: bool = False,
+    include_image_sources: bool = True,
     search_filter: SearchFilter | None = None,
 ) -> list[SearchHit]:
     """Hybrid text→text search.
 
-    By default, image-source documents are excluded from the result set
-    because they usually carry only a placeholder text chunk
-    ("图片标题: Picsum 1015") that pollutes text→text recall. Pass
-    ``include_image_sources=True`` to include them (e.g. for image-text
-    hybrid answers). The filter is applied as a Qdrant post-fusion
-    filter so it does not affect RRF rank computation.
+    Image-source chunks participate by default so their labels, OCR and
+    captions can be recalled by knowledge-base queries.
 
     When the query preprocessor is enabled (see
     ``Settings.query_fuzzy`` / ``query_lowercase`` / ``query_expansion``),

@@ -279,7 +279,7 @@ class IngestWorkflow:
                         asset_id=cache_key,
                         cache_path=caption_cache,
                     )
-                if (options.contextual or service._settings.contextual_enabled) and documents:
+                if options.contextual and documents:
                     from .contextual import enrich_docs_with_context
 
                     context_cache = get_parsed_dir() / cache_key / "context.jsonl"

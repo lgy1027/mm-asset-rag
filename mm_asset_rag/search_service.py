@@ -20,6 +20,7 @@ class SearchMode(str, Enum):
     TEXT_TO_IMAGE = "text-to-image"
     IMAGE_TO_IMAGE = "image-to-image"
     HYBRID = "hybrid"
+    AUTO = "auto"
 
 
 @dataclass(frozen=True)
@@ -129,7 +130,7 @@ def coerce_search_mode(mode: str | SearchMode) -> SearchMode:
     except ValueError as exc:
         raise SearchInputError(
             f"unknown mode {mode!r}; expected one of "
-            "'text', 'text-to-image', 'image-to-image', 'hybrid'"
+            "'auto', 'text', 'text-to-image', 'image-to-image', 'hybrid'"
         ) from exc
 
 
@@ -165,6 +166,13 @@ class SearchService:
 
     def execute(self, command: SearchCommand) -> list[SearchHit]:
         mode = coerce_search_mode(command.mode)
+        if mode is SearchMode.AUTO:
+            if command.image_path:
+                mode = SearchMode.IMAGE_TO_IMAGE
+            elif any(token in command.query.lower() for token in ("图片", "照片", "海报", "图像", "image", "photo")):
+                mode = SearchMode.HYBRID
+            else:
+                mode = SearchMode.HYBRID
         image_path = (
             resolve_sandboxed_image_path(command.image_path)
             if mode in {SearchMode.IMAGE_TO_IMAGE, SearchMode.HYBRID}

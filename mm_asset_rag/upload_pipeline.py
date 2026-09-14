@@ -219,6 +219,16 @@ def _parse_tags(raw: str | list[str] | None) -> list[str]:
     return out
 
 
+def _source_tags(display_name: str) -> list[str]:
+    """Extract stable semantic labels from a relative upload path."""
+    parts = display_name.replace("\\", "/").split("/")[:-1]
+    return _parse_tags([part for part in parts if part and part not in {".", ".."}])
+
+
+def _merge_tags(*tag_sets: list[str]) -> list[str]:
+    return _parse_tags([tag for tags in tag_sets for tag in tags])
+
+
 def _validate_cache_id(cache_id: str) -> None:
     if not _CACHE_ID_RE.fullmatch(cache_id):
         raise UploadManifestError(f"invalid preview cache id: {cache_id!r}")
@@ -367,6 +377,7 @@ class UploadPipeline:
                 sniff=sniffed,
                 source_path=cached_path,
                 effective_title=sniffed.title,
+                effective_tags=_source_tags(display_name),
                 rejected_reason=rejected_reason,
                 sha256=sha256,
                 existing_document_id=existing.document.document_id if existing else None,
@@ -378,6 +389,7 @@ class UploadPipeline:
                 "source_type": sniffed.source_type,
                 "sha256": sha256,
                 "existing_document_id": preview.existing_document_id,
+                "source_tags": preview.effective_tags,
             }
 
         # Persist the manifest so confirm() can look files back up.
@@ -396,7 +408,9 @@ class UploadPipeline:
                 if preview.auto_meta.title:
                     preview.effective_title = preview.auto_meta.title
                 if preview.auto_meta.tags:
-                    preview.effective_tags = list(preview.auto_meta.tags)
+                    preview.effective_tags = _merge_tags(
+                        preview.effective_tags, list(preview.auto_meta.tags)
+                    )
                 if preview.auto_meta.description:
                     preview.effective_description = preview.auto_meta.description
 
@@ -671,6 +685,7 @@ class UploadPipeline:
 
             effective_title = str(raw_entry.get("effective_title") or sniffed.title)
             effective_tags = _manifest_tags(raw_entry.get("effective_tags"))
+            source_tags = _manifest_tags(raw_entry.get("source_tags"))
             display_title = (
                 edit.title if edit and edit.title else effective_title
             ) or sniffed.title
@@ -735,6 +750,7 @@ class UploadPipeline:
                 asset_id_override=asset_id,
                 title_override=display_title,
             )
+            asset = replace(asset, tags=_merge_tags(asset.tags, source_tags))
             prepared.append(
                 _PreparedAsset(
                     source_path=source_path,

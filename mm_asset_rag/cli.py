@@ -22,6 +22,17 @@ from .service import ParseOptions, get_service
 from .upload_pipeline import UserEdits, get_pipeline
 
 
+def _collect_upload_files(inputs: list[Path]) -> list[tuple[str, Path]]:
+    """Expand input directories while preserving their relative labels."""
+    files: list[tuple[Path, Path]] = []
+    for input_path in inputs:
+        if input_path.is_dir():
+            files.extend((input_path, path) for path in sorted(input_path.rglob("*")) if path.is_file())
+        else:
+            files.append((input_path.parent, input_path))
+    return [(str(path.relative_to(root)), path) for root, path in files]
+
+
 def _wait_for_task(task_id: str, poll_interval: float = 1.0) -> None:
     """Block until ``task_id`` finishes; print progress to stdout."""
     service = get_service()
@@ -47,8 +58,8 @@ def command_parse(args: argparse.Namespace) -> None:
     it previews each file, accepts every supported preview as-is, then
     schedules parse + index through ``IngestService``.
     """
-    file_paths = [Path(p).expanduser() for p in args.files]
-    missing = [str(p) for p in file_paths if not p.exists()]
+    input_paths = [Path(p).expanduser() for p in args.files]
+    missing = [str(p) for p in input_paths if not p.exists()]
     if missing:
         raise SystemExit(f"missing file(s): {', '.join(missing)}")
 
@@ -57,7 +68,8 @@ def command_parse(args: argparse.Namespace) -> None:
         from .upload_pipeline import disable_auto_meta
 
         disable_auto_meta()
-    previews = pipeline.preview([(p.name, p) for p in file_paths])
+    upload_files = _collect_upload_files(input_paths)
+    previews = pipeline.preview(upload_files)
     if not previews:
         raise SystemExit("no files to parse")
     cache_id = previews[0].cache_id

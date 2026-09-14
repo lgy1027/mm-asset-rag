@@ -444,7 +444,7 @@ def test_filter_by_relevance_keeps_empty_input() -> None:
 # returned by search. This pins the must_not(image) form.
 
 
-def test_qdrant_text_search_filter_excludes_image_keeps_pdf_and_document(monkeypatch) -> None:
+def test_qdrant_text_search_includes_image_chunks(monkeypatch) -> None:
     """The default text-search filter is ``must_not source_type == image``.
 
     We capture the ``filter`` argument passed to ``_hybrid_text_query`` and
@@ -472,12 +472,8 @@ def test_qdrant_text_search_filter_excludes_image_keeps_pdf_and_document(monkeyp
     qdrant_search.text_search("query", top_k=5)
 
     flt = captured["filter"]
-    assert flt is not None, "default search must apply a source_type filter"
-    # The filter excludes image — must_not, not must(pdf).
-    assert flt.must_not, "filter should be must_not(image), not must(pdf)"
-    cond = flt.must_not[0]
-    assert cond.key == "source_type"
-    assert cond.match.value == "image"
+    assert flt is not None
+    assert flt.must_not is None
 
 
 def test_qdrant_text_search_no_filter_when_include_image_sources(monkeypatch) -> None:

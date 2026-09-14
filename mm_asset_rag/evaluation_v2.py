@@ -277,6 +277,7 @@ def run_text_to_image_eval_v2(
     *,
     collection: str,
     principal: str,
+    mode: SearchMode = SearchMode.TEXT_TO_IMAGE,
     metadata_filter: dict[str, object] | None = None,
     search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
     cases_path: str | Path | None = None,
@@ -288,7 +289,7 @@ def run_text_to_image_eval_v2(
         hits = search(
             SearchCommand(
                 query=query,
-                mode=SearchMode.TEXT_TO_IMAGE,
+                mode=mode,
                 top_k=top_k,
                 collection=collection,
                 metadata_filter=metadata_filter,
@@ -296,6 +297,36 @@ def run_text_to_image_eval_v2(
             )
         )
         results.append(_make_result(case=case, hits=hits, group="text_to_image", query=query))
+    return results
+
+
+def run_auto_image_eval_v2(
+    top_k: int = 5,
+    *,
+    collection: str,
+    principal: str,
+    metadata_filter: dict[str, object] | None = None,
+    search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
+    cases_path: str | Path | None = None,
+) -> list[V2Result]:
+    """Evaluate the same automatic route used by the image-oriented UI."""
+    search = search_fn or get_search_service().execute
+    groups = load_cases(cases_path, version="v2")
+    results: list[V2Result] = []
+    for group in ("text_to_image", "negative"):
+        for case in groups.get(group, ()):
+            query = str(case["query"])
+            hits = search(
+                SearchCommand(
+                    query=query,
+                    mode=SearchMode.AUTO,
+                    top_k=top_k,
+                    collection=collection,
+                    metadata_filter=metadata_filter,
+                    principal=principal,
+                )
+            )
+            results.append(_make_result(case=case, hits=hits, group=group, query=query))
     return results
 
 

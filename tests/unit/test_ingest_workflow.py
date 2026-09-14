@@ -40,11 +40,9 @@ def test_parse_rejects_asset_without_persisted_document_version(tmp_home: Path) 
 
 
 def test_parse_converts_transient_parser_output_to_v2_chunk(tmp_home: Path, monkeypatch) -> None:
+    from mm_asset_rag import contextual
     from mm_asset_rag.parsers import image_parser
-    from mm_asset_rag.settings import get_settings
 
-    settings = get_settings()
-    settings.contextual_enabled = False
     image_path = tmp_home / "assets" / "images" / "scene.png"
     image_path.parent.mkdir(parents=True, exist_ok=True)
     image_path.write_bytes(b"png bytes")
@@ -76,7 +74,13 @@ def test_parse_converts_transient_parser_output_to_v2_chunk(tmp_home: Path, monk
     )
 
     monkeypatch.setattr(image_parser, "run_ocr", lambda path: [{"text": "scene body"}])
-    service = IngestService(settings=settings)
+    contextual_calls: list[str] = []
+    monkeypatch.setattr(
+        contextual,
+        "enrich_docs_with_context",
+        lambda *args, **kwargs: contextual_calls.append("called"),
+    )
+    service = IngestService()
     record = TaskRecord(task_id="parse-v2", kind="parse", status="running", total=1)
     IngestWorkflow().parse(service, record, ParseOptions(assets=[asset], enable_ocr=True))
 
@@ -91,3 +95,4 @@ def test_parse_converts_transient_parser_output_to_v2_chunk(tmp_home: Path, monk
     assert "asset_id" not in raw
     assert raw["chunk_id"] == f"{version_id}:0"
     assert record.version_statuses == {version_id: "ok"}
+    assert contextual_calls == []

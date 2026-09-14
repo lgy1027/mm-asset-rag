@@ -1,10 +1,10 @@
 # mm-asset-rag(中文)
 
-> 多模态检索引擎 — 把混合素材(PDF / Office 文档 / 图片)统一索引,然后跨四种路由检索:text→text、text→image、image→image、weighted hybrid,全部用 RRF 融合;检索之上可选叠加基于证据的 LLM 回答层。
+> 多模态知识库 — 统一索引文档与图片，自动选择资料检索、图片检索或以图搜图；回答附带证据与文档内关联图片。
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-723%20passed-orange)](.github/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-pytest-orange)](.github/workflows/test.yml)
 [![Coverage](https://img.shields.io/badge/coverage-80%25-yellow)](tests/)
 
 [English README](README.md) | 中文(本文档)
@@ -34,27 +34,27 @@
                   │  multimodal_text_<dim>d    multimodal_image_<dim>d│
                   │   dense · bm25 · bm25_zh      CLIP / CN-CLIP     │
                   └───────────────┬─────────────────────────────────┘
-                                  │ query (text / image / hybrid)
+                                  │ 查询（自动 / 资料 / 图片）
                                   ▼
                   ┌─────────────────────────────────────────────────┐
                   │  RRF 融合 → 可选 rerank → /answer 或 /chat      │
                   └─────────────────────────────────────────────────┘
 ```
 
-四种检索路由,统一由 `mmrag search "..."` 入口按 query 形状自动分派:
+前端只提供三种面向用户的选择，系统再自动选择相应的内部检索路径：
 
 ```
-  query ─┬─ text                 ──▶ qdrant_text_search          (dense + bm25 + bm25_zh)
-         ├─ text  + image_path   ──▶ + qdrant_text_to_image_search  (CLIP text → image)
-         ├─ image                ──▶ qdrant_image_to_image_search   (CLIP image → image)
-         └─ hybrid (默认)        ──▶ 三路按权重合并,RRF 融合
+  查询 ──┬─ 资料                 ──▶ 文档证据检索
+         ├─ 图片                 ──▶ 图像感知检索
+         ├─ 上传查询图片          ──▶ 以图搜图
+         └─ 自动（默认）          ──▶ 选择并融合相关证据
 ```
 
 ## 这是什么?
 
 一个小而自洽的 Python 包,做**多模态检索**:PDF、Office 文档(docx/pptx/xlsx)、图片。检索是核心,生成是可选层。支持:
 
-- **四种检索路由** — text→text(dense + BM25 稀疏向量 RRF 融合)、text→image(CLIP)、image→image(CLIP),以及按权重混合三路的 hybrid。一次 dispatch 按 query 形状自动分派路由。
+- **意图检索** — 用户只需选择“自动 / 资料 / 图片”；自动模式会按问题同时利用文字证据与图片元数据，上传图片时自动以图搜图。
 - **跨模态检索** — PDF / Office 文档里嵌的图会被抽出来,可选让 VLM 打 caption,这样纯文本 query 也能命中"只有图的 slide";`find images similar to this one` 这种 query 走 CLIP image collection。同一份素材库同时喂两条线。
 - **Upload-first 摄入** — 不再需要 `asset_manifest.json`。`/upload/preview` 嗅探文件魔数,提取维度 / PDF 元数据,可调用 VLM 取 title / description / tags,`/upload/confirm` 才真正解析 + 索引。
 - **解析** — PDF:PyMuPDF(本地,默认)或 PaddleOCR-VL(API,扫描件更准)或 docling(本地,版面感知);Office 文档:MarkItDown(默认)或 docling;图片:OCR + VLM caption。
@@ -66,14 +66,14 @@ VLM 自动打 tag 也是可选的;不上 VLM 时只用 sniff 出的元数据,上
 
 ## 为什么要做这个?
 
-如果你手里有一堆混合素材 — 论文、slide deck、照片、示意图 — 想问"找出像这张的照片","哪个文档讲 RAG","给我那个只有路线图的 slide",这个项目是个能用的起点。重心在**检索**:四种路由 + 跨模态 + rank 融合,每一层都可替换。
+如果你手里有一堆混合素材 — 论文、slide deck、照片、示意图 — 想问"找出像这张的照片","哪个文档讲 RAG","给我那个只有路线图的 slide",这个项目提供面向意图的检索工作流，各层都能独立验证。
 
-不是研究级系统;是个**模块化的多模态检索引擎**,把可动的地方都暴露出来 — 你想换 parser / embedder / backend / reranker / LLM,不用改其他地方。
+这是一个**模块化的多模态知识库**，检索和问答层都可独立验证。
 
 对比几个更重的框架:
 
 - **vs LlamaIndex / Verba**:自带 Web UI;**多模态检索优先**(不是文本 RAG 优先);每个模块都 ≤ 2k 行,从头读到尾容易。
-- **vs Haystack / txtai**:表面积更小;四种路由从第一天就内置;端到端可读。
+- **vs Haystack / txtai**:表面积更小；提供面向文档与图片的检索；端到端可读。
 
 ## 安装
 

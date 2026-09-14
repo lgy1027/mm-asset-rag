@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from mm_asset_rag.cli import build_parser
+from mm_asset_rag.cli import _collect_upload_files, build_parser
 from mm_asset_rag.schema import SearchHit
 
 
@@ -31,6 +31,15 @@ def test_cli_parse_subcommand_defaults() -> None:
     assert args.vlm is False
     assert args.collection == "team"
     assert args.principals == ["alice"]
+
+
+def test_collect_upload_files_keeps_relative_directory_labels(tmp_path: Path) -> None:
+    root = tmp_path / "images"
+    poster = root / "2026年KO活动" / "poster.png"
+    poster.parent.mkdir(parents=True)
+    poster.write_bytes(b"png")
+
+    assert _collect_upload_files([root]) == [("2026年KO活动/poster.png", poster)]
 
 
 def test_cli_parse_subcommand_accepts_document_parser_choice() -> None:
