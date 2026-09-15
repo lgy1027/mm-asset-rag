@@ -17,7 +17,7 @@ Returns service liveness plus file and index state.
 ```json
 {
   "status": "ok",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "files": 12,
   "documents_jsonl_exists": true,
   "text_index_exists": true,
