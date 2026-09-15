@@ -40,5 +40,5 @@ single-machine loopback use only.
 > `/upload/*`, `/answer`, and `/chat/*` fetches return 401. The web UI is
 > intended for the zero-config loopback default; on a token-guarded
 > deployment use the HTTP API directly (or front the UI behind a proxy that
-> injects the token). Read endpoints (`/search`, `/assets`, `/tasks`,
+> injects the token). Read endpoints (`/search`, `/documents`, `/tasks`,
 > `/health`) stay open regardless.

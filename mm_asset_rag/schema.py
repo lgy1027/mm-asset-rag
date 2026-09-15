@@ -1,13 +1,12 @@
 from dataclasses import dataclass, field
 
-from .knowledge_models import AccessPolicy, Asset, Chunk, Document, DocumentVersion, Source
+from .knowledge_models import AccessPolicy, Asset, Chunk, Document, Source
 
 __all__ = [
     "AccessPolicy",
     "Asset",
     "Chunk",
     "Document",
-    "DocumentVersion",
     "ParsedChunk",
     "SearchHit",
     "Source",

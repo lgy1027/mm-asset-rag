@@ -61,8 +61,8 @@ class IngestWorkflow:
         )
 
         indexed_targets = {
-            version_id: status
-            for version_id, status in record.version_statuses.items()
+            document_id: status
+            for document_id, status in record.document_statuses.items()
             if status in {"ok", "skipped"}
         }
 
@@ -82,9 +82,9 @@ class IngestWorkflow:
             service._patch(record, current=f"text indexed · {text_name}")
             image_n, _image_name = backend.upsert_image(progress_cb=_progress)
             service._invalidate_search_caches()
-            new_statuses = dict(record.version_statuses)
-            for version_id in indexed_targets:
-                new_statuses[version_id] = "indexed"
+            new_statuses = dict(record.document_statuses)
+            for document_id in indexed_targets:
+                new_statuses[document_id] = "indexed"
             if (
                 service._is_cancelled(record.task_id)
                 or record.status == service_module.TaskStatus.CANCELLED
@@ -94,7 +94,7 @@ class IngestWorkflow:
                     status=service_module.TaskStatus.CANCELLED,
                     finished_at=time.time(),
                     current=f"cancelled after index · text={text_n} image={image_n}",
-                    version_statuses=new_statuses,
+                    document_statuses=new_statuses,
                 )
                 return
             service._patch(
@@ -102,7 +102,7 @@ class IngestWorkflow:
                 current=f"index built · text={text_n} image={image_n}",
                 status=parse_status,
                 finished_at=time.time(),
-                version_statuses=new_statuses,
+                document_statuses=new_statuses,
             )
         except _TaskCancelled:
             service._patch(
@@ -113,16 +113,16 @@ class IngestWorkflow:
             )
             print(f"[task {record.task_id}] index cancelled by request")
         except BaseException as exc:
-            new_statuses = dict(record.version_statuses)
-            for version_id in indexed_targets:
-                new_statuses[version_id] = "failed_index"
+            new_statuses = dict(record.document_statuses)
+            for document_id in indexed_targets:
+                new_statuses[document_id] = "failed_index"
             service._patch(
                 record,
                 current=f"index crashed: {type(exc).__name__}: {exc}",
                 error=f"{type(exc).__name__}: {exc}",
                 status="failed",
                 finished_at=time.time(),
-                version_statuses=new_statuses,
+                document_statuses=new_statuses,
             )
             print(f"[task {record.task_id}] index crashed: {exc!r}")
 
@@ -173,7 +173,7 @@ class IngestWorkflow:
 
         if record.force:
             cleared: list[str] = []
-            versions_by_document: dict[str, set[str]] = {}
+            document_ids: set[str] = set()
             for asset in assets:
                 version_record = find_by_relative_path(asset.relative_path)
                 if version_record is None:
@@ -182,24 +182,18 @@ class IngestWorkflow:
                 parsed_dir = get_parsed_dir() / cache_key
                 if parsed_dir.exists():
                     shutil.rmtree(parsed_dir, ignore_errors=True)
-                    cleared.append(version_record.version.version_id)
-                versions_by_document.setdefault(version_record.document.document_id, set()).add(
-                    version_record.version.version_id
-                )
-            if versions_by_document:
+                    cleared.append(version_record.document.document_id)
+                document_ids.add(version_record.document.document_id)
+            if document_ids:
                 removed = sum(
-                    service_module._remove_document_version_rows_from_documents_jsonl(
-                        document_id,
-                        version_ids,
-                    )
-                    for document_id, version_ids in versions_by_document.items()
+                    service_module._remove_document_rows_from_documents_jsonl(document_id)
+                    for document_id in document_ids
                 )
                 scope = "failed" if record.failed_only else "all"
                 service._patch(
                     record,
                     current=(
-                        f"force: refreshed {sum(map(len, versions_by_document.values()))} "
-                        f"{scope} document version(s), cleared {len(cleared)} cache dir(s) "
+                        f"force: refreshed {len(document_ids)} {scope} document(s), cleared {len(cleared)} cache dir(s) "
                         f"and removed {removed} chunk row(s) before parse"
                     ),
                 )
@@ -212,30 +206,33 @@ class IngestWorkflow:
         target = get_documents_jsonl()
         target.parent.mkdir(parents=True, exist_ok=True)
         local_statuses: dict[str, str] = {}
+        refreshed_documents: set[str] = set()
         for index, asset in enumerate(assets, start=1):
             version_record = find_by_relative_path(asset.relative_path)
             if version_record is None:
-                raise ValueError(
-                    f"no persisted document version for asset path {asset.relative_path!r}"
-                )
-            status_key = version_record.version.version_id
+                raise ValueError(f"no persisted document for asset path {asset.relative_path!r}")
+            status_key = version_record.document.document_id
             cache_key = physical_cache_id(version_record.asset.relative_path)
             if service._is_cancelled(record.task_id):
                 service._patch(
                     record,
                     processed=index - 1,
-                    current=f"cancelled before version {status_key}",
+                    current=f"cancelled before document {status_key}",
                 )
                 return
             try:
                 raw_path = get_parsed_dir() / cache_key / "raw.jsonl"
+                if not raw_path.exists() and status_key not in refreshed_documents:
+                    service_module._remove_document_rows_from_documents_jsonl(status_key)
+                    service._delete_qdrant_documents({status_key})
+                    refreshed_documents.add(status_key)
                 if raw_path.exists() and raw_path.stat().st_size > 0:
                     skipped += 1
                     local_statuses[status_key] = "skipped"
                     service._patch(
                         record,
                         processed=index,
-                        current=f"skip cached version: {status_key}",
+                        current=f"skip cached document: {status_key}",
                     )
                     continue
                 try:
@@ -257,7 +254,7 @@ class IngestWorkflow:
                 except Exception as exc:
                     failed += 1
                     local_statuses[status_key] = "failed"
-                    print(f"parse task failed for version {status_key}: {exc}")
+                    print(f"parse task failed for document {status_key}: {exc}")
                     service._patch(
                         record,
                         processed=index,
@@ -310,7 +307,7 @@ class IngestWorkflow:
                     current=f"error {status_key}: {exc}",
                 )
 
-        merged_statuses = {**record.version_statuses, **local_statuses}
+        merged_statuses = {**record.document_statuses, **local_statuses}
         if (
             service._is_cancelled(record.task_id)
             or record.status == service_module.TaskStatus.CANCELLED
@@ -320,7 +317,7 @@ class IngestWorkflow:
                 status=service_module.TaskStatus.CANCELLED,
                 finished_at=time.time(),
                 current=f"cancelled: parsed={parsed} skipped={skipped} failed={failed}",
-                version_statuses=merged_statuses,
+                document_statuses=merged_statuses,
             )
             return
         status = (
@@ -333,7 +330,7 @@ class IngestWorkflow:
             status=status,
             finished_at=time.time(),
             current=f"parse {status}: parsed={parsed} skipped={skipped} failed={failed}",
-            version_statuses=merged_statuses,
+            document_statuses=merged_statuses,
         )
 
     def _to_chunks(self, asset, documents: list, *, version_record=None) -> list[Chunk]:
@@ -344,16 +341,14 @@ class IngestWorkflow:
             return []
         record = version_record or find_by_relative_path(asset.relative_path)
         if record is None:
-            raise ValueError(
-                f"no persisted document version for asset path {asset.relative_path!r}"
-            )
+            raise ValueError(f"no persisted document for asset path {asset.relative_path!r}")
         chunks: list[Chunk] = []
         for ordinal, document in enumerate(documents):
             if not isinstance(document, ParsedChunk):
                 raise TypeError("parser output must be ParsedChunk")
             chunks.append(
                 Chunk.create(
-                    document_version=record.version,
+                    document=record.document,
                     asset=record.asset,
                     ordinal=ordinal,
                     text=document.text,

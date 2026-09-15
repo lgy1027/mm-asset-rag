@@ -53,6 +53,16 @@ def test_sdist_readme_has_pypi_install(built_dist: Path) -> None:
     assert "not yet published" not in body, "sdist README still has pre-release wording"
 
 
+def test_sdist_excludes_untracked_workspace_directories(built_dist: Path) -> None:
+    """The source distribution must be independent of a developer's workspace."""
+    (sdist,) = built_dist.glob("*.tar.gz")
+    with tarfile.open(sdist) as archive:
+        names = archive.getnames()
+
+    forbidden = ("/.superpowers/", "/.worktrees/", "/.claude/", "/graphify-out/")
+    assert not any(part in name for name in names for part in forbidden)
+
+
 def test_wheel_has_entry_points(built_dist: Path) -> None:
     """The wheel must declare both console scripts so ``mmrag`` and
     ``mmrag-api`` land on PATH after ``pip install``."""

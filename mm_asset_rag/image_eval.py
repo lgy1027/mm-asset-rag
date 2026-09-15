@@ -27,15 +27,12 @@ def build_tag_cases(
 ) -> dict[str, object]:
     """Return a v2 image-evaluation case payload from tags and negative queries."""
     groups: dict[str, list[dict[str, str]]] = {
-        "text_to_image": [
-            {"query_id": query_id, "query": tag} for query_id, tag in queries.items()
-        ]
+        "text_to_image": [{"query_id": query_id, "query": tag} for query_id, tag in queries.items()]
     }
     qrels = build_tag_qrels(chunks, queries)
     if negative_queries:
         groups["negative"] = [
-            {"query_id": query_id, "query": query}
-            for query_id, query in negative_queries.items()
+            {"query_id": query_id, "query": query} for query_id, query in negative_queries.items()
         ]
         qrels.update({query_id: {} for query_id in negative_queries})
     return {

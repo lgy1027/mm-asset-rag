@@ -621,8 +621,8 @@ def test_preview_returns_sha256_and_existing_document_id(
     home: Path,
     png_file: Path,
 ) -> None:
-    from mm_asset_rag.asset_index import DocumentVersionRecord, upsert_record
-    from mm_asset_rag.knowledge_models import AccessPolicy, Document, DocumentVersion, Source
+    from mm_asset_rag.asset_index import DocumentRecord, upsert_record
+    from mm_asset_rag.knowledge_models import AccessPolicy, Document, Source
     from mm_asset_rag.knowledge_models import Asset as PersistedAsset
 
     _stub_vlm_image(monkeypatch, {"title": "X"})
@@ -638,9 +638,8 @@ def test_preview_returns_sha256_and_existing_document_id(
         access_policy=AccessPolicy(collection="team", allowed_principals=("alice",)),
     )
     upsert_record(
-        DocumentVersionRecord(
+        DocumentRecord(
             document=document,
-            version=DocumentVersion.create(document, digest),
             asset=PersistedAsset(
                 content_hash=digest, source_type="image", relative_path="images/prior.png"
             ),
@@ -895,7 +894,7 @@ def test_discard_cache_clears_done_marker(
     assert not (home / ".confirm-state" / f"{cache_id}.lock").exists()
 
 
-def test_confirm_persists_document_version_with_explicit_policy(
+def test_confirm_persists_current_document_with_explicit_policy(
     monkeypatch: pytest.MonkeyPatch,
     pipeline: UploadPipeline,
     home: Path,
@@ -923,7 +922,7 @@ def test_confirm_persists_document_version_with_explicit_policy(
 
     [record] = load_records()
     assert record.document.document_id == "beach"
-    assert record.version.version_number == 1
+    assert record.asset.content_hash
     assert record.access_policy.collection == "team"
     assert record.access_policy.allowed_principals == ("alice",)
 
@@ -969,6 +968,34 @@ def test_confirm_same_document_and_content_reuses_persisted_relative_path(
     assert len((home / "asset_index.jsonl").read_text(encoding="utf-8").splitlines()) == 1
 
 
+def test_confirm_replacing_document_removes_superseded_asset(
+    monkeypatch: pytest.MonkeyPatch,
+    pipeline: UploadPipeline,
+    home: Path,
+    png_file: Path,
+) -> None:
+    _stub_vlm_image(monkeypatch, {"title": "Beach"})
+    [first_preview] = pipeline.preview([(png_file.name, png_file)])
+    [first] = pipeline.confirm(
+        first_preview.cache_id,
+        [_confirmed_edit(first_preview.preview_id, document_id="beach-doc")],
+    )
+
+    from PIL import Image
+
+    replacement = home / "replacement.png"
+    Image.new("RGB", (10, 10), color=(255, 0, 0)).save(replacement)
+    [second_preview] = pipeline.preview([(replacement.name, replacement)])
+    [second] = pipeline.confirm(
+        second_preview.cache_id,
+        [_confirmed_edit(second_preview.preview_id, document_id="beach-doc")],
+    )
+
+    assert second.relative_path != first.relative_path
+    assert not (home / "assets" / first.relative_path).exists()
+    assert (home / "assets" / second.relative_path).exists()
+
+
 def test_confirm_persistence_failure_can_retry_without_losing_file(
     monkeypatch: pytest.MonkeyPatch,
     pipeline: UploadPipeline,
@@ -984,26 +1011,25 @@ def test_confirm_persistence_failure_can_retry_without_losing_file(
     _stub_vlm_image(monkeypatch, {"title": "Beach"})
     [preview] = pipeline.preview([(png_file.name, png_file)])
 
-    original = asset_index.upsert_record
+    original = asset_index.upsert_records
 
-    def fail_after_persist(record, path=None):
-        original(record, path=path)
+    def fail_after_persist(records, path=None):
         raise OSError("disk full")
 
-    monkeypatch.setattr(asset_index, "upsert_record", fail_after_persist)
-    with pytest.raises(UploadCommitError, match="document-version persistence failed"):
+    monkeypatch.setattr(asset_index, "upsert_records", fail_after_persist)
+    with pytest.raises(UploadCommitError, match="document persistence failed"):
         pipeline.confirm(preview.cache_id, [_confirmed_edit(preview.preview_id)])
 
     assert list((home / "assets" / "images").glob("*")) == []
     assert asset_index.load_records() == []
 
-    monkeypatch.setattr(asset_index, "upsert_record", original)
+    monkeypatch.setattr(asset_index, "upsert_records", original)
     [asset] = pipeline.confirm(preview.cache_id, [_confirmed_edit(preview.preview_id)])
     assert (home / "assets" / asset.relative_path).exists()
     assert len(asset_index.load_records()) == 1
 
 
-def test_confirm_rolls_back_files_when_document_version_persistence_fails(
+def test_confirm_rolls_back_files_when_document_persistence_fails(
     monkeypatch: pytest.MonkeyPatch,
     pipeline: UploadPipeline,
     home: Path,
@@ -1019,11 +1045,11 @@ def test_confirm_rolls_back_files_when_document_version_persistence_fails(
     [preview] = pipeline.preview([(png_file.name, png_file)])
     monkeypatch.setattr(
         asset_index,
-        "upsert_record",
+        "upsert_records",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
     )
 
-    with pytest.raises(UploadCommitError, match="document-version persistence failed"):
+    with pytest.raises(UploadCommitError, match="document persistence failed"):
         pipeline.confirm(preview.cache_id, [_confirmed_edit(preview.preview_id)])
 
     assert (home / ".preview-cache" / preview.cache_id).exists()

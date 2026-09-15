@@ -46,3 +46,28 @@ def test_rerank_score_does_not_bypass_lexical_gate_when_threshold_disabled() -> 
 
     assert result.sufficient is False
     assert result.reason == "weak_lexical_coverage"
+
+
+def test_evidence_with_conflicting_structured_claims_is_rejected() -> None:
+    result = assess_answer_evidence(
+        "what is the policy status",
+        [
+            _hit(evidence="policy is active", metadata={"claims": {"policy_status": "active"}}),
+            _hit(evidence="policy is inactive", metadata={"claims": {"policy_status": "inactive"}}),
+        ],
+        Settings(answer_min_lexical_coverage=0.1),
+    )
+
+    assert result.sufficient is False
+    assert result.reason == "conflicting_evidence"
+
+
+def test_evidence_with_near_match_but_wrong_year_is_rejected() -> None:
+    result = assess_answer_evidence(
+        "2025 tax rate",
+        [_hit(evidence="2024 tax rate is 10 percent")],
+        Settings(answer_min_lexical_coverage=0.2),
+    )
+
+    assert result.sufficient is False
+    assert result.reason == "missing_critical_terms"

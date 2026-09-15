@@ -64,6 +64,10 @@ def test_health_endpoint_reports_status(client: TestClient) -> None:
     assert "embedder_configured" not in body
 
 
+def test_openapi_version_matches_package_version() -> None:
+    assert app.version == __version__
+
+
 def test_health_deep_reports_config_completeness(client: TestClient) -> None:
     """?deep=true adds llm_configured / embedder_configured without making an
     outbound LLM call (no quota spend) — a docker healthcheck can tell
@@ -81,9 +85,8 @@ def test_health_deep_reports_false_when_unconfigured(client: TestClient, monkeyp
     """With no LLM/embedder creds configured, deep reports both False — so an
     orchestrator can tell /answer and /search won't work without waiting for
     an actual call to fail."""
-    # Patch the creds properties directly: the host .env (loaded by
-    # pydantic BaseSettings) would otherwise leak OPENAI_* into settings,
-    # and env-var monkeypatch can't override that.
+    # Patch the creds properties directly because the host .env is loaded by
+    # pydantic BaseSettings and an env-var monkeypatch cannot override it.
     with (
         patch(
             "mm_asset_rag.settings.Settings.llm_creds",
@@ -317,7 +320,7 @@ def test_search_requires_collection_and_principal_access_context(client: TestCli
     assert {error["loc"][-1] for error in response.json()["detail"]} >= {"collection", "principal"}
 
 
-def test_search_response_exposes_document_version_chunk_without_asset_id(
+def test_search_response_exposes_document_chunk_without_asset_id(
     client: TestClient,
 ) -> None:
     from mm_asset_rag.schema import SearchHit
@@ -332,8 +335,7 @@ def test_search_response_exposes_document_version_chunk_without_asset_id(
         evidence="evidence",
         metadata={
             "document_id": "design",
-            "version_id": "design@1-deadbeefcafe",
-            "chunk_id": "design@1-deadbeefcafe:0",
+            "chunk_id": "design:0",
             "page": 2,
         },
     )
@@ -345,8 +347,8 @@ def test_search_response_exposes_document_version_chunk_without_asset_id(
     assert response.status_code == 200
     payload = response.json()["hits"][0]
     assert payload["document_id"] == "design"
-    assert payload["version_id"] == "design@1-deadbeefcafe"
-    assert payload["chunk_id"] == "design@1-deadbeefcafe:0"
+    assert "version_id" not in payload
+    assert payload["chunk_id"] == "design:0"
     assert "asset_id" not in json.dumps(payload)
 
 
@@ -392,8 +394,7 @@ def test_chat_refusal_has_no_outer_sources(client: TestClient) -> None:
         source_path="pdfs/weak.pdf",
         metadata={
             "document_id": "weak",
-            "version_id": "weak@1-hash",
-            "chunk_id": "weak@1-hash:0",
+            "chunk_id": "weak:0",
         },
     )
     with patch("mm_asset_rag.api.dispatch_search", return_value=[hit]):
@@ -627,6 +628,86 @@ def test_upload_confirm_spawns_ingest_task(
     assets = args[0]
     assert assets[0].title == "Edited Scene"
     assert assets[0].tags == ["scene", "manual"]
+
+
+def test_web_smoke_upload_auto_image_sources_and_refusal(
+    client: TestClient, png_bytes: bytes
+) -> None:
+    """Exercise the browser's upload, auto-search, evidence-image, and refusal path."""
+    from mm_asset_rag.schema import SearchHit
+    from mm_asset_rag.service import TaskRecord
+
+    with patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None):
+        preview = client.post(
+            "/upload/preview",
+            files=[("files", ("poster.png", png_bytes, "image/png"))],
+        )
+    assert preview.status_code == 200
+    preview_body = preview.json()
+
+    with patch("mm_asset_rag.api.get_service") as get_service:
+        get_service.return_value.ingest_assets.return_value = TaskRecord(
+            task_id="smoke123", kind="ingest"
+        )
+        confirmed = client.post(
+            "/upload/confirm",
+            json={
+                "cache_id": preview_body["cache_id"],
+                "edits": [
+                    {
+                        "preview_id": preview_body["previews"][0]["preview_id"],
+                        "collection": "team",
+                        "allowed_principals": ["alice"],
+                    }
+                ],
+            },
+        )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["task_id"] == "smoke123"
+
+    hit = SearchHit(
+        route="hybrid",
+        score=0.9,
+        asset_id="poster",
+        title="活动海报",
+        source_type="image",
+        source_path="images/poster.png",
+        metadata={
+            "document_id": "poster",
+            "chunk_id": "poster:0",
+        },
+        images=[{"path": "images/poster.png", "caption": "活动海报"}],
+    )
+    with patch("mm_asset_rag.api.dispatch_search", return_value=[hit]) as search:
+        response = client.post(
+            "/search",
+            json={"query": "活动图片", "mode": "auto", "collection": "team", "principal": "alice"},
+        )
+    assert response.status_code == 200
+    assert search.call_args.kwargs["mode"] == "auto"
+    assert response.json()["hits"][0]["images"] == [
+        {"path": "images/poster.png", "caption": "活动海报"}
+    ]
+
+    with patch(
+        "mm_asset_rag.api.answer_question",
+        return_value={"question": "不存在的资料", "answer": "证据不足，无法回答。", "sources": []},
+    ):
+        refusal = client.post(
+            "/answer",
+            json={
+                "question": "不存在的资料",
+                "collection": "team",
+                "principal": "alice",
+                "min_confidence": 0.5,
+            },
+        )
+    assert refusal.status_code == 200
+    assert refusal.json()["sources"] == []
+
+    page = client.get("/")
+    assert "function renderSources(sources)" in page.text
+    assert 'class="src-thumb"' in page.text
 
 
 def test_tasks_endpoint_returns_history(client: TestClient) -> None:
@@ -1002,8 +1083,8 @@ def test_iter_sync_in_thread_stop_signals_producer() -> None:
 def test_document_lifecycle_requires_and_enforces_access_context(
     client: TestClient, tmp_home
 ) -> None:
-    from mm_asset_rag.asset_index import DocumentVersionRecord
-    from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, DocumentVersion, Source
+    from mm_asset_rag.asset_index import DocumentRecord
+    from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, Source
 
     document = Document(
         document_id="alpha",
@@ -1015,9 +1096,8 @@ def test_document_lifecycle_requires_and_enforces_access_context(
             metadata={"department": "research", "internal_note": "do-not-disclose"},
         ),
     )
-    record = DocumentVersionRecord(
+    record = DocumentRecord(
         document=document,
-        version=DocumentVersion.create(document, "a" * 64),
         asset=Asset(content_hash="a" * 64, source_type="image", relative_path="images/alpha.png"),
     )
     other_document = Document(
@@ -1026,9 +1106,8 @@ def test_document_lifecycle_requires_and_enforces_access_context(
         source=Source(source_id="upload:private"),
         access_policy=AccessPolicy(collection="team", allowed_principals=("bob",)),
     )
-    other_record = DocumentVersionRecord(
+    other_record = DocumentRecord(
         document=other_document,
-        version=DocumentVersion.create(other_document, "b" * 64),
         asset=Asset(content_hash="b" * 64, source_type="image", relative_path="images/private.png"),
     )
     from mm_asset_rag.paths import get_parsed_dir, physical_cache_id
@@ -1080,12 +1159,12 @@ def test_document_lifecycle_requires_and_enforces_access_context(
         assert response.status_code == 404
 
         response = client.get(
-            f"/parsed-image/alpha/alpha@1-{'a' * 64}/figure.png",
+            "/parsed-image/alpha/figure.png",
             params={"collection": "team", "principal": "bob"},
         )
         assert response.status_code == 404
         response = client.get(
-            f"/parsed-image/alpha/alpha@1-{'a' * 64}/figure.png",
+            "/parsed-image/alpha/figure.png",
             params={"collection": "team", "principal": "alice"},
         )
     assert response.status_code == 200
@@ -1364,7 +1443,7 @@ def test_safe_stream_error_strips_urls_and_caps_length(monkeypatch) -> None:
     # matching the configured provider host exactly, so set one here.
     from mm_asset_rag.settings import get_settings
 
-    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "https://api.openai.com/v1")
+    monkeypatch.setenv("MODEL_BASE_URL", "https://api.openai.com/v1")
     get_settings.cache_clear()
     conn_err = Exception(
         "HTTPSConnectionPool(host='api.openai.com', port=443): "

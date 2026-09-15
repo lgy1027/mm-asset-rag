@@ -13,7 +13,6 @@ from mm_asset_rag.knowledge_models import (
     Asset,
     Chunk,
     Document,
-    DocumentVersion,
     Source,
 )
 from mm_asset_rag.paths import get_documents_jsonl
@@ -28,9 +27,8 @@ def _chunk(text: str, ordinal: int = 0) -> Chunk:
         source=source,
         access_policy=AccessPolicy(collection="team", allowed_principals=("alice",)),
     )
-    version = DocumentVersion.create(document, "a" * 64)
     return Chunk.create(
-        document_version=version,
+        document=document,
         asset=Asset(content_hash="a" * 64, source_type="pdf", relative_path="pdfs/handbook.pdf"),
         ordinal=ordinal,
         text=text,
@@ -104,14 +102,11 @@ def test_read_documents_rejects_v2_row_missing_access_policy(tmp_path: Path) -> 
     assert read_documents(path=target) == []
 
 
-@pytest.mark.parametrize("identity", ["version", "chunk"])
+@pytest.mark.parametrize("identity", ["chunk"])
 def test_read_documents_rejects_tampered_identity_ids(tmp_path: Path, identity: str) -> None:
     target = tmp_path / "docs.jsonl"
     row = _chunk("alpha").to_record()
-    if identity == "version":
-        row["document_version"]["version_id"] = "handbook@1-tampered"  # type: ignore[index]
-    else:
-        row["chunk_id"] = "tampered"
+    row["chunk_id"] = "tampered"
     target.write_text(json.dumps(row) + "\n", encoding="utf-8")
 
     assert read_documents(path=target) == []

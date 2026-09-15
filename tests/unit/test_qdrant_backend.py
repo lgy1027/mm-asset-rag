@@ -51,7 +51,6 @@ def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
         Asset,
         Chunk,
         Document,
-        DocumentVersion,
         Source,
     )
 
@@ -62,9 +61,8 @@ def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
         metadata={"department": "search"},
     )
     document = Document("report", "System report", source, policy)
-    version = DocumentVersion.create(document, "a" * 64)
     chunk = Chunk.create(
-        document_version=version,
+        document=document,
         asset=Asset("a" * 64, "pdf", "pdfs/report.pdf"),
         ordinal=0,
         text="retrieval evidence",
@@ -97,8 +95,6 @@ def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
     assert set(payload) == {
         "document_id",
         "title",
-        "version_id",
-        "version_number",
         "chunk_id",
         "ordinal",
         "text",
@@ -115,7 +111,7 @@ def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
     }
     assert "asset_id" not in repr(payload)
     assert payload["document_id"] == "report"
-    assert payload["version_id"] == version.version_id
+    assert "version_id" not in payload
     assert payload["chunk_id"] == chunk.chunk_id
     from mm_asset_rag.paths import physical_cache_id
 
@@ -126,7 +122,6 @@ def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
     }
     assert {
         "document_id",
-        "version_id",
         "chunk_id",
         "collection",
         "allowed_principals",
@@ -161,16 +156,14 @@ def test_qdrant_payload_cache_id_distinguishes_same_stem_paths() -> None:
         Asset,
         Chunk,
         Document,
-        DocumentVersion,
         Source,
     )
 
     source = Source(source_id="upload:shared")
     policy = AccessPolicy(collection="team", allowed_principals=("alice",))
     document = Document("shared", "Shared", source, policy)
-    version = DocumentVersion.create(document, "f" * 64)
     pdf = Chunk.create(
-        document_version=version,
+        document=document,
         asset=Asset("f" * 64, "pdf", "pdfs/shared.pdf"),
         ordinal=0,
         text="pdf",

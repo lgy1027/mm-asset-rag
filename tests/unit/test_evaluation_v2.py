@@ -117,6 +117,54 @@ def test_text_runner_uses_exact_document_qrels(tmp_path: Path) -> None:
     assert results[1].qrels == {}
 
 
+def test_text_runner_executes_custom_scenarios_with_case_policy_overrides(tmp_path: Path) -> None:
+    cases_path = tmp_path / "scenarios.json"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "version": "v2",
+                "groups": {
+                    "paraphrase": [
+                        {"query_id": "p1", "query": "reworded handbook", "principal": "alice"}
+                    ],
+                    "acl_metadata": [
+                        {
+                            "query_id": "a1",
+                            "query": "restricted guide",
+                            "principal": "bob",
+                            "metadata_filter": {"department": "legal"},
+                        }
+                    ],
+                    "negative": [{"query_id": "n1", "query": "unrelated"}],
+                },
+                "qrels": {"p1": {"doc-handbook": 1}, "a1": {"doc-legal": 1}, "n1": {}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    commands: list[SearchCommand] = []
+
+    results = run_text_to_text_eval_v2(
+        cases_path=cases_path,
+        collection="team",
+        principal="default",
+        metadata_filter={"tenant": "acme"},
+        search_fn=lambda command: (
+            commands.append(command)
+            or ([_hit("doc-handbook")] if command.query == "reworded handbook" else [])
+        ),
+    )
+
+    assert [result.group for result in results] == ["paraphrase", "acl_metadata", "negative"]
+    assert commands[0].principal == "alice"
+    assert commands[0].metadata_filter == {"tenant": "acme"}
+    assert commands[1].principal == "bob"
+    assert commands[1].metadata_filter == {"department": "legal"}
+    assert results[0].hit is True
+    assert results[1].hit is False
+    assert results[2].actual_document_ids == []
+
+
 def test_run_eval_v2_wraps_text_to_text() -> None:
     with patch("mm_asset_rag.evaluation_v2.run_text_to_text_eval_v2", return_value=[]) as stub:
         out = run_eval_v2(
@@ -253,12 +301,28 @@ class _FakeV2Result:
     hit: bool
     rank: int | None
     group: str
+    evidence_expected: list[str] | None = None
+    evidence_hit: bool | None = None
+    evidence_rank: int | None = None
 
 
 def test_eval_endpoint_v2_returns_document_qrels_shape() -> None:
     from mm_asset_rag.api import app
 
-    fake = [_FakeV2Result("q1", "handbook", {"doc": 2}, ["doc"], True, 1, "zh_on_en")]
+    fake = [
+        _FakeV2Result(
+            "q1",
+            "handbook",
+            {"doc": 2},
+            ["doc"],
+            True,
+            1,
+            "zh_on_en",
+            ["relevant fact"],
+            True,
+            1,
+        )
+    ]
     with patch("mm_asset_rag.evaluation_v2.run_eval_v2", return_value=fake):
         response = TestClient(app, base_url="http://127.0.0.1").post(
             "/eval",
@@ -283,6 +347,9 @@ def test_eval_endpoint_v2_returns_document_qrels_shape() -> None:
                 "hit": True,
                 "rank": 1,
                 "group": "zh_on_en",
+                "evidence_expected": ["relevant fact"],
+                "evidence_hit": True,
+                "evidence_rank": 1,
             }
         ],
     }

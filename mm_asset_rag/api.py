@@ -52,6 +52,7 @@ from .api_streaming import (
 from .api_streaming import _STREAM_ERR_MAX_CHARS as _STREAM_ERR_MAX_CHARS
 from .backends.qdrant.client import get_qdrant_client
 from .evaluation_service import EvaluationCommand, get_evaluation_service
+from .observability import runtime_metrics
 from .paths import (
     get_assets_dir,
     get_documents_jsonl,
@@ -82,7 +83,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="mm-asset-rag",
-    version="0.1.0",
+    version=__version__,
     description="Multimodal asset RAG: PDF + image parsing, hybrid retrieval, grounded answers.",
     lifespan=lifespan,
 )
@@ -239,13 +240,12 @@ def _without_asset_id(value: object) -> object:
 
 
 def _serialize_hit(hit: object) -> dict[str, object]:
-    """Render the stable document/version/chunk retrieval contract."""
+    """Render the stable document/chunk retrieval contract."""
     metadata = getattr(hit, "metadata", {})
     if not isinstance(metadata, dict):
         metadata = {}
     return {
         "document_id": metadata.get("document_id"),
-        "version_id": metadata.get("version_id"),
         "chunk_id": metadata.get("chunk_id"),
         "title": getattr(hit, "title", ""),
         "source_type": getattr(hit, "source_type", ""),
@@ -259,13 +259,13 @@ def _serialize_hit(hit: object) -> dict[str, object]:
     }
 
 
-def _serialize_document(record: asset_index.DocumentVersionRecord) -> dict[str, object]:
+def _serialize_document(record: asset_index.DocumentRecord) -> dict[str, object]:
     """Render public document identity without its server-side policy."""
     return {
         "document_id": record.document.document_id,
         "title": record.document.title,
         "source": record.document.source.to_record(),
-        "latest_version": record.version.to_record(),
+        "asset": record.asset.to_record(),
     }
 
 
@@ -303,10 +303,8 @@ def _document_access_context(
     )
 
 
-def _record_is_visible(
-    record: asset_index.DocumentVersionRecord, context: _DocumentAccessContext
-) -> bool:
-    """Return whether a persisted document version is visible to this request."""
+def _record_is_visible(record: asset_index.DocumentRecord, context: _DocumentAccessContext) -> bool:
+    """Return whether a persisted document is visible to this request."""
     policy = record.access_policy
     return (
         policy.collection == context.collection
@@ -331,7 +329,7 @@ def health(
     (e.g. local-mode lock held by another process) — health must never 500.
 
     ``?deep=true`` adds config-completeness probes: ``llm_configured``
-    (OPENAI_* or VLM_* triple complete) and ``embedder_configured``
+    (MODEL_* or LLM_* triple complete) and ``embedder_configured``
     (embedding creds resolvable). These don't make an outbound LLM call
     (no quota spend); they only check the configured triples so a
     docker/编排 healthcheck can tell "will /answer work" from /health.
@@ -386,6 +384,12 @@ def _qdrant_collection_alive(kind: str) -> bool:
         return bool(_existing_collections_for(client, base))
     except Exception:
         return False
+
+
+@app.get("/metrics")
+def metrics() -> dict[str, object]:
+    """Return bounded process-local retrieval and refusal counters."""
+    return runtime_metrics.snapshot()
 
 
 @app.post("/search")
@@ -736,10 +740,10 @@ def task_stream(task_id: str) -> StreamingResponse:
 @app.post("/tasks/{task_id}/retry")
 def retry_task(
     task_id: str,
-    force: bool = Query(False, description="Clear targeted version caches before re-running"),
+    force: bool = Query(False, description="Clear targeted document caches before re-running"),
     failed_only: bool = Query(
         False,
-        description="Only re-run document versions whose previous status was failed or skipped",
+        description="Only re-run documents whose previous status was failed or skipped",
     ),
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
@@ -794,14 +798,12 @@ def cancel_task(
 def list_documents(
     context: _DocumentAccessContext = Depends(_document_access_context),
 ) -> dict[str, object]:
-    """Return the latest persisted version visible to the supplied context."""
-    latest: dict[str, asset_index.DocumentVersionRecord] = {}
+    """Return current documents visible to the supplied context."""
+    latest: dict[str, asset_index.DocumentRecord] = {}
     for record in asset_index.load_records():
         if not _record_is_visible(record, context):
             continue
-        current = latest.get(record.document.document_id)
-        if current is None or record.version.version_number > current.version.version_number:
-            latest[record.document.document_id] = record
+        latest[record.document.document_id] = record
     return {"documents": [_serialize_document(latest[key]) for key in sorted(latest)]}
 
 
@@ -810,7 +812,7 @@ def get_document(
     document_id: str,
     context: _DocumentAccessContext = Depends(_document_access_context),
 ) -> dict[str, object]:
-    """Return visible immutable versions without exposing their policy."""
+    """Return one visible current document without exposing its policy."""
     records = [
         record
         for record in asset_index.load_records()
@@ -818,24 +820,22 @@ def get_document(
     ]
     if not records:
         raise HTTPException(status_code=404, detail=f"unknown document {document_id}")
-    records.sort(key=lambda record: record.version.version_number)
     latest = records[-1]
     return {
         "document_id": latest.document.document_id,
         "title": latest.document.title,
         "source": latest.document.source.to_record(),
-        "versions": [record.version.to_record() for record in records],
+        "asset": latest.asset.to_record(),
     }
 
 
-@app.get("/parsed-image/{document_id}/{version_id}/{filename}")
+@app.get("/parsed-image/{document_id}/{filename}")
 def get_parsed_image(
     document_id: str,
-    version_id: str,
     filename: str,
     context: _DocumentAccessContext = Depends(_document_access_context),
 ) -> FileResponse:
-    """Serve an image extracted from one document version.
+    """Serve an image extracted from one current document.
 
     Used by the web UI ``<img src>`` to render figure thumbnails attached
     to text hits (tier-1 multimodal: the figure path rides in the hit
@@ -844,17 +844,13 @@ def get_parsed_image(
     traversal guards.
     """
     record = next(
-        (
-            row
-            for row in asset_index.load_records()
-            if row.document.document_id == document_id and row.version.version_id == version_id
-        ),
+        (row for row in asset_index.load_records() if row.document.document_id == document_id),
         None,
     )
     if record is None or not _record_is_visible(record, context):
         raise HTTPException(status_code=404, detail="not found")
     # Parsed-image storage still uses a transient physical cache key. It is
-    # resolved server-side from the version's physical path and never appears
+    # resolved server-side from the asset's physical path and never appears
     # in the public URL or response payload.
     candidate = safe_parsed_image_path(physical_cache_id(record.asset.relative_path), filename)
     if candidate is None:

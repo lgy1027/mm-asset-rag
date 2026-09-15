@@ -246,7 +246,7 @@ class HttpRerankApiReranker(Reranker):
         default_base, default_model, _ = _provider_defaults(s.reranker_provider)
         base = s.reranker_api_base or default_base
         model = s.reranker_api_model or default_model
-        key = s.reranker_api_key or s.openai_compat_api_key
+        key = s.reranker_api_key or s.model_api_key
         return bool(base and key and model)
 
     def _config(self) -> tuple[str, str, str, str, float]:
@@ -257,7 +257,7 @@ class HttpRerankApiReranker(Reranker):
         api_base = s.reranker_api_base or default_base
         model = s.reranker_api_model or default_model
         form = default_form  # form is provider-fixed, not user-tunable
-        api_key = s.reranker_api_key or s.openai_compat_api_key or ""
+        api_key = s.reranker_api_key or s.model_api_key or ""
         timeout = s.reranker_api_timeout
         return api_base, model, form, api_key, timeout
 

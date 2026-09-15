@@ -27,20 +27,19 @@ def _hit(asset_id: str, evidence: str = "some text", *, score: float = 0.9) -> S
         evidence=evidence,
         metadata={
             "document_id": f"document-{asset_id}",
-            "version_id": f"document-{asset_id}@1-deadbeefcafe",
-            "chunk_id": f"document-{asset_id}@1-deadbeefcafe:0",
+            "chunk_id": f"document-{asset_id}:0",
             "page": 2,
             "parser": "pymupdf",
         },
     )
 
 
-def test_format_sources_exposes_document_version_chunk_not_asset_identity() -> None:
+def test_format_sources_exposes_document_chunk_not_asset_identity() -> None:
     sources = format_sources([_hit("a"), _hit("b")])
     assert len(sources) == 2
     assert sources[0]["document_id"] == "document-a"
-    assert sources[0]["version_id"] == "document-a@1-deadbeefcafe"
-    assert sources[0]["chunk_id"] == "document-a@1-deadbeefcafe:0"
+    assert "version_id" not in sources[0]
+    assert sources[0]["chunk_id"] == "document-a:0"
     assert "asset_id" not in sources[0]
     assert sources[0]["page"] == 2
     assert sources[0]["parser"] == "pymupdf"
@@ -91,6 +90,32 @@ def test_answer_question_refuses_low_confidence_without_calling_llm(monkeypatch)
     result = answer_question("question", hits=[_hit("a", score=0.2)], min_confidence=0.5)
     assert result["sources"] == []
     assert "证据不足" in result["answer"]
+
+
+def test_answer_question_refuses_conflicting_structured_evidence(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "mm_asset_rag.answer.llm_answer", Mock(side_effect=AssertionError("LLM called"))
+    )
+    current = _hit("current", evidence="policy status active")
+    current.metadata["claims"] = {"policy_status": "active"}
+    prior = _hit("prior", evidence="policy status inactive")
+    prior.metadata["claims"] = {"policy_status": "inactive"}
+
+    result = answer_question("what is the policy status", hits=[current, prior])
+
+    assert result["sources"] == []
+    assert result["refusal_reason"] == "conflicting_evidence"
+
+
+def test_stream_answer_records_evidence_refusal(monkeypatch) -> None:
+    metrics = Mock()
+    monkeypatch.setattr("mm_asset_rag.answer.runtime_metrics", metrics)
+
+    assert list(stream_answer_chunks("question", [_hit("a", score=0.2)])) == [
+        "证据不足，无法基于当前知识库可靠回答。"
+    ]
+
+    metrics.record_refusal.assert_called_once_with(reason="weak_lexical_coverage", candidates=1)
 
 
 def test_stream_answer_ignores_empty_choices_keepalive_event(monkeypatch) -> None:

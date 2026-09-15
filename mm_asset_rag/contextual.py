@@ -20,7 +20,7 @@ them at parse time and stores the result in ``metadata["context"]``;
 ``build_qdrant_text_index`` then prepends it to the embedding input while
 keeping the payload ``text`` clean for evidence / answer generation.
 
-Degradation: when ``OPENAI_*`` is unconfigured or a request fails, both
+Degradation: when the LLM connection is unconfigured or a request fails, both
 functions return ``""`` — the caller simply skips the context, preserving
 the pre-contextual behavior. Nothing here raises.
 """
@@ -42,10 +42,10 @@ _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 def _llm_credentials() -> tuple[str | None, str | None, str | None]:
     """Return ``(base_url, api_key, model)`` for the contextual LLM.
 
-    Reuses the shared ``Settings.llm_creds`` (``OPENAI_*`` preferred, with
+    Reuses the shared ``Settings.llm_creds`` (``MODEL_*`` by default, with
     a ``VLM_*`` fallback) so a deployment that only configured a
     multimodal VLM still gets Contextual Retrieval — previously this read
-    ``OPENAI_*`` directly and silently degraded to a no-op in a VLM-only
+    the shared connection directly and silently degraded to a no-op in a VLM-only
     deploy. ``CONTEXTUAL_MODEL`` overrides only the model name, matching
     the other LLM call sites (``answer.py``, ``image_caption.py``,
     ``auto_meta.py``) that all go through the same ``llm_creds`` /

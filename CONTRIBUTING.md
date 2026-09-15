@@ -50,10 +50,9 @@ mm-asset-rag/
 │   ├── protocols.py      # Parser / Embedder / VectorBackend Protocol definitions
 │   ├── registry.py       # Module-level parsers / embedders / backends registries
 │   ├── paths.py          # on-disk layout under $MM_ASSET_RAG_HOME
-│   ├── config.py         # load_env() + env_bool() (legacy helpers)
 │   ├── assets.py         # Asset dataclass
-│   ├── schema.py         # SearchHit, ParsedDocument
-│   ├── document_store.py # unified ParsedDocument JSONL store
+│   ├── schema.py         # public retrieval schema
+│   ├── document_store.py # parsed chunk JSONL store
 │   ├── answer.py         # grounded answer generation (streaming + sync)
 │   ├── evaluation.py     # mini regression suite
 │   ├── retrieval.py      # hybrid merge + normalize (pure functions)
@@ -64,7 +63,7 @@ mm-asset-rag/
 │   │   ├── text_embedder.py
 │   │   └── image_embedder.py
 │   └── backends/         # VectorBackend implementations
-│       └── qdrant_backend.py
+│       └── qdrant/
 ├── examples/             # API client examples
 ├── tests/unit/           # offline unit tests (fast)
 ├── tests/integration/    # marked @pytest.mark.integration
@@ -134,4 +133,5 @@ Common types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`. Scope is usual
 - [ ] If a new environment variable was added, it shows up in `.env.example`.
 - [ ] Commit messages follow the convention above (and do not include AI co-author trailers).
 
-By submitting a patch you agree to license your contribution under Apache-2.0 (see [LICENSE](LICENSE)).
+By submitting a patch you agree to license your contribution under
+AGPL-3.0-or-later (see [LICENSE](LICENSE)).

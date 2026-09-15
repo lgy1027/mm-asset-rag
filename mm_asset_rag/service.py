@@ -94,7 +94,7 @@ class TaskStatus(str, Enum):
         return {cls.DONE, cls.PARTIAL, cls.FAILED, cls.INTERRUPTED, cls.CANCELLED}
 
 
-_RETRY_ELIGIBLE_VERSION_STATUSES = {"failed", "skipped", "failed_index", None}
+_RETRY_ELIGIBLE_DOCUMENT_STATUSES = {"failed", "skipped", "failed_index", None}
 
 
 # ─── Data types ─────────────────────────────────────────────────────────
@@ -114,12 +114,10 @@ class ParseOptions:
 
 @dataclass
 class DocumentLifecycleReport:
-    """Outcome of deleting a logical document or one immutable version."""
+    """Outcome of deleting a logical document and its current asset."""
 
     document_id: str
-    requested_version_id: str | None = None
-    deleted_version_ids: list[str] = field(default_factory=list)
-    versions_removed: int = 0
+    documents_removed: int = 0
     chunks_removed: int = 0
     files_deleted: int = 0
     parsed_caches_deleted: int = 0
@@ -164,7 +162,9 @@ class IngestService:
 
     # ─── Public API used by both FastAPI and CLI ─────────────────────────
 
-    def parse_assets(self, assets: list[IngestAsset], options: ParseOptions | None = None) -> TaskRecord:
+    def parse_assets(
+        self, assets: list[IngestAsset], options: ParseOptions | None = None
+    ) -> TaskRecord:
         """Parse explicitly provided assets.
 
         This is the only parse entry in the upload-first architecture: assets
@@ -194,7 +194,9 @@ class IngestService:
         self._spawn(_run_parse_task, rec, options)
         return rec
 
-    def ingest_assets(self, assets: list[IngestAsset], options: ParseOptions | None = None) -> TaskRecord:
+    def ingest_assets(
+        self, assets: list[IngestAsset], options: ParseOptions | None = None
+    ) -> TaskRecord:
         """Parse + index explicitly provided assets."""
         options = options or ParseOptions()
         options.assets = list(assets)
@@ -226,12 +228,12 @@ class IngestService:
 
         ``force=True`` clears cached ``parsed/<id>/raw.jsonl`` before
         the retry so the parse loop re-reads from disk. ``failed_only=True``
-        narrows the retry set to document versions whose status is missing,
+        narrows the retry set to documents whose status is missing,
         ``failed`` or ``skipped``. The two flags compose: with both set,
-        only the failed versions are re-parsed and only their caches are
+        only the failed documents are re-parsed and only their caches are
         cleared — useful after upgrading the parser without touching
-        already-indexed versions. Tasks without ``version_statuses`` fall
-        back to running every uploaded version and emit a warning.
+        already-indexed documents. Tasks without ``document_statuses`` fall
+        back to running every uploaded document and emit a warning.
         """
         with self._TASKS_LOCK:
             original = self._tasks.get(task_id)
@@ -239,7 +241,7 @@ class IngestService:
             raise KeyError(f"unknown task {task_id}")
         if original.status not in {TaskStatus.FAILED, TaskStatus.PARTIAL, TaskStatus.INTERRUPTED}:
             raise ValueError(f"task {task_id} cannot be retried (status={original.status})")
-        if failed_only and not original.version_statuses:
+        if failed_only and not original.document_statuses:
             print(
                 f"[retry] task {task_id} has no per-version statuses; treating failed_only as force"
             )
@@ -248,18 +250,18 @@ class IngestService:
         assets = self._rebuild_assets_for_retry(original.uploaded_files)
         if not assets:
             raise FileNotFoundError(f"no assets available to retry for task {task_id}")
-        if failed_only and original.version_statuses:
+        if failed_only and original.document_statuses:
             assets = [
                 a
                 for a in assets
-                if original.version_statuses.get(self._version_status_key(a))
-                in _RETRY_ELIGIBLE_VERSION_STATUSES
+                if original.document_statuses.get(self._document_status_key(a))
+                in _RETRY_ELIGIBLE_DOCUMENT_STATUSES
             ]
             if not assets:
                 raise FileNotFoundError(f"no failed or skipped assets to retry for task {task_id}")
         options = self._deserialise_options(original.parse_options, assets)
         uploaded = [a.relative_path for a in assets]
-        preserved_statuses = dict(original.version_statuses)
+        preserved_statuses = dict(original.document_statuses)
         if original.kind == "parse":
             rec = self._new_task(
                 kind="parse",
@@ -271,7 +273,7 @@ class IngestService:
                 force=force,
                 failed_only=failed_only,
             )
-            rec.version_statuses = preserved_statuses
+            rec.document_statuses = preserved_statuses
             self._patch(rec)
             self._spawn(_run_parse_task, rec, options)
         elif original.kind == "ingest":
@@ -285,7 +287,7 @@ class IngestService:
                 force=force,
                 failed_only=failed_only,
             )
-            rec.version_statuses = preserved_statuses
+            rec.document_statuses = preserved_statuses
             self._patch(rec)
             self._spawn(self._workflow.run, rec, options)
         else:
@@ -407,7 +409,7 @@ class IngestService:
             )
 
     def delete_document(self, document_id: str) -> DocumentLifecycleReport:
-        """Delete every immutable version belonging to one logical document."""
+        """Delete one logical document and its current asset."""
         records = [
             record
             for record in asset_index.load_records()
@@ -415,46 +417,18 @@ class IngestService:
         ]
         return self._delete_document_records(document_id, records)
 
-    def delete_document_version(
-        self,
-        document_id: str,
-        version_id: str,
-    ) -> DocumentLifecycleReport:
-        """Delete one exact version while retaining its sibling versions."""
-        records = [
-            record
-            for record in asset_index.load_records()
-            if record.document.document_id == document_id
-            and record.version.version_id == version_id
-        ]
-        return self._delete_document_records(
-            document_id,
-            records,
-            requested_version_id=version_id,
-        )
-
     def _delete_document_records(
         self,
         document_id: str,
-        records: list[asset_index.DocumentVersionRecord],
-        *,
-        requested_version_id: str | None = None,
+        records: list[asset_index.DocumentRecord],
     ) -> DocumentLifecycleReport:
-        report = DocumentLifecycleReport(
-            document_id=document_id,
-            requested_version_id=requested_version_id,
-        )
+        report = DocumentLifecycleReport(document_id=document_id)
         if not document_id or not records:
             report.was_known = False
             return report
 
-        records = sorted(records, key=lambda record: record.version.version_number)
-        version_ids = {record.version.version_id for record in records}
-        report.deleted_version_ids = [record.version.version_id for record in records]
         all_records = asset_index.load_records()
-        survivors = [
-            record for record in all_records if record.version.version_id not in version_ids
-        ]
+        survivors = [record for record in all_records if record.document.document_id != document_id]
         docs_path = get_documents_jsonl()
         index_path = get_asset_index_path()
         docs_snapshot = docs_path.read_bytes() if docs_path.exists() else None
@@ -478,9 +452,7 @@ class IngestService:
                     if _stage_delete_path(file_path, staging_root, staged):
                         report.files_deleted += 1
                 except OSError as exc:
-                    report.errors.append(
-                        f"file delete failed for {record.version.version_id}: {exc}"
-                    )
+                    report.errors.append(f"file delete failed for {document_id}: {exc}")
 
             cache_key = physical_cache_id(record.asset.relative_path)
             if cache_key in survivor_cache_keys:
@@ -490,18 +462,14 @@ class IngestService:
                 if _stage_delete_path(parsed_dir, staging_root, staged):
                     report.parsed_caches_deleted += 1
             except OSError as exc:
-                report.errors.append(
-                    f"parsed cache delete failed for {record.version.version_id}: {exc}"
-                )
+                report.errors.append(f"parsed cache delete failed for {document_id}: {exc}")
             for suffix in (".jsonl", ".json"):
                 caption_path = get_captions_dir() / f"{cache_key}{suffix}"
                 try:
                     if _stage_delete_path(caption_path, staging_root, staged):
                         report.caption_caches_deleted += 1
                 except OSError as exc:
-                    report.errors.append(
-                        f"caption cache delete failed for {record.version.version_id}: {exc}"
-                    )
+                    report.errors.append(f"caption cache delete failed for {document_id}: {exc}")
 
         if report.errors:
             report.errors.extend(_rollback_staged_paths(staged))
@@ -515,10 +483,7 @@ class IngestService:
             return report
 
         try:
-            report.chunks_removed = _remove_document_version_rows_from_documents_jsonl(
-                document_id,
-                version_ids,
-            )
+            report.chunks_removed = _remove_document_rows_from_documents_jsonl(document_id)
         except OSError as exc:
             report.errors.append(f"documents.jsonl rewrite failed: {exc}")
             report.errors.extend(_rollback_staged_paths(staged))
@@ -529,7 +494,7 @@ class IngestService:
             return report
 
         try:
-            report.versions_removed = _remove_document_version_records(document_id, version_ids)
+            report.documents_removed = _remove_document_records(document_id)
         except OSError as exc:
             report.errors.append(f"document index rewrite failed: {exc}")
             _restore_file_snapshot(docs_path, docs_snapshot)
@@ -542,7 +507,7 @@ class IngestService:
             return report
 
         try:
-            counts = self._delete_qdrant_versions(version_ids)
+            counts = self._delete_qdrant_documents({document_id})
             report.text_collections_scanned = counts["text"]
             report.image_collections_scanned = counts["image"]
         except Exception as exc:
@@ -552,7 +517,7 @@ class IngestService:
             report.errors.extend(_rollback_staged_paths(staged))
             _remove_empty_staging_root(staging_root)
             report.chunks_removed = 0
-            report.versions_removed = 0
+            report.documents_removed = 0
             report.files_deleted = 0
             report.parsed_caches_deleted = 0
             report.caption_caches_deleted = 0
@@ -565,9 +530,9 @@ class IngestService:
         self._invalidate_search_caches()
         return report
 
-    def _delete_qdrant_versions(self, version_ids: set[str]) -> dict[str, int]:
-        """Delete exact version payloads from every active dimension collection."""
-        if not version_ids:
+    def _delete_qdrant_documents(self, document_ids: set[str]) -> dict[str, int]:
+        """Delete exact document payloads from every active dimension collection."""
+        if not document_ids:
             return {"text": 0, "image": 0}
         from qdrant_client.http import models
 
@@ -602,8 +567,8 @@ class IngestService:
             filter=models.Filter(
                 must=[
                     models.FieldCondition(
-                        key="version_id",
-                        match=models.MatchAny(any=sorted(version_ids)),
+                        key="document_id",
+                        match=models.MatchAny(any=sorted(document_ids)),
                     )
                 ]
             )
@@ -891,13 +856,11 @@ class IngestService:
         return rebuilt
 
     @staticmethod
-    def _version_status_key(asset: IngestAsset) -> str:
+    def _document_status_key(asset: IngestAsset) -> str:
         record = asset_index.find_by_relative_path(asset.relative_path)
         if record is None:
-            raise ValueError(
-                f"no persisted document version for asset path {asset.relative_path!r}"
-            )
-        return record.version.version_id
+            raise ValueError(f"no persisted document for asset path {asset.relative_path!r}")
+        return record.document.document_id
 
 
 # ─── Worker functions (module-level so threading can call them) ────────
@@ -908,21 +871,14 @@ def _run_parse_task(service: IngestService, rec: TaskRecord, options: ParseOptio
     service._workflow.run_parse(service, rec, options)
 
 
-def _remove_document_version_records(document_id: str, version_ids: set[str]) -> int:
-    """Atomically remove exact versions without losing concurrent appends."""
+def _remove_document_records(document_id: str) -> int:
+    """Atomically remove one current document record."""
     target = get_asset_index_path()
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(target.suffix + ".tmp")
     with asset_index._index_guard(target, exclusive=True):
         current = asset_index._load_records_unlocked(target)
-        records = [
-            record
-            for record in current
-            if not (
-                record.document.document_id == document_id
-                and record.version.version_id in version_ids
-            )
-        ]
+        records = [record for record in current if record.document.document_id != document_id]
         removed = len(current) - len(records)
         try:
             with temporary.open("w", encoding="utf-8") as handle:
@@ -988,12 +944,9 @@ def _remove_empty_staging_root(staging_root: Path) -> None:
         staging_root.parent.rmdir()
 
 
-def _remove_document_version_rows_from_documents_jsonl(
-    document_id: str,
-    version_ids: set[str],
-) -> int:
-    """Remove exact document-version chunks while preserving every sibling scope."""
-    if not document_id or not version_ids:
+def _remove_document_rows_from_documents_jsonl(document_id: str) -> int:
+    """Remove all current chunks for one document."""
+    if not document_id:
         return 0
     docs_path = get_documents_jsonl()
     if not docs_path.exists():
@@ -1022,12 +975,8 @@ def _remove_document_version_rows_from_documents_jsonl(
                     except json.JSONDecodeError:
                         dst.write(line)
                         continue
-                    version = obj.get("document_version") if isinstance(obj, dict) else None
-                    if (
-                        isinstance(version, dict)
-                        and version.get("document_id") == document_id
-                        and version.get("version_id") in version_ids
-                    ):
+                    document = obj.get("document") if isinstance(obj, dict) else None
+                    if isinstance(document, dict) and document.get("document_id") == document_id:
                         removed += 1
                         continue
                     dst.write(line)

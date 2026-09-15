@@ -17,7 +17,7 @@ Returns service liveness plus file and index state.
 ```json
 {
   "status": "ok",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "files": 12,
   "documents_jsonl_exists": true,
   "text_index_exists": true,
@@ -27,9 +27,22 @@ Returns service liveness plus file and index state.
 }
 ```
 
+## `GET /metrics`
+
+Returns bounded process-local counters for retrieval and answer refusal decisions. It never includes a query, document text, principal, or provider credential. Restarting the API process resets the counters.
+
+```json
+{
+  "retrieval": {
+    "hybrid": {"count": 18, "avg_elapsed_ms": 64, "max_elapsed_ms": 152, "candidates": 96, "returned": 27, "reasons": {"none": 17, "no_candidates": 1}}
+  },
+  "refusals": {"weak_lexical_coverage": {"count": 2, "candidates": 2}}
+}
+```
+
 ## `POST /upload/preview`
 
-Multipart upload of one or more PDF / image files. This is **preview only**: no parse, embedding, or Qdrant call runs here.
+Multipart upload of PDF, image, Office, and table files. This is **preview only**: no parse, embedding, or Qdrant call runs here.
 
 The endpoint:
 
@@ -44,7 +57,7 @@ The endpoint:
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `files` | one or more `multipart/form-data` files | PDF / PNG / JPEG / GIF / BMP / WEBP |
+| `files` | one or more `multipart/form-data` files | PDF / PNG / JPEG / GIF / BMP / WEBP / DOCX / PPTX / XLSX / CSV / TSV / HTML / Markdown / text |
 
 **Response**
 
@@ -133,8 +146,8 @@ Returns the latest snapshot of a background task.
   "current": "index built · text=10 image=4",
   "error": null,
   "uploaded_files": ["pdfs/paper.pdf", "images/photo.jpg"],
-  "version_statuses": {
-    "rag-paper@1-a1b2c3d4e5f6": "indexed"
+  "document_statuses": {
+    "rag-paper": "indexed"
   },
   "elapsed_sec": 27.6,
   "progress": 1.0
@@ -164,7 +177,7 @@ Companion to `/tasks/{task_id}` polling — the web UI uses this to drive the li
 
 ## `POST /tasks/{task_id}/cancel`
 
-Cooperative cancellation: sets a per-task stop flag the worker checks between document versions; the task ends as `status="cancelled"` (terminal). A task already at a terminal state is returned unchanged. Cancellation is cooperative — a task mid-version finishes that version first.
+Cooperative cancellation: sets a per-task stop flag the worker checks between documents; the task ends as `status="cancelled"` (terminal). A task already at a terminal state is returned unchanged. Cancellation is cooperative — a task mid-document finishes that document first.
 
 ```json
 // response
@@ -180,8 +193,8 @@ Re-run a previously failed, partial, or interrupted task. The original task's `k
 
 Query parameters:
 
-- `force=true` — clear the targeted document-version caches and chunk rows before re-parsing.
-- `failed_only=true` — only re-run document versions whose previous status was failed, skipped, or failed during indexing. Only meaningful for tasks with per-version outcome data (`version_statuses`).
+- `force=true` — clear the targeted document caches and chunk rows before re-parsing.
+- `failed_only=true` — only re-run documents whose previous status was failed, skipped, or failed during indexing. Only meaningful for tasks with per-document outcome data (`document_statuses`).
 
 ```json
 // response
@@ -199,12 +212,12 @@ Query parameters:
 Status codes:
 
 - `200` — retry task created.
-- `400` — original task is not in a retryable state, or no document versions are available.
+- `400` — original task is not in a retryable state, or no documents are available.
 - `404` — `task_id` is unknown.
 
 ## `GET /documents`
 
-Returns the latest visible version of each document. Every request must supply
+Returns the current visible record for each document. Every request must supply
 `collection` and `principal` query parameters; an optional JSON
 `metadata_filter` further restricts the persisted access policy.
 
@@ -215,10 +228,7 @@ Returns the latest visible version of each document. Every request must supply
       "document_id": "rag-paper",
       "title": "RAG Paper",
       "source": {"source_id": "upload:rag-paper"},
-      "latest_version": {
-        "document_id": "rag-paper",
-        "version_id": "rag-paper@2-b1c2d3e4f5a6",
-        "version_number": 2,
+      "asset": {
         "content_hash": "b1c2d3e4f5a6..."
       }
     }
@@ -228,18 +238,18 @@ Returns the latest visible version of each document. Every request must supply
 
 ## `GET /documents/{document_id}`
 
-Returns the visible immutable version history for one document using the same
-required access-context query parameters as `/documents`. Returns `404` when
-the document is unknown or no version is visible to that context.
+Returns the visible current record for one document using the same required
+access-context query parameters as `/documents`. Returns `404` when the
+document is unknown or not visible to that context.
 
-## `GET /parsed-image/{document_id}/{version_id}/{filename}`
+## `GET /parsed-image/{document_id}/{filename}`
 
-Serves one image extracted for a visible document version. The server resolves
-the internal physical cache key from the persisted version record; that key is
+Serves one image extracted for a visible current document. The server resolves
+the internal physical cache key from the persisted asset record; that key is
 not part of the public URL.
 
 - `200` — image bytes (`image/<ext>`).
-- `404` — the document version or filename is unknown, inaccessible, or unsafe.
+- `404` — the document or filename is unknown, inaccessible, or unsafe.
 
 ## `POST /search`
 
@@ -262,8 +272,7 @@ not part of the public URL.
     {
       "score": 0.91,
       "document_id": "rag-paper",
-      "version_id": "rag-paper@2-b1c2d3e4f5a6",
-      "chunk_id": "rag-paper@2-b1c2d3e4f5a6:3",
+      "chunk_id": "rag-paper:3",
       "title": "Paper Title",
       "source_type": "pdf",
       "source_path": "pdfs/paper.pdf",
@@ -299,7 +308,13 @@ Synchronous answer: retrieval + grounded LLM completion in one call.
 
 ```json
 // request
-{ "question": "which document covers retrieval-augmented generation?", "top_k": 5 }
+{
+  "question": "which document covers retrieval-augmented generation?",
+  "top_k": 5,
+  "collection": "team-knowledge",
+  "principal": "alice",
+  "min_confidence": 0.5
+}
 
 // response
 {
@@ -313,11 +328,18 @@ If no LLM is configured (missing `LLM_MODEL` or its resolved connection), the re
 
 ## `POST /chat`
 
-Same as `/answer` but takes a `ChatRequest` (`question` + routing fields `mode` / `image_path` / `top_k`) and runs the full retrieve + grounded-LLM flow in one non-streaming call. Useful when you don't want NDJSON streaming. Returns the same shape as `/answer` (`question`, `answer`, `sources`).
+Same as `/answer` but also takes routing fields `mode` / `image_path` / `top_k` and runs the full retrieve + grounded-LLM flow in one non-streaming call. `collection`, `principal`, and `min_confidence` are required. Useful when you don't want NDJSON streaming. Returns the same shape as `/answer` (`question`, `answer`, `sources`).
 
 ```json
 // request
-{ "question": "which document covers RAG?", "mode": "hybrid", "top_k": 5 }
+{
+  "question": "which document covers RAG?",
+  "mode": "hybrid",
+  "top_k": 5,
+  "collection": "team-knowledge",
+  "principal": "alice",
+  "min_confidence": 0.5
+}
 ```
 
 Like `/answer`, `/chat` spends LLM quota, so once `MMRAG_API_TOKEN` is set it is guarded the same way as the other write/quota endpoints (see [Configuration](configuration.md)).
@@ -325,6 +347,8 @@ Like `/answer`, `/chat` spends LLM quota, so once `MMRAG_API_TOKEN` is set it is
 ## `POST /chat/stream`
 
 NDJSON streaming of the same flow as `/answer`. Each line is a JSON object:
+The request body uses the same required `question`, `collection`, `principal`,
+and `min_confidence` fields as `/chat`.
 
 | Event | Fields | Fires |
 | --- | --- | --- |
@@ -342,6 +366,8 @@ Runs the retrieval regression set. Each case reports whether an exact positively
 | Field | Default | Notes |
 | --- | --- | --- |
 | `top_k` | `5` | 1–200 |
+| `collection` | required | Access-policy collection to evaluate |
+| `principal` | required | Principal used to apply the access policy |
 | `v2` | `false` | Run the v2 (multi-dimensional, Chinese-primary) set instead of v1 |
 | `cases_path` | `null` | Optional path to a case JSON overriding the default (`EVAL_CASES_PATH` → the bundled `mm_asset_rag/eval_data/<version>_cases.json`). Same schema as `mmrag eval --cases`. |
 

@@ -7,6 +7,7 @@ inside ``tmp_home`` and feed them through the production parser functions.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import responses
@@ -14,6 +15,7 @@ import responses
 from mm_asset_rag.assets import IngestAsset
 from mm_asset_rag.parsers.image_parser import parse_image
 from mm_asset_rag.parsers.pdf_parser import parse_pdf
+from mm_asset_rag.parsers.table_parser import parse_table
 
 
 def _make_asset(assets_dir: Path, asset_id: str, file_path: Path, source_type: str) -> IngestAsset:
@@ -71,6 +73,75 @@ def test_parse_pdf_pymupdf(pdf_asset: IngestAsset) -> None:
 def test_parse_pdf_invalid_parser_raises(pdf_asset: IngestAsset) -> None:
     with pytest.raises(ValueError, match="Unsupported PDF parser"):
         parse_pdf(pdf_asset, parser="bogus")
+
+
+def test_parse_csv_preserves_headers_entities_and_numeric_values(tmp_home: Path) -> None:
+    assets_dir = tmp_home / "assets"
+    table_dir = assets_dir / "documents"
+    table_dir.mkdir(parents=True)
+    path = table_dir / "sales.csv"
+    path.write_text(
+        "产品,地区,销量,收入\nA产品,华东,120,4500.50\nB产品,华南,80,3200\n", encoding="utf-8"
+    )
+    asset = _make_asset(assets_dir, "sales", path, "document")
+
+    chunks = parse_table(asset)
+
+    assert len(chunks) == 2
+    assert "表格：sales" in chunks[0].text
+    assert "产品：A产品" in chunks[0].text
+    assert "地区：华东" in chunks[0].text
+    assert "销量：120" in chunks[0].text
+    assert chunks[0].metadata["table_headers"] == ["产品", "地区", "销量", "收入"]
+    assert chunks[0].metadata["row_index"] == 1
+
+
+def test_parse_xlsx_preserves_sheet_and_row_semantics(tmp_home: Path) -> None:
+    from openpyxl import Workbook
+
+    assets_dir = tmp_home / "assets"
+    table_dir = assets_dir / "documents"
+    table_dir.mkdir(parents=True)
+    path = table_dir / "budget.xlsx"
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "预算"
+    worksheet.append(["部门", "预算", "月份"])
+    worksheet.append(["研发", 250000, "2026-09"])
+    workbook.save(path)
+    asset = _make_asset(assets_dir, "budget", path, "document")
+
+    chunks = parse_table(asset)
+
+    assert len(chunks) == 1
+    assert "工作表：预算" in chunks[0].text
+    assert "部门：研发" in chunks[0].text
+    assert "预算：250000" in chunks[0].text
+    assert chunks[0].metadata["sheet_name"] == "预算"
+
+
+def test_parse_table_enforces_row_and_cell_budgets(tmp_home: Path, monkeypatch) -> None:
+    import mm_asset_rag.parsers.table_parser as table_parser
+
+    assets_dir = tmp_home / "assets"
+    table_dir = assets_dir / "documents"
+    table_dir.mkdir(parents=True)
+    path = table_dir / "limited.csv"
+    path.write_text("name,value\na,1\nb,2\n", encoding="utf-8")
+    asset = _make_asset(assets_dir, "limited", path, "document")
+    monkeypatch.setattr(
+        table_parser,
+        "get_settings",
+        lambda: SimpleNamespace(
+            table_max_rows=1,
+            table_max_columns=10,
+            table_max_cell_chars=10,
+            table_max_total_chars=100,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="row budget"):
+        parse_table(asset)
 
 
 def test_parse_image_via_caption_only(image_asset: IngestAsset, monkeypatch) -> None:
@@ -223,7 +294,9 @@ def test_call_ocr_local_raises_friendly_when_extra_missing(
         ip.call_ocr_local(image_asset.file_path)
 
 
-def test_parse_image_via_local_ocr(image_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_parse_image_via_local_ocr(
+    image_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """OCR on via the default local backend — extracted text enters the
     chunk and is retrievable. Stub the rapidocr handle so no model loads."""
     import mm_asset_rag.parsers.image_parser as ip
@@ -457,6 +530,28 @@ def test_submit_paddleocr_vl_job_uses_settings(
     assert captured["headers"]["Authorization"] == "bearer token"
     assert captured["data"]["model"] == "custom-model"
     assert captured["timeout"] == 12.0
+
+
+def test_submit_paddleocr_vl_job_does_not_log_upstream_error_body(
+    pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from mm_asset_rag.parsers import pdf_parser
+    from mm_asset_rag.parsers.pdf_parser import submit_paddleocr_vl_job
+    from mm_asset_rag.settings import get_settings
+
+    monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
+    get_settings.cache_clear()
+
+    class FakeResponse:
+        status_code = 502
+        text = "internal.example.test trace: customer document content"
+
+    monkeypatch.setattr(pdf_parser.requests, "post", lambda *args, **kwargs: FakeResponse())
+
+    with pytest.raises(RuntimeError, match="HTTP 502"):
+        submit_paddleocr_vl_job(pdf_asset.file_path)
+
+    assert "internal.example.test" not in capsys.readouterr().out
 
 
 def test_ocr_image_url_allowed_blocks_ssrf(monkeypatch) -> None:

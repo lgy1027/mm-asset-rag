@@ -40,8 +40,9 @@ Qdrant is the built-in search/index adapter.
   lifecycle work. `IngestWorkflow` owns parse/enrich/document/index
   sequencing, while `TaskStore` owns SQLite persistence; the facade keeps
   threads, cancellation, retry, and streaming behind the API boundary.
-- **`parsers/`** turn raw files into `ParsedDocument` records. Today:
-  PyMuPDF + PaddleOCR-VL (PDF); OCR + VLM caption (image). Each parser
+- **`parsers/`** turn raw files into parsed chunks. Today:
+  PyMuPDF, PaddleOCR-VL, docling, and PP-OCR (PDF); MarkItDown/docling and
+  a row-aware table parser (documents); OCR + VLM caption (image). Each parser
   satisfies `Parser` Protocol and is registered at import time.
 - **`embedders/`** generate dense / sparse vectors. Today: OpenAI-
   compatible text embedder + CLIP image embedder. Each satisfies the
@@ -64,7 +65,7 @@ The runtime registry selects the adapters that satisfy the declared
 
 | Protocol          | Keyed by            | Where the registry is queried                            |
 | ----------------- | ------------------- | ------------------------------------------------------- |
-| `Parser`          | `(source_type, name)` | `parsers/__init__.py` registers `pymupdf` / `paddleocr_vl` (PDF), `docling` / `markitdown` (documents), `image` |
+| `Parser`          | `(source_type, name)` | `parsers/__init__.py` registers `auto` / `pymupdf` / `paddleocr_vl` / `docling` / `ppocr` (PDF), `docling` / `markitdown` (documents, including CSV/TSV/XLSX table routing), and `image` |
 | `Embedder`        | `(modality, name)`  | `embedders/__init__.py` registers the default text embedder |
 | `SearchBackend` / `IndexBackend` | `name` | `backends/__init__.py` registers the Qdrant adapter |
 | `VectorBackend`   | `name`              | Legacy aggregate port retained for compatible adapters   |

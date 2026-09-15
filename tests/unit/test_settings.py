@@ -106,25 +106,22 @@ def test_case_insensitive_env(monkeypatch):
 
 
 def test_has_llm_requires_full_triple(monkeypatch):
-    # ``has_llm`` accepts either ``OPENAI_*`` or ``VLM_*`` (LLM channel
-    # falls back to VLM credentials), so the negative case must clear both
-    # triples — otherwise a sibling test that set ``VLM_*`` would leak in.
-    monkeypatch.delenv("OPENAI_COMPAT_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_COMPAT_BASE_URL", raising=False)
+    monkeypatch.delenv("MODEL_API_KEY", raising=False)
+    monkeypatch.delenv("MODEL_BASE_URL", raising=False)
     monkeypatch.delenv("LLM_MODEL", raising=False)
     assert Settings(_env_file=None).has_llm is False
 
-    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "k")
+    monkeypatch.setenv("MODEL_API_KEY", "k")
     assert Settings(_env_file=None).has_llm is False  # still missing BASE_URL+MODEL
-    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://x")
+    monkeypatch.setenv("MODEL_BASE_URL", "http://x")
     assert Settings(_env_file=None).has_llm is False  # still missing MODEL
     monkeypatch.setenv("LLM_MODEL", "gpt")
     assert Settings(_env_file=None).has_llm is True
 
 
 def test_text_embedding_uses_common_connection_but_requires_own_model(monkeypatch):
-    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "k1")
-    monkeypatch.setenv("OPENAI_COMPAT_BASE_URL", "http://provider")
+    monkeypatch.setenv("MODEL_API_KEY", "k1")
+    monkeypatch.setenv("MODEL_BASE_URL", "http://provider")
     monkeypatch.setenv("EMBEDDING_MODEL", "embed-v1")
     s = Settings(_env_file=None)
     assert s.text_embedding_creds == ("k1", "http://provider", "embed-v1")

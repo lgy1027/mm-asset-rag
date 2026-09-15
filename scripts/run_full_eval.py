@@ -155,6 +155,7 @@ def _v2_metrics(results: list[V2Result]) -> dict:
 
 def _ndcg_at_k(results: list, k: int) -> float:
     import math
+
     if not results:
         return 0.0
     s = 0.0
@@ -321,7 +322,9 @@ def _markdown_report(payload: dict) -> str:
     lines.append("### 3.2 per-group")
     per_group = aq.get("groups", {})
     if per_group:
-        lines.append("| group | total | coverage | citation_p | citation_r | citation_present | faithfulness | skipped |")
+        lines.append(
+            "| group | total | coverage | citation_p | citation_r | citation_present | faithfulness | skipped |"
+        )
         lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
         for g, m in sorted(per_group.items()):
             lines.append(
@@ -409,22 +412,27 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--cases", default="examples/eval_cases_chapter11_v2.json",
+        "--cases",
+        default="examples/eval_cases_chapter11_v2.json",
         help="Path to v2 case file (must contain text→text + text→image + image→image groups).",
     )
     parser.add_argument("--top-k", type=int, default=5)
     parser.add_argument("--collection", default="default")
     parser.add_argument("--principal", default="eval")
     parser.add_argument(
-        "--max-judge-cases", type=int, default=12,
+        "--max-judge-cases",
+        type=int,
+        default=12,
         help="Cap LLM-judge calls per run (cost guard).",
     )
     parser.add_argument(
-        "--skip-answer", action="store_true",
+        "--skip-answer",
+        action="store_true",
         help="Skip the answer-quality eval (saves LLM cost).",
     )
     parser.add_argument(
-        "--skip-i2i", action="store_true",
+        "--skip-i2i",
+        action="store_true",
         help="Skip image→image eval (faster).",
     )
     args = parser.parse_args()
@@ -461,9 +469,7 @@ def main() -> None:
         print("[full_eval] running image→image ...")
         lat_i2i: list[float] = []
         i2i = run_image_to_image(cases_path, top_k, args.collection, args.principal)
-        write_eval_report_v2(
-            {"text_to_text": t2t, "text_to_image": t2i, "image_to_image": i2i}
-        )
+        write_eval_report_v2({"text_to_text": t2t, "text_to_image": t2i, "image_to_image": i2i})
         print(f"[full_eval] image→image: {len(i2i)} cases, p50={_percentile(lat_i2i, 0.5):.1f}ms")
     else:
         lat_i2i = []

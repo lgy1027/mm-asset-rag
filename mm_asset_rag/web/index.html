@@ -1040,7 +1040,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
           <div data-document-id="${escapeHtml(document.document_id)}" style="padding:4px 0;border-bottom:1px solid var(--border);cursor:pointer">
             <div style="font-size:12px">${escapeHtml(document.title || document.document_id)}</div>
             <div style="font-size:11px;color:var(--muted);margin-top:2px">
-              ${escapeHtml(document.document_id)} · ${escapeHtml(document.latest_version?.version_id || "")}
+              ${escapeHtml(document.document_id)} · ${escapeHtml(document.asset?.content_hash?.slice(0, 12) || "")}
             </div>
           </div>`).join("");
       } catch (e) {
@@ -1208,14 +1208,12 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
           return;
         }
         const d = await r.json();
-        const versions = (d.versions || []).map((version) => `
-          <li><code>${escapeHtml(version.version_id || "")}</code> · version ${escapeHtml(version.version_number || "")}</li>`).join("");
         documentDrawerBody.innerHTML = `
           <dl style="margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:12px">
             <dt style="color:var(--muted)">title</dt><dd>${escapeHtml(d.title || "")}</dd>
             <dt style="color:var(--muted)">document ID</dt><dd><code>${escapeHtml(d.document_id || "")}</code></dd>
             <dt style="color:var(--muted)">source</dt><dd>${escapeHtml(d.source?.uri || d.source?.source_id || "")}</dd>
-            <dt style="color:var(--muted)">versions</dt><dd><ul style="margin:0;padding-left:16px">${versions || "<li>none</li>"}</ul></dd>
+            <dt style="color:var(--muted)">asset hash</dt><dd><code>${escapeHtml(d.asset?.content_hash || "")}</code></dd>
           </dl>
         `;
       } catch (err) {
@@ -1343,14 +1341,12 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
           const thumbs = imgs
             .map(
               (img) => `
-              <a href="/parsed-image/${encodeURIComponent(s.document_id || "")}/${encodeURIComponent(s.version_id || "")}/${encodeURIComponent(
+              <a href="/parsed-image/${encodeURIComponent(s.document_id || "")}/${encodeURIComponent(
                 (img && img.path) || "",
               )}?${imageQuery}" target="_blank" rel="noopener" title="${escapeHtml(
                 (img && (img.caption || "")) || "",
               )}">
-                <img class="src-thumb" src="/parsed-image/${encodeURIComponent(s.document_id || "")}/${encodeURIComponent(
-                  s.version_id || "",
-                )}/${encodeURIComponent((img && img.path) || "")}?${imageQuery}" alt="${escapeHtml(
+                <img class="src-thumb" src="/parsed-image/${encodeURIComponent(s.document_id || "")}/${encodeURIComponent((img && img.path) || "")}?${imageQuery}" alt="${escapeHtml(
                   (img && (img.caption || `图${img.figure_id || ""}`)) || "图",
                 )}" loading="lazy" />
               </a>`,
@@ -1365,8 +1361,6 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
               <span class="score">#${i + 1}</span>
               <span class="route">${escapeHtml((s.routes || []).join(", "))}</span>
               <span style="color:var(--accent)">${escapeHtml(s.document_id || "")}</span>
-              <span style="color:var(--muted)">·</span>
-              <span style="color:var(--muted)">${escapeHtml(s.version_id || "")}</span>
               <span style="color:var(--muted)">·</span>
               <span style="color:var(--muted)">${escapeHtml(s.chunk_id || "")}</span>
               <span style="color:var(--muted)">·</span>

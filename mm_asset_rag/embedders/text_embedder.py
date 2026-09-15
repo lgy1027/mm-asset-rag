@@ -33,7 +33,7 @@ class TextEmbedder:
         self.max_input_chars = overrides.get("max_input_chars") or s.embedding_max_input_chars
         if not (self.api_key and self.base_url and self.model):
             raise EmbeddingConfigError(
-                "Remote embedding requires OPENAI_COMPAT_API_KEY, OPENAI_COMPAT_BASE_URL, "
+                "Remote embedding requires MODEL_API_KEY, MODEL_BASE_URL, "
                 "and EMBEDDING_MODEL (or explicit EMBEDDING_* overrides)."
             )
         self.connection = require_connection(self.base_url, self.api_key)

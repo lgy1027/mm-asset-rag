@@ -33,6 +33,29 @@ def test_cli_parse_subcommand_defaults() -> None:
     assert args.principals == ["alice"]
 
 
+def test_cli_parse_help_lists_document_and_table_inputs(capsys: pytest.CaptureFixture[str]) -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["parse", "--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "DOCX" in help_text
+    assert "CSV" in help_text
+    assert "TSV" in help_text
+
+
+def test_cli_documents_help_describes_current_document_records(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["documents", "--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "current documents" in help_text
+    assert "versions" not in help_text
+
+
 def test_collect_upload_files_keeps_relative_directory_labels(tmp_path: Path) -> None:
     root = tmp_path / "images"
     poster = root / "2026年KO活动" / "poster.png"
@@ -160,8 +183,7 @@ def test_cli_search_serializes_only_public_hit_fields(
         evidence="body",
         metadata={
             "document_id": "handbook",
-            "version_id": "handbook@1-fullhash",
-            "chunk_id": "handbook@1-fullhash:0",
+            "chunk_id": "handbook:0",
             "access_policy": {"allowed_principals": ["alice"]},
         },
     )
@@ -173,8 +195,8 @@ def test_cli_search_serializes_only_public_hit_fields(
 
     row = json.loads(capsys.readouterr().out)[0]
     assert row["document_id"] == "handbook"
-    assert row["version_id"] == "handbook@1-fullhash"
-    assert row["chunk_id"] == "handbook@1-fullhash:0"
+    assert "version_id" not in row
+    assert row["chunk_id"] == "handbook:0"
     assert "asset_id" not in json.dumps(row)
     assert "access_policy" not in json.dumps(row)
 
@@ -587,6 +609,99 @@ def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "write_v1" not in calls
 
 
+def test_cli_eval_image_runs_auto_image_qrels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``mmrag eval --image`` evaluates the user-facing automatic route."""
+    from dataclasses import dataclass, field
+
+    import mm_asset_rag.cli as cli_mod
+    import mm_asset_rag.evaluation_v2 as ev2
+
+    @dataclass
+    class _Result:
+        query_id: str = "poster"
+        query: str = "活动图片"
+        qrels: dict[str, int] = field(default_factory=lambda: {"poster-doc": 1})
+        actual_document_ids: list[str] = field(default_factory=lambda: ["poster-doc"])
+        hit: bool = True
+        rank: int | None = 1
+        group: str = "text_to_image"
+
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(cli_mod, "_resolve_cli_cases_path", lambda _value: "image-qrels.json")
+    monkeypatch.setattr(
+        ev2,
+        "run_auto_image_eval_v2",
+        lambda **kwargs: calls.setdefault("run", kwargs) and [_Result()],
+    )
+    monkeypatch.setattr(
+        ev2, "write_eval_report_v2", lambda groups: calls.setdefault("groups", groups)
+    )
+
+    args = build_parser().parse_args(
+        [
+            "eval",
+            "--image",
+            "--cases",
+            "image-qrels.json",
+            "--collection",
+            "team",
+            "--principal",
+            "alice",
+        ]
+    )
+    cli_mod.command_eval(args)
+
+    assert calls["run"] == {
+        "top_k": 5,
+        "cases_path": "image-qrels.json",
+        "collection": "team",
+        "metadata_filter": None,
+        "principal": "alice",
+    }
+    assert calls["groups"] == {"image_auto": [_Result()]}
+
+
+def test_cli_eval_image_disables_optional_retrieval_enhancements(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import mm_asset_rag.cli as cli_mod
+    import mm_asset_rag.evaluation_v2 as ev2
+
+    settings = SimpleNamespace(query_rewrite_enabled=True, reranker_enabled=True)
+    observed: dict[str, bool] = {}
+    monkeypatch.setattr(cli_mod, "get_settings", lambda: settings)
+    monkeypatch.setattr(cli_mod, "_resolve_cli_cases_path", lambda _value: "image-qrels.json")
+
+    def run_gate(**_kwargs):
+        observed["rewrite"] = settings.query_rewrite_enabled
+        observed["reranker"] = settings.reranker_enabled
+        return []
+
+    monkeypatch.setattr(ev2, "run_auto_image_eval_v2", run_gate)
+    monkeypatch.setattr(ev2, "write_eval_report_v2", lambda _groups: None)
+
+    cli_mod.command_eval(
+        build_parser().parse_args(
+            [
+                "eval",
+                "--image",
+                "--cases",
+                "image-qrels.json",
+                "--collection",
+                "team",
+                "--principal",
+                "alice",
+            ]
+        )
+    )
+
+    assert observed == {"rewrite": False, "reranker": False}
+    assert settings.query_rewrite_enabled is True
+    assert settings.reranker_enabled is True
+
+
 def test_cli_retry_subcommand_parses() -> None:
     parser = build_parser()
     args = parser.parse_args(["retry", "abc123def456"])
@@ -630,10 +745,10 @@ def test_cli_documents_enforces_acl_and_hides_policy(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import mm_asset_rag.cli as cli_mod
-    from mm_asset_rag.asset_index import DocumentVersionRecord
-    from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, DocumentVersion, Source
+    from mm_asset_rag.asset_index import DocumentRecord
+    from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, Source
 
-    def record(document_id: str, principal: str) -> DocumentVersionRecord:
+    def record(document_id: str, principal: str) -> DocumentRecord:
         document = Document(
             document_id,
             document_id.title(),
@@ -644,9 +759,8 @@ def test_cli_documents_enforces_acl_and_hides_policy(
                 metadata={"department": "research", "secret": principal},
             ),
         )
-        return DocumentVersionRecord(
+        return DocumentRecord(
             document=document,
-            version=DocumentVersion.create(document, principal * 64),
             asset=Asset(principal * 64, "pdf", f"pdfs/{document_id}.pdf"),
         )
 

@@ -57,7 +57,7 @@ def documents_jsonl_lock(path: Path | None = None):
     Two write shapes touch this file and must not overlap, or data is
     lost:
 
-    * the ingest workflow appends chunk rows for a parsed document version
+    * the ingest workflow appends chunk rows for a parsed current document
       (``target.open("a")``).
     * document/version lifecycle cleanup does a read → tmp →
       ``os.replace`` rewrite for exact version rows (including force retry).

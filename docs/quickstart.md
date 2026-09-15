@@ -56,8 +56,8 @@ EMBEDDING_API_KEY=ollama          # ollama 不校验 key,随便填即可占位
 可选:接上一步的 LLM(不接则 `/answer` 返回 evidence 摘要):
 
 ```bash
-OPENAI_COMPAT_BASE_URL=http://127.0.0.1:11434/v1
-OPENAI_COMPAT_API_KEY=ollama
+MODEL_BASE_URL=http://127.0.0.1:11434/v1
+MODEL_API_KEY=ollama
 LLM_MODEL=gemma3:4b
 ```
 
@@ -70,7 +70,7 @@ RERANKER_ENABLED=false
 ## 第 4 步:索引一个 PDF
 
 ```bash
-mmrag parse ./your_paper.pdf
+mmrag parse ./your_paper.pdf --collection default --principal local-user
 ```
 
 这条命令会:嗅探文件 → PyMuPDF 抽文本 + 分块 → bge-m3 向量化 → 写进 Qdrant local collection。
@@ -82,7 +82,7 @@ mmrag parse ./your_paper.pdf
 ## 第 5 步:搜索
 
 ```bash
-mmrag search "retrieval augmented generation"
+mmrag search "retrieval augmented generation" --collection default --principal local-user
 # 默认 mode=hybrid(text dense + BM25 + BM25-zh 三路 RRF 融合)
 ```
 
@@ -91,8 +91,8 @@ mmrag search "retrieval augmented generation"
 其他模式:
 
 ```bash
-mmrag search "your query" --mode text        # 纯文本路
-mmrag search "your query" --mode hybrid --top-k 10
+mmrag search "your query" --collection default --principal local-user --mode text        # 纯文本路
+mmrag search "your query" --collection default --principal local-user --mode hybrid --top-k 10
 ```
 
 ### 跑一轮性能基准(可选)
@@ -108,7 +108,7 @@ uv run python scripts/benchmark.py --top-k 5 --n-runs 50
 ## 第 6 步:问个问题(可选)
 
 ```bash
-mmrag answer "这篇论文讲了什么?"
+mmrag answer "这篇论文讲了什么?" --collection default --principal local-user --min-confidence 0.5
 ```
 
 配了 LLM → 返回 grounded 回答;没配 → 返回检索到的 evidence 摘要,不报错。
@@ -117,7 +117,7 @@ mmrag answer "这篇论文讲了什么?"
 
 | 现象 | 原因 / 解法 |
 | --- | --- |
-| `TextEmbedder requires api_key, base_url, and model` | `.env` 没配全 3 个 `EMBEDDING_*`,或 ollama 没起(`ollama serve`) |
+| `Remote embedding requires ...` | 共享连接没配全 `MODEL_API_KEY`、`MODEL_BASE_URL` 与 `EMBEDDING_MODEL`；也可用完整的 `EMBEDDING_*` 覆盖。Ollama 未启动时先运行 `ollama serve`。 |
 | `Storage folder ... is already accessed by another instance` | Qdrant local 是**单进程锁**。停掉 API server / 别的 `mmrag` 进程再跑。换 `QDRANT_URL` 可并发。 |
 | 改了 embedding 维度后搜不到东西 | collection 名按向量维度加后缀,换维度会建新空集合。跑 `mmrag reindex` 重建。 |
 | 单测莫名红(本机有 `.env`) | 本机根目录 `.env` 会被单测读进去覆盖默认值。**跑测试前挪开 `.env`**:`mv .env .env._testparked` |
@@ -135,6 +135,6 @@ mmrag answer "这篇论文讲了什么?"
 | 云 reranker(不装本地模型) | 无额外依赖 | `RERANKER_ENABLED=true` + `RERANKER_PROVIDER=siliconflow`(或 `dashscope`)+ `RERANKER_API_KEY=sk-xxx` |
 | docx/pptx/xlsx 复杂版面 | `[docling]` | `DOCUMENT_PARSER=docling` |
 | 扫描件 PDF OCR | PaddleOCR-VL token | `PDF_PARSER=paddleocr_vl` |
-| VLM 给图片打标 | ollama vision 模型 | `ENABLE_VLM=true` |
+| VLM 给独立图片打标 | ollama vision 模型 | 摄入时加 `--vlm` |
 
 完整配置参考:[configuration.md](configuration.md);架构总览:[architecture.md](architecture.md);上传流程:[upload-flow.md](upload-flow.md)。

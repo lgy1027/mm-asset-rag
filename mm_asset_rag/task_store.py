@@ -35,7 +35,7 @@ class TaskRecord:
     origin_task_id: str | None = None
     force: bool = False
     failed_only: bool = False
-    version_statuses: dict[str, str] = field(default_factory=dict)
+    document_statuses: dict[str, str] = field(default_factory=dict)
 
 
 class TaskStore:

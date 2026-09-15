@@ -11,24 +11,24 @@ $MM_ASSET_RAG_HOME/
 ├── assets/
 │   ├── pdfs/                # confirmed uploaded PDFs
 │   ├── images/              # confirmed uploaded images
-│   └── documents/           # confirmed office/text (docx/pptx/xlsx/html/md/txt)
+│   └── documents/           # confirmed Office/text/table files (docx/pptx/xlsx/csv/tsv/html/md/txt)
 ├── .preview-cache/<id>/     # short-lived upload preview files
-├── parsed/<cache_key>/      # internal cache resolved from a document version
+├── parsed/<cache_key>/      # internal cache resolved from a current asset
 ├── captions/<cache_key>.jsonl # internal VLM-caption cache
 ├── indexes/qdrant/          # local Qdrant persistence
-├── documents.jsonl          # ParsedDocument store
+├── documents.jsonl          # parsed chunk store
 └── tasks.db                  # background task history (SQLite)
 ```
 
-There is no `asset_manifest.json`; `/upload/confirm` creates a logical `Document`, an immutable `DocumentVersion`, and its physical file record. Public lifecycle and retrieval interfaces use `document_id` and `version_id`; physical assets and cache keys remain internal implementation details.
+There is no `asset_manifest.json`; `/upload/confirm` creates a logical `Document` and its current physical `Asset` record. Re-uploading the same `document_id` replaces that asset and its chunks. Public lifecycle and retrieval interfaces use `document_id`; physical assets and cache keys remain internal implementation details.
 
 ## Core variables
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MM_ASSET_RAG_HOME` | `~/.mm_asset_rag` | Runtime data directory |
-| `OPENAI_COMPAT_API_KEY` | unset | Shared remote OpenAI-compatible API key |
-| `OPENAI_COMPAT_BASE_URL` | unset | Shared remote OpenAI-compatible base URL |
+| `MODEL_API_KEY` | unset | Shared remote OpenAI-compatible API key |
+| `MODEL_BASE_URL` | unset | Shared remote OpenAI-compatible base URL |
 | `LLM_MODEL` | unset | Optional chat model |
 | `VLM_MODEL` | unset | Optional vision model |
 | `LLM_TIMEOUT` | `120.0` | Chat timeout seconds |
@@ -40,7 +40,7 @@ There is no `asset_manifest.json`; `/upload/confirm` creates a logical `Document
 
 ### Capability-specific overrides
 
-LLM, VLM and embedding use the shared `OPENAI_COMPAT_*` connection by default. Set a capability's own `*_BASE_URL` and `*_API_KEY` only when it uses a different provider. There is no cross-capability credential or model fallback.
+LLM, VLM and embedding use the shared `MODEL_*` connection by default. Set a capability's own `*_BASE_URL` and `*_API_KEY` only when it uses a different provider. There is no cross-capability credential or model fallback.
 
 When neither triple is complete, `/answer` and `/chat` return evidence-summary fallback answers instead of failing.
 
@@ -49,11 +49,11 @@ When neither triple is complete, `/answer` and `/chat` return evidence-summary f
 The HTTP API ships with two independent security layers, both with safe loopback defaults so a developer's `mmrag-api` works zero-config:
 
 - **TrustedHostMiddleware** locks the API to loopback (`127.0.0.1`, `localhost`, `[::1]`) by default. A malicious web page cannot reach the API via DNS rebinding — the browser SOP preflight blocks cross-origin JSON POST, but multipart `/upload/preview` is a simple request, and the rebinding trick can read GET responses without it. Set `MMRAG_TRUSTED_HOSTS` to your public hostname(s) when deploying behind a reverse proxy, or `*` to disable the check (unsafe without a token).
-- **Bearer token** guards the destructive + write endpoints (`POST /tasks/*/retry`, `POST /upload/preview`, `POST /upload/confirm`, `POST /eval`). Leave `MMRAG_API_TOKEN` unset to keep the zero-config default (no auth); set it when exposing the API beyond localhost. Clients pass it as `Authorization: Bearer <token>` or `X-API-Key: <token>`. Read endpoints (`/search`, `/answer`, `/chat`, `/documents`, `/tasks`, `/health`, `/`) stay open regardless so the bundled web UI's same-origin fetches keep working without a token. The obsolete public asset list/detail/delete lifecycle has been removed.
+- **Bearer token** guards mutations and provider-quota endpoints (`POST /answer`, `POST /chat`, `POST /chat/stream`, `POST /tasks/*/retry`, `POST /upload/preview`, `POST /upload/confirm`, `POST /eval`). Leave `MMRAG_API_TOKEN` unset only for loopback development; set it when exposing the API beyond localhost. Clients pass it as `Authorization: Bearer <token>` or `X-API-Key: <token>`. The bundled web UI does not attach a token, so use a reverse proxy that injects authentication when it is exposed publicly.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MMRAG_API_TOKEN` | unset | Static bearer token for destructive + write endpoints; unset = no auth |
+| `MMRAG_API_TOKEN` | unset | Static bearer token for mutations and provider-quota endpoints; unset = loopback-only development |
 | `MMRAG_TRUSTED_HOSTS` | `127.0.0.1,localhost,[::1]` | Comma-separated trusted Host headers; `*` disables the check |
 | `MMRAG_API_HOST` | `127.0.0.1` | Uvicorn listener; set `0.0.0.0` to receive LAN traffic |
 | `MMRAG_API_PORT` | `8011` | Uvicorn listener port |
@@ -76,10 +76,10 @@ your public hostname).
 | `EMBEDDING_RETRY_COUNT` | `5` | Retry attempts |
 | `EMBEDDING_TIMEOUT` | `120.0` | Timeout seconds |
 | `EMBEDDING_MAX_INPUT_CHARS` | `8192` | Per-text truncation limit |
-| `EMBEDDING_SPARSE_ENABLED` | `auto` | `auto` probes the embedder (only bge-m3 via sentence-transformers exposes it); `true`/`false` force on/off |
+| `EMBEDDING_SPARSE_ENABLED` | `auto` | `auto` probes an adapter capability; the built-in remote OpenAI-compatible embedder is dense-only, while custom adapters may expose sparse vectors |
 | `EMBEDDING_COLBERT_ENABLED` | `auto` | Same probe pattern for the ColBERT multi-vector channel |
 
-When `auto` resolves to enabled (bge-m3), the text collection gains extra sparse / multi-vector fields; the indexer raises a schema-mismatch error so you run `mmrag reindex` to rebuild. The OpenAI-compatible embedder never exposes these, so the default config adds no fields and needs no reindex.
+When `auto` resolves to enabled for a custom adapter, the text collection gains extra sparse / multi-vector fields; the indexer raises a schema-mismatch error so you run `mmrag reindex` to rebuild. The built-in OpenAI-compatible embedder never exposes these, so the default config adds no fields and needs no reindex.
 
 ## Image embedding
 
@@ -156,7 +156,7 @@ Any `HYBRID_INTENT_WEIGHTS_*` field accepts either a JSON object `{"text":0.7,"t
 
 ## Query rewrite (LLM-driven multi-query RAG)
 
-Layers on top of the legacy `QUERY_LOWERCASE` / `QUERY_FUZZY` / `QUERY_EXPANSION` flags (which still run inside `hybrid_search` per-variant). When `QUERY_REWRITE_ENABLED=true`, every text / hybrid search first asks the LLM (shared `OPENAI_*` / `VLM_*` triple, same resolution as `/answer`) for `QUERY_REWRITE_N_VARIANTS` rewordings of the user's query, then runs each variant through `hybrid_search` in parallel and fuses the hits with rank-based RRF — an asset that surfaces in multiple variants accumulates a higher fused score than one that surfaces in just one. Pattern is Anthropic's multi-query RAG cookbook; the per-variant latency caps at `QUERY_REWRITE_TIMEOUT` because a failed rewrite falls back to the original query and a hanging request is pure waste. Image routes (`text-to-image` / `image-to-image`) bypass this layer — the rewrite only helps the text channels; the CLIP cosine match is invariant to the user's exact wording.
+Layers on top of `QUERY_LOWERCASE` / `QUERY_FUZZY` / `QUERY_EXPANSION` flags (which still run inside `hybrid_search` per-variant). When `QUERY_REWRITE_ENABLED=true`, every text / hybrid search first asks the LLM (shared `MODEL_*` connection or `LLM_*` override) for `QUERY_REWRITE_N_VARIANTS` rewordings of the user's query, then runs each variant through `hybrid_search` in parallel and fuses the hits with rank-based RRF. A failed rewrite falls back to the original query. Image routes bypass this layer.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
@@ -190,7 +190,7 @@ After heading-based splitting, each section body is recursively split to a token
 
 ## PDF embedded-image extraction
 
-PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXTRACT_IMAGES` is on, the parser pulls every image a page references into the version's internal `parsed/<cache_key>/images/` directory and attaches the figures a chunk references (or sits next to) to that chunk's `metadata["images"]`. The figures ride in the text hit's payload — surfaced to the LLM (a `关联图片` hint citing the figure caption) and the web UI (a thumbnail served by `GET /parsed-image/{document_id}/{version_id}/{filename}`). Images are **not** embedded into the vector index (that is tier 2); they are an attachment of the text hit. `PDF_IMAGE_MIN_DIM` filters logos / icons. Requires `mmrag reindex` (or a fresh `mmrag parse`) to populate `images` on existing chunks.
+PyMuPDF parses text only by default; embedded figures are dropped. When `PDF_EXTRACT_IMAGES` is on, the parser pulls every image a page references into the current asset's internal `parsed/<cache_key>/images/` directory and attaches the figures a chunk references (or sits next to) to that chunk's `metadata["images"]`. The figures ride in the text hit's payload — surfaced to the LLM (a `关联图片` hint citing the figure caption) and the web UI (a thumbnail served by `GET /parsed-image/{document_id}/{filename}`). Images are **not** embedded into the vector index (that is tier 2); they are an attachment of the text hit. `PDF_IMAGE_MIN_DIM` filters logos / icons. Requires `mmrag reindex` (or a fresh `mmrag parse`) to populate `images` on existing chunks.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
@@ -223,7 +223,7 @@ Anthropic-style chunk context adds a short LLM-generated preamble to every chunk
 
 Document-embedded figures (docx/pptx pictures via markitdown/docling, PDF figures via PyMuPDF) are saved to `parsed/<id>/images/` and associated with chunks, but their *content* is otherwise invisible to the text index — a slide whose only payload is a diagram is unsearchable. When enabled, each embedded figure with no existing caption gets a VLM-generated Chinese description appended to its chunk's text so the figure's semantics enter the dense + BM25 channels. The caption is also recorded in `metadata["images"][*]["caption"]` so the answer layer can cite it.
 
-This is the **text-route** path only: embedded figures are *not* sent to the CLIP image index — that channel stays reserved for standalone image uploads (`source_type=image`). Works with any OpenAI-compatible VLM via `VLM_*`. Cost: ~1 VLM call per embedded figure at parse time. Generated before Contextual Retrieval so the contextual LLM sees caption-enriched chunks. Cached under the version's internal `captions/<cache_key>.jsonl` path so `mmrag reindex` and force re-parse reuse it without re-calling the VLM (figure bytes are stable across re-parses). When `VLM_*` is unconfigured the step degrades to a no-op — safe to leave on.
+This is the **text-route** path only: embedded figures are *not* sent to the CLIP image index — that channel stays reserved for standalone image uploads (`source_type=image`). Works with any OpenAI-compatible VLM via `VLM_*`. Cost: ~1 VLM call per embedded figure at parse time. Generated before Contextual Retrieval so the contextual LLM sees caption-enriched chunks. Cached under the current asset's internal `captions/<cache_key>.jsonl` path so `mmrag reindex` and force re-parse reuse it without re-calling the VLM (figure bytes are stable across re-parses). When `VLM_*` is unconfigured the step degrades to a no-op — safe to leave on.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
@@ -255,7 +255,7 @@ Remote providers are selected with `RERANKER_PROVIDER`: `siliconflow` or `dashsc
 ```bash
 RERANKER_ENABLED=true
 RERANKER_PROVIDER=siliconflow
-RERANKER_API_KEY=sk-xxx           # or reuse OPENAI_COMPAT_API_KEY
+RERANKER_API_KEY=sk-xxx           # or reuse MODEL_API_KEY
 ```
 
 **百炼 (dashscope)** — uses the universal DashScope-native endpoint, only the key is needed (the OpenAI-compatible flat endpoint would need a per-user workspaceId subdomain and is not used):
@@ -303,6 +303,8 @@ The default (unset) loads the small qrels sample shipped with the package (`mm_a
 
 The file's `version` field is checked (`v1` vs `v2`): loading a v2 file under `mmrag eval` (or vice versa) raises an error instead of silently scoring 0 cases.
 
+For v2, every non-image group is a text retrieval scenario. A case may override the run's `principal` and `metadata_filter`, and may declare `evidence_contains` as non-empty strings that must co-occur in one returned evidence block. This supports paraphrase, cross-document distractor, access-policy, and answer-evidence regression cases without a second evaluator.
+
 Use one or more positive integer qrel grades for a **positive** retrieval case.
 Recall, MRR, and MAP treat every positive grade as relevant; NDCG preserves the
 grade. Use an explicit empty qrels mapping for a **negative** rejection case:
@@ -310,6 +312,17 @@ it is reported separately as empty-result rate and false-retrieval rate and is
 not counted as a missed positive retrieval. Every case must have a qrels entry,
 including negatives. Reported values apply only to the selected corpus and case
 set; they are not a retrieval-quality threshold.
+
+## Table import budgets
+
+CSV and TSV files are read row by row; XLSX uses a read-only worksheet iterator. The parser rejects an input that exceeds any configured budget instead of allocating an unbounded in-memory table.
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `TABLE_MAX_ROWS` | `100000` | Maximum data rows per sheet/file |
+| `TABLE_MAX_COLUMNS` | `256` | Maximum header columns |
+| `TABLE_MAX_CELL_CHARS` | `32768` | Maximum characters in one cell |
+| `TABLE_MAX_TOTAL_CHARS` | `20000000` | Maximum generated retrieval text per sheet |
 
 ## Answer-quality eval (LLM judge)
 
@@ -416,14 +429,14 @@ The PDF parser is chosen by `PDF_PARSER` (CLI `--pdf-parser`):
 
 ## Document parser selection
 
-Office / text documents (`docx` / `pptx` / `xlsx` / `html` / `md` / `txt` — the `document` source type `sniff` assigns) are parsed by the backend chosen with `DOCUMENT_PARSER` (CLI `--document-parser`):
+Office / text documents (`docx` / `pptx` / `xlsx` / `csv` / `tsv` / `html` / `md` / `txt` — the `document` source type `sniff` assigns) are parsed by the backend chosen with `DOCUMENT_PARSER` (CLI `--document-parser`):
 
 | Value | Backend | Notes |
 | --- | --- | --- |
 | `markitdown` | MarkItDown | Default. Core dependency (pure Python, no ML stack). docx/pptx/xlsx converters ship via the `markitdown[docx,pptx,xlsx]` extra bundled in core |
 | `docling` | docling | Optional heavy backend (torch / transformers). Needs the `[docling]` extra. Layout-aware; use when MarkItDown's structural extraction isn't enough |
 
-Both backends produce the same `DocumentIR`, so chunking / image association / contextual enrichment are identical downstream. MarkItDown decodes docx/pptx base64-embedded images to `parsed/<id>/images/` and rewrites the refs, so embedded images attach to their chunk and reach the answer layer — same on-disk layout as the docling / PaddleOCR paths. (HTML relative-path images are passed through as-is in v1; they don't associate but don't error.)
+Both backends produce the same `DocumentIR`, so chunking / image association / contextual enrichment are identical downstream. With the default `markitdown` backend, CSV, TSV, and XLSX take the row-aware table parser; its import budgets are documented above. MarkItDown decodes docx/pptx base64-embedded images to `parsed/<id>/images/` and rewrites the refs, so embedded images attach to their chunk and reach the answer layer — same on-disk layout as the docling / PaddleOCR paths. (HTML relative-path images are passed through as-is; they don't associate but don't error.)
 
 ### Scanned-PDF fallback (auto parser)
 
@@ -457,8 +470,8 @@ The threshold default of `10` is tuned for genuinely scanned (image-only) PDFs, 
 ```dotenv
 MM_ASSET_RAG_HOME=~/.mm_asset_rag
 
-OPENAI_COMPAT_BASE_URL=http://127.0.0.1:11434/v1
-OPENAI_COMPAT_API_KEY=ollama
+MODEL_BASE_URL=http://127.0.0.1:11434/v1
+MODEL_API_KEY=ollama
 LLM_MODEL=gemma4:latest
 
 EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1

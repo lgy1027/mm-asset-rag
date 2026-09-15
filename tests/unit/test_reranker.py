@@ -26,7 +26,6 @@ from mm_asset_rag.schema import SearchHit
 
 
 def _hit(asset_id: str, evidence: str, score: float = 0.5) -> SearchHit:
-    version_id = f"{asset_id}@1-{'a' * 12}"
     return SearchHit(
         route="text",
         score=score,
@@ -37,8 +36,7 @@ def _hit(asset_id: str, evidence: str, score: float = 0.5) -> SearchHit:
         evidence=evidence,
         metadata={
             "document_id": asset_id,
-            "version_id": version_id,
-            "chunk_id": f"{version_id}:0",
+            "chunk_id": f"{asset_id}:0",
             "collection": "tests",
             "allowed_principals": [],
             "metadata": {},
@@ -255,7 +253,6 @@ def test_hybrid_search_reranks_when_enabled(tmp_home, monkeypatch):
 
 
 def _image_hit(asset_id: str, score: float = 0.5) -> SearchHit:
-    version_id = f"{asset_id}@1-{'b' * 12}"
     return SearchHit(
         route="qdrant_text_to_image",
         score=score,
@@ -266,8 +263,7 @@ def _image_hit(asset_id: str, score: float = 0.5) -> SearchHit:
         evidence=f"image caption {asset_id}",
         metadata={
             "document_id": asset_id,
-            "version_id": version_id,
-            "chunk_id": f"{version_id}:0",
+            "chunk_id": f"{asset_id}:0",
             "collection": "tests",
             "allowed_principals": [],
             "metadata": {},
@@ -742,7 +738,7 @@ def test_http_rerank_falls_back_to_common_api_key(tmp_home, monkeypatch):
     monkeypatch.setenv("RERANKER_PROVIDER", "siliconflow")
     # Intentionally do NOT set RERANKER_API_KEY.
     monkeypatch.setenv("RERANKER_API_BASE", "https://example.test/v1/rerank")
-    monkeypatch.setenv("OPENAI_COMPAT_API_KEY", "shared-key")
+    monkeypatch.setenv("MODEL_API_KEY", "shared-key")
     reset_reranker()
 
     captured = {}

@@ -4,16 +4,14 @@ from mm_asset_rag.knowledge_models import (
     Asset,
     Chunk,
     Document,
-    DocumentVersion,
     Source,
 )
 
 
 def test_build_tag_qrels_uses_image_document_ids() -> None:
     document = Document("poster", "Poster", Source("source"), AccessPolicy("team", ("alice",)))
-    version = DocumentVersion.create(document, "a" * 64)
     chunk = Chunk.create(
-        document_version=version,
+        document=document,
         asset=Asset("a" * 64, "image", "images/poster.jpg"),
         ordinal=0,
         text="poster",

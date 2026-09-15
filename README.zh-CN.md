@@ -3,7 +3,7 @@
 > 多模态知识库 — 统一索引文档与图片，自动选择资料检索、图片检索或以图搜图；回答附带证据与文档内关联图片。
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-pytest-orange)](.github/workflows/test.yml)
 [![Coverage](https://img.shields.io/badge/coverage-80%25-yellow)](tests/)
 
@@ -137,16 +137,16 @@ mmrag-api
 #    必要时改 title / tags,点 Confirm & Ingest。
 
 # 3. CLI 检索 / 问答(等 ingest 完成后)
-mmrag search "哪篇文档讲 RAG?"
-mmrag answer "哪篇文档讲 RAG?"
+mmrag search "哪篇文档讲 RAG?" --collection default --principal local-user
+mmrag answer "哪篇文档讲 RAG?" --collection default --principal local-user --min-confidence 0.5
 ```
 
-CLI 也走 upload-first(PDF / 图片 / Office 文档都支持):
+CLI 也走 upload-first(PDF / 图片 / Office 文档 / 表格都支持，含 csv / tsv):
 
 ```bash
-mmrag parse ./paper.pdf ./photo.jpg ./deck.pptx
+mmrag parse ./paper.pdf ./photo.jpg ./deck.pptx --collection default --principal local-user
 mmrag reindex
-mmrag search "找到那张海滩照片"
+mmrag search "找到那张海滩照片" --collection default --principal local-user
 ```
 
 > ⚠️ **Qdrant 本地文件锁是单进程的。** `mmrag-api` 跑着时,另一个终端跑 `mmrag reindex` 会报 `storage already accessed`。要么先停 API,要么把 `QDRANT_URL` 指到独立的 Qdrant server。
@@ -179,7 +179,7 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 | 变量 | 作用 | 默认 |
 | --- | --- | --- |
 | `MM_ASSET_RAG_HOME` | 上传素材、parsed data、索引、任务历史放哪 | `~/.mm_asset_rag` |
-| `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_BASE_URL` / `LLM_MODEL` | `/answer` 和 `/chat` 的可选 LLM | — |
+| `MODEL_API_KEY` / `MODEL_BASE_URL` / `LLM_MODEL` | `/answer` 和 `/chat` 的可选 LLM | — |
 | `EMBEDDING_*` | 文本 embedding provider(默认 OpenAI 兼容) | — |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server 模式(不填走本地文件) | — |
 | `CLIP_MODEL` | sentence-transformers CLIP 模型名(配 `[clip]` extra) | `clip-ViT-B-32` |
@@ -207,11 +207,11 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 
 ```bash
 # 1. 先 ingest 你的评估语料,document_id 要与 qrels 完全一致
-mmrag parse ./my_eval_corpus/*.pdf
+mmrag parse ./my_eval_corpus/*.pdf --collection default --principal local-user
 # 2. 跑评估
-mmrag eval                              # 默认内置样例
-mmrag eval --cases my_cases.json        # 自定义
-mmrag eval --v2                         # v2:多维度,中文为主
+mmrag eval --collection default --principal local-user                              # 默认内置样例
+mmrag eval --cases my_cases.json --collection default --principal local-user        # 自定义
+mmrag eval --v2 --collection default --principal local-user                         # v2:多维度,中文为主
 ```
 
 没配 LLM 也能跑(只评检索),`/answer` 相关 case 优雅降级。
@@ -244,8 +244,8 @@ mm-asset-rag/
 │   ├── registry.py       # parser / embedder / backend 全局 registry
 │   ├── paths.py          # $MM_ASSET_RAG_HOME 下磁盘布局
 │   ├── assets.py         # Asset dataclass
-│   ├── schema.py         # SearchHit / ParsedDocument
-│   ├── document_store.py # 统一的 ParsedDocument JSONL 存储
+│   ├── schema.py         # 对外检索数据结构
+│   ├── document_store.py # 解析 chunk 的 JSONL 存储
 │   ├── answer.py         # 基于证据的回答(流式 + 同步)
 │   ├── evaluation.py     # 小型回归套件
 │   ├── retrieval.py      # hybrid merge + normalize
@@ -284,4 +284,5 @@ FastAPI、CLI、Qdrant backend 全部从 registry 运行时读。
 
 ## 协议
 
-Apache-2.0。见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE)。
+GNU Affero General Public License v3.0 或更高版本（AGPL-3.0-or-later）。见
+[LICENSE](LICENSE) 和 [NOTICE](NOTICE)。

@@ -310,8 +310,6 @@ def _v2_payload(chunk) -> dict[str, object]:
     return {
         "document_id": chunk.document_id,
         "title": str(chunk.metadata.get("title") or chunk.metadata.get("asset_title") or ""),
-        "version_id": chunk.document_version.version_id,
-        "version_number": chunk.document_version.version_number,
         "chunk_id": chunk.chunk_id,
         "ordinal": chunk.ordinal,
         "text": chunk.text,
@@ -342,7 +340,6 @@ def _ensure_payload_indexes(client, collection_name: str, documents: list) -> No
     """Create Qdrant indexes for identity and policy predicates."""
     fields: dict[str, models.PayloadSchemaType] = {
         "document_id": models.PayloadSchemaType.KEYWORD,
-        "version_id": models.PayloadSchemaType.KEYWORD,
         "chunk_id": models.PayloadSchemaType.KEYWORD,
         "source_id": models.PayloadSchemaType.KEYWORD,
         "source_type": models.PayloadSchemaType.KEYWORD,

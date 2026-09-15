@@ -8,8 +8,8 @@ name: Release
 #         需本 workflow 的 `id-token: write` 权限(已配)。
 #      b) API token:GitHub Settings → Secrets → Actions →
 #         PYPI_API_TOKEN(PyPI account-scoped token)。配了 token 会优先用它。
-#   2. tag 形如 `v0.1.0`;uv build 产物由 tag refname 取版本。
-#   3. 本地 `uv lock` 已与 `pyproject.toml` 对齐,`uv build` 可干净构建。
+#   2. tag 必须与 ``mm_asset_rag.__version__`` 一致。
+#   3. 本地 `uv lock` 已与 `pyproject.toml` 对齐。
 on:
   push:
     tags:
@@ -41,10 +41,20 @@ jobs:
         with:
           version: "latest"
 
+      - name: Verify locked environment and source
+        run: |
+          uv sync --locked --extra dev
+          uv run ruff check .
+          uv run ruff format --check .
+          uv run pytest tests/unit -q
+
       - name: Build sdist + wheel
         # `uv build` 在仓库根目录生成 `dist/` 下的 sdist(.tar.gz)与 wheel(.whl)。
         # 等价于 `python -m build`,但直接复用 uv 缓存,无需额外装 build 包。
         run: uv build
+
+      - name: Validate package metadata
+        run: uv run twine check dist/*
 
       - name: Verify sdist long-description
         # PyPI 项目页展示的 README 取自 sdist 的 PKG-INFO 长描述。若发布期
@@ -64,6 +74,11 @@ jobs:
           assert "not yet published" not in body, "sdist README 仍含发布前措辞"
           print("sdist long-description OK")
           PY
+
+      - name: Smoke-test built wheel
+        run: |
+          uv tool run --from dist/*.whl mmrag --help
+          uv tool run --from dist/*.whl mmrag-api --help
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

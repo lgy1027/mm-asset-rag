@@ -55,6 +55,7 @@ Supported types:
 | BMP | `BM` | `image` |
 | WEBP | `RIFF....WEBP` | `image` |
 | DOCX / PPTX / XLSX | Office Open XML ZIP container (`PK\x03\x04`) by extension + `zipfile.is_zipfile` guard | `document` |
+| CSV / TSV | by extension (`.csv` / `.tsv`), then row-aware table parsing | `document` |
 | HTML / Markdown / text | by extension (`.html` / `.htm` / `.md` / `.markdown` / `.txt`) | `document` |
 
 `document` types are recognised by sniff, routed to `assets/documents/` at confirm (the original extension is preserved so the parser picks the right backend by extension), and parsed by MarkItDown by default (`DOCUMENT_PARSER=markitdown`, a core dependency — works out of the box). The optional docling backend (`DOCUMENT_PARSER=docling`, `pip install -e ".[docling]"`) is layout-aware but pulls torch/transformers. Embedded images in docx/pptx are decoded to `parsed/<id>/images/` and associated with their chunk; document files skip VLM auto-meta (no first-page render / image path) and fall back to the sniff-derived filename title.
@@ -63,8 +64,8 @@ Supported types:
 
 `mm_asset_rag/auto_meta.py` calls an OpenAI-compatible VLM endpoint using JSON mode. It reuses the VLM settings:
 
-- `VLM_BASE_URL` / shared `OPENAI_COMPAT_BASE_URL`
-- `VLM_API_KEY` / shared `OPENAI_COMPAT_API_KEY`
+- `VLM_BASE_URL` / shared `MODEL_BASE_URL`
+- `VLM_API_KEY` / shared `MODEL_API_KEY`
 - `VLM_MODEL`
 
 If any of those are missing, or the request fails, preview falls back to sniff-only metadata. Upload still works.
@@ -109,10 +110,9 @@ Each preview cache directory contains a `manifest.json` with two layers:
   `effective_*` fields.
 
 On `confirm`, the pipeline streams every cached file through SHA-256 and
-looks the digest up in the append-only `asset_index.jsonl`. A hit
-reuses the existing `asset_id` and `relative_path`; a miss allocates a
-new entry. The asset index is also what `DELETE /assets/{id}` uses to
-find the on-disk path for a given asset.
+looks the digest up in the current `asset_index.jsonl` record. A re-upload
+of the same logical `document_id` replaces its current asset and chunks;
+the old physical asset is removed after the replacement is persisted.
 
 ## API examples
 
@@ -137,7 +137,9 @@ curl -s -X POST http://127.0.0.1:8011/upload/confirm \
         "preview_id": "<from preview>",
         "title": "Edited title",
         "tags": ["custom", "tag"],
-        "description": "Optional description"
+        "description": "Optional description",
+        "collection": "default",
+        "allowed_principals": ["local-user"]
       }
     ]
   }'
@@ -150,7 +152,7 @@ The response contains `task_id`. Poll `/tasks/{task_id}` until status is `done`.
 The CLI has no editable preview UI, so it accepts all supported previews as-is:
 
 ```bash
-mmrag parse ./paper.pdf ./photo.jpg
+mmrag parse ./paper.pdf ./photo.jpg --collection default --principal local-user
 ```
 
 This runs preview, confirm, parse, and index in one command.

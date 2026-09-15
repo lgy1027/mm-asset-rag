@@ -23,7 +23,7 @@ def _provider_hosts() -> set[str]:
     try:
         s = get_settings()
         for base in (
-            s.openai_compat_base_url,
+            s.model_base_url,
             s.llm_base_url,
             s.vlm_base_url,
             s.embedding_base_url,

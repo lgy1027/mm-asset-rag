@@ -63,20 +63,15 @@ def test_merge_hits_rrf_combines_routes_for_same_asset() -> None:
 def test_merge_hits_aggregates_versions_and_chunks_by_document_id() -> None:
     """A document result retains the best representative version/chunk evidence."""
     version_one = _make_hit("old-asset", "text", 0.6)
-    version_one.metadata.update(
-        {"document_id": "report", "version_id": "report@1-old", "chunk_id": "old"}
-    )
+    version_one.metadata.update({"document_id": "report", "chunk_id": "old"})
     version_two = _make_hit("new-asset", "text_to_image", 0.9)
     version_two.evidence = "new representative evidence"
-    version_two.metadata.update(
-        {"document_id": "report", "version_id": "report@2-new", "chunk_id": "new"}
-    )
+    version_two.metadata.update({"document_id": "report", "chunk_id": "new"})
 
     merged = retrieval.merge_hits([[version_one], [version_two]], [0.5, 0.5], top_k=5)
 
     assert len(merged) == 1
     assert merged[0].metadata["document_id"] == "report"
-    assert merged[0].metadata["version_id"] == "report@2-new"
     assert merged[0].metadata["chunk_id"] == "new"
     assert merged[0].evidence == "new representative evidence"
 

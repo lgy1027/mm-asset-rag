@@ -150,6 +150,9 @@ class V2Result:
     hit: bool
     rank: int | None
     group: str
+    evidence_expected: list[str] | None = None
+    evidence_hit: bool | None = None
+    evidence_rank: int | None = None
 
 
 def _document_ids(hits: list[SearchHit]) -> list[str]:
@@ -205,6 +208,8 @@ def _make_result(
     actual = _document_ids(hits)
     qrels = dict(case["qrels"])  # validated by load_cases
     rank = _first_relevant_rank(actual, qrels)
+    evidence_expected = _evidence_terms(case)
+    evidence_rank = _first_evidence_rank(hits, evidence_expected)
     return V2Result(
         query_id=str(case["query_id"]),
         query=query,
@@ -213,7 +218,31 @@ def _make_result(
         hit=rank is not None,
         rank=rank,
         group=group,
+        evidence_expected=evidence_expected,
+        evidence_hit=evidence_rank is not None if evidence_expected is not None else None,
+        evidence_rank=evidence_rank,
     )
+
+
+def _evidence_terms(case: Mapping[str, object]) -> list[str] | None:
+    raw_terms = case.get("evidence_contains")
+    if raw_terms is None:
+        return None
+    if not isinstance(raw_terms, list) or not raw_terms:
+        raise ValueError("evidence_contains must be a non-empty list of non-empty strings.")
+    terms = [term.strip() for term in raw_terms if isinstance(term, str) and term.strip()]
+    if len(terms) != len(raw_terms):
+        raise ValueError("evidence_contains must be a non-empty list of non-empty strings.")
+    return terms
+
+
+def _first_evidence_rank(hits: list[SearchHit], terms: list[str] | None) -> int | None:
+    if terms is None:
+        return None
+    for rank, hit in enumerate(hits, start=1):
+        if all(term in hit.evidence for term in terms):
+            return rank
+    return None
 
 
 def run_eval_v2(
@@ -255,8 +284,10 @@ def run_text_to_text_eval_v2(
     search = search_fn or get_search_service().execute
     groups = load_cases(cases_path, version="v2")
     results: list[V2Result] = []
-    for group in ("zh_on_en", "en_on_en", "zh_on_zh", "negative"):
-        for case in groups.get(group, ()):
+    for group, cases in groups.items():
+        if group in {"text_to_image", "image_to_image"}:
+            continue
+        for case in cases:
             query = str(case["query"])
             hits = search(
                 SearchCommand(
@@ -264,12 +295,28 @@ def run_text_to_text_eval_v2(
                     mode=SearchMode.HYBRID,
                     top_k=top_k,
                     collection=collection,
-                    metadata_filter=metadata_filter,
-                    principal=principal,
+                    metadata_filter=_case_metadata_filter(case, metadata_filter),
+                    principal=_case_principal(case, principal),
                 )
             )
             results.append(_make_result(case=case, hits=hits, group=group, query=query))
     return results
+
+
+def _case_principal(case: Mapping[str, object], default: str) -> str:
+    value = case.get("principal", default)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("case principal must be a non-empty string.")
+    return value
+
+
+def _case_metadata_filter(
+    case: Mapping[str, object], default: dict[str, object] | None
+) -> dict[str, object] | None:
+    value = case.get("metadata_filter", default)
+    if value is not None and not isinstance(value, dict):
+        raise ValueError("case metadata_filter must be a JSON object.")
+    return value
 
 
 def run_text_to_image_eval_v2(
@@ -402,22 +449,36 @@ def write_eval_report_v2(results_by_group: dict[str, list[V2Result]], path=None)
     target = path or get_eval_report().with_name("eval_report_v2.json")
     all_results = [result for results in results_by_group.values() for result in results]
     groups = {
-            group: {
-                "total": len(results),
-                "hits": sum(result.hit for result in results),
-                "hit_rate": sum(result.hit for result in results) / max(len(results), 1),
-                "metrics": aggregate_metrics(_metric_rows(results)) if results else {},
-            }
-            for group, results in results_by_group.items()
+        group: {
+            "total": len(results),
+            "hits": sum(result.hit for result in results),
+            "hit_rate": sum(result.hit for result in results) / max(len(results), 1),
+            "metrics": aggregate_metrics(_metric_rows(results)) if results else {},
+            "evidence": _aggregate_evidence(results),
+        }
+        for group, results in results_by_group.items()
     }
     payload = build_report(
         kind="retrieval",
-        summary={"total": len(all_results), "scenarios": aggregate_retrieval_scenarios(all_results)},
+        summary={
+            "total": len(all_results),
+            "scenarios": aggregate_retrieval_scenarios(all_results),
+        },
         groups=groups,
         metrics={"all": aggregate_metrics(_metric_rows(all_results)) if all_results else {}},
         per_query=[asdict(result) for result in all_results],
     )
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _aggregate_evidence(results: list[V2Result]) -> dict[str, int | float]:
+    judged = [result for result in results if result.evidence_hit is not None]
+    hit_count = sum(result.evidence_hit is True for result in judged)
+    return {
+        "total": len(judged),
+        "hit_count": hit_count,
+        "hit_rate": hit_count / max(len(judged), 1),
+    }
 
 
 if __name__ == "__main__":  # pragma: no cover

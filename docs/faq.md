@@ -65,9 +65,9 @@ curl http://127.0.0.1:8011/health
 
 如果是端口占用,改 `MM_ASSET_RAG_PORT`(在 `.env` 里设)再启。
 
-### `/health` 说 `embedder_configured=false`,但我已经设了 `OPENAI_COMPAT_API_KEY`
+### `/health` 说 `embedder_configured=false`,但我已经设了 `MODEL_API_KEY`
 
-`OPENAI_*` 是给 LLM 用的,embedder 默认走 OpenAI-compatible `/v1/embeddings` 端点 — 但需要设的是 `EMBEDDING_*` 系列(见 `.env.example`):
+`MODEL_*` 是共享连接，embedder 默认走 OpenAI-compatible `/v1/embeddings` 端点，但仍需要设 `EMBEDDING_MODEL`（或完整的 `EMBEDDING_*` 覆盖）：
 
 ```env
 EMBEDDING_BASE_URL=https://api.openai.com/v1   # 或 ollama / 你的代理
@@ -75,7 +75,7 @@ EMBEDDING_API_KEY=sk-...
 EMBEDDING_MODEL=text-embedding-3-small
 ```
 
-设错了 `OPENAI_*` 只会让 `/answer` / `/chat` 工作,`/search` 检索直接报 `embedder not configured`。
+缺少 `EMBEDDING_MODEL` 时，`/search` 会报 `embedder not configured`。
 
 ### `.env` 改了不生效
 
@@ -133,7 +133,7 @@ sqlite3 ~/.mm_asset_rag/tasks.db "select id, status, current, error from task wh
 AUTO_META_ENABLED=false
 ```
 
-或者命令行:`mmrag parse --no-auto-meta ./corpus/*.pdf`。
+或者命令行:`mmrag parse --no-auto-meta ./corpus/*.pdf --collection default --principal local-user`。
 
 ### 扫描 PDF 一片白(没字) / OCR 不出文字
 
@@ -144,7 +144,7 @@ AUTO_META_ENABLED=false
 如果 token 设了还是白,直接:
 
 ```bash
-mmrag parse --pdf-parser paddleocr_vl ./paper.pdf
+mmrag parse --pdf-parser paddleocr_vl ./paper.pdf --collection default --principal local-user
 ```
 
 确认走的是 API 路径。本地 PP-OCRv6 跑扫描 PDF 较慢(每页 1-2s),几百页文档耐心等。
@@ -219,8 +219,8 @@ CLIP_MODEL=OFA-Sys/chinese-clip-vit-base-patch16   # 768d
 **第二种可能**:corpus 没 ingest。`mmrag eval` 不带 ingest 步骤,先把语料喂进 index:
 
 ```bash
-mmrag parse ./my_eval_corpus/*.pdf
-mmrag eval --cases my_cases.json
+mmrag parse ./my_eval_corpus/*.pdf --collection default --principal local-user
+mmrag eval --cases my_cases.json --collection default --principal local-user
 ```
 
 **第三种可能**:embedding dim / collection 没对上。`/health?deep=true` 看 `collection_name`。

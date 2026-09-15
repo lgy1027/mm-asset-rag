@@ -31,7 +31,10 @@ def test_dispatch_search_builds_one_transport_neutral_command(monkeypatch) -> No
         search_service, "get_search_service", lambda: SimpleNamespace(execute=commands.append)
     )
 
-    assert search_service.dispatch_search(query="needle", mode="hybrid", image_path=None, top_k=3) is None
+    assert (
+        search_service.dispatch_search(query="needle", mode="hybrid", image_path=None, top_k=3)
+        is None
+    )
     assert commands == [SearchCommand(query="needle", mode=SearchMode.HYBRID, top_k=3)]
 
 
@@ -102,6 +105,24 @@ def test_auto_mode_routes_picture_requests_to_image_search(monkeypatch) -> None:
     search.execute(SearchCommand(query="联宝发展史是什么", mode=SearchMode.AUTO))
 
     assert calls == ["hybrid", "hybrid"]
+
+
+def test_search_service_logs_route_latency_candidates_and_empty_reason(monkeypatch, caplog) -> None:
+    import logging
+
+    monkeypatch.setattr(search_service, "hybrid_search_with_rewrite", lambda *_args, **_kwargs: [])
+    with caplog.at_level(logging.INFO, logger="mm_asset_rag.search_service"):
+        result = SearchService(backend=SimpleNamespace()).execute(
+            SearchCommand(
+                query="不存在", mode=SearchMode.AUTO, collection="team", principal="alice"
+            )
+        )
+
+    assert result == []
+    assert "retrieval_event" in caplog.text
+    assert "route=hybrid" in caplog.text
+    assert "candidates=0" in caplog.text
+    assert "reason=no_candidates" in caplog.text
 
 
 def test_execute_filters_policy_and_aggregates_chunks_by_document(monkeypatch) -> None:

@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from mm_asset_rag.document_store import write_documents
-from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, DocumentVersion, Source
+from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, Source
 from mm_asset_rag.knowledge_models import Asset as PersistedAsset
 from mm_asset_rag.paths import get_documents_jsonl
 from mm_asset_rag.query_preprocess import invalidate_vocab_cache, preprocess
@@ -33,7 +33,6 @@ def _seed_corpus(home: Path, texts: list[str]) -> None:
         access_policy=AccessPolicy(collection="tests", allowed_principals=()),
     )
     content_hash = "d" * 64
-    version = DocumentVersion.create(document, content_hash)
     asset = PersistedAsset(
         content_hash=content_hash,
         source_type="pdf",
@@ -41,7 +40,7 @@ def _seed_corpus(home: Path, texts: list[str]) -> None:
     )
     docs = [
         Chunk.create(
-            document_version=version,
+            document=document,
             asset=asset,
             ordinal=i,
             text=t,

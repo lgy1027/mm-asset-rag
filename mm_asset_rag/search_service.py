@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
+from time import perf_counter
 
+from .observability import runtime_metrics
 from .paths import get_assets_dir
 from .protocols import SearchBackend, SearchFilter
 from .query_rewrite import hybrid_search_with_rewrite, text_search_with_rewrite
 from .registry import get_backend
 from .schema import SearchHit
+
+log = logging.getLogger(__name__)
 
 
 class SearchMode(str, Enum):
@@ -165,11 +170,15 @@ class SearchService:
         self._backend = backend if backend is not None else get_backend("qdrant")
 
     def execute(self, command: SearchCommand) -> list[SearchHit]:
+        started_at = perf_counter()
         mode = coerce_search_mode(command.mode)
         if mode is SearchMode.AUTO:
             if command.image_path:
                 mode = SearchMode.IMAGE_TO_IMAGE
-            elif any(token in command.query.lower() for token in ("图片", "照片", "海报", "图像", "image", "photo")):
+            elif any(
+                token in command.query.lower()
+                for token in ("图片", "照片", "海报", "图像", "image", "photo")
+            ):
                 mode = SearchMode.HYBRID
             else:
                 mode = SearchMode.HYBRID
@@ -186,6 +195,30 @@ class SearchService:
                 principal=command.principal,
             ),
         )
+
+        def finish(candidates: list[SearchHit]) -> list[SearchHit]:
+            hits = _apply_knowledge_policy(candidates, command)
+            reason = (
+                "" if hits else ("no_candidates" if not candidates else "access_policy_filtered")
+            )
+            elapsed_ms = int((perf_counter() - started_at) * 1000)
+            runtime_metrics.record_retrieval(
+                route=mode.value,
+                elapsed_ms=elapsed_ms,
+                candidates=len(candidates),
+                returned=len(hits),
+                reason=reason or "none",
+            )
+            log.info(
+                "retrieval_event route=%s elapsed_ms=%d candidates=%d returned=%d reason=%s",
+                mode.value,
+                elapsed_ms,
+                len(candidates),
+                len(hits),
+                reason or "none",
+            )
+            return hits
+
         if mode is SearchMode.TEXT:
             hits = text_search_with_rewrite(
                 command.query,
@@ -193,18 +226,15 @@ class SearchService:
                 min_score=command.min_score,
                 backend=native_backend,
             )
-            return _apply_knowledge_policy(hits, command)
+            return finish(hits)
         if mode is SearchMode.TEXT_TO_IMAGE:
-            return _apply_knowledge_policy(
-                native_backend.search_text_to_image(query=command.query, top_k=command.top_k),
-                command,
+            return finish(
+                native_backend.search_text_to_image(query=command.query, top_k=command.top_k)
             )
         if mode is SearchMode.IMAGE_TO_IMAGE:
             if image_path is None:
                 raise SearchInputError("image_path required for image-to-image")
-            return _apply_knowledge_policy(
-                native_backend.search_image(image_path=image_path, top_k=command.top_k), command
-            )
+            return finish(native_backend.search_image(image_path=image_path, top_k=command.top_k))
         hits = hybrid_search_with_rewrite(
             command.query,
             image_path=image_path,
@@ -212,7 +242,7 @@ class SearchService:
             min_score=command.min_score,
             backend=native_backend,
         )
-        return _apply_knowledge_policy(hits, command)
+        return finish(hits)
 
 
 def get_search_service() -> SearchService:

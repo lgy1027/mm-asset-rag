@@ -262,7 +262,7 @@ def faithfulness_judge(question: str, hits: list[SearchHit], answer: str) -> flo
     settings = get_settings()
     creds = settings.llm_creds
     if not all(creds):
-        raise _JudgeUnavailable("no LLM creds configured (set OPENAI_* or VLM_*)")
+        raise _JudgeUnavailable("no LLM connection configured (set MODEL_* or LLM_*)")
 
     base_url, api_key, model = creds
     judge_model = settings.eval_judge_model or model

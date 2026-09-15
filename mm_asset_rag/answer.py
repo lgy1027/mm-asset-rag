@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ import requests
 
 from .evidence_policy import assess_answer_evidence
 from .llm_transport import LlmTransportError, post_chat_completion
+from .observability import runtime_metrics
 from .paths import safe_parsed_image_path
 from .schema import SearchHit
 from .search_service import SearchCommand, SearchMode, SearchService, get_search_service
@@ -23,6 +25,7 @@ from .settings import get_settings
 # 2 images each would otherwise push 10 base64'd figures through an 8B
 # local model. 4 is enough to cover the top-2 hits' figures.
 _MAX_TOTAL_IMAGES = 4
+log = logging.getLogger(__name__)
 
 _SYSTEM_MSG = {
     "role": "system",
@@ -61,7 +64,6 @@ def format_sources(hits: list[SearchHit]) -> list[dict[str, object]]:
     return [
         {
             "document_id": hit.metadata.get("document_id"),
-            "version_id": hit.metadata.get("version_id"),
             "chunk_id": hit.metadata.get("chunk_id"),
             "title": hit.title,
             "source_type": hit.source_type,
@@ -104,8 +106,7 @@ def _image_hint(hit: SearchHit) -> str:
         tag = f"图{fig}" if fig else "图"
         label = f"{tag}: {cap}" if cap else tag
         parts.append(
-            f"{label} (/parsed-image/{hit.metadata.get('document_id', '')}/"
-            f"{hit.metadata.get('version_id', '')}/{img.get('path', '')})"
+            f"{label} (/parsed-image/{hit.metadata.get('document_id', '')}/{img.get('path', '')})"
         )
     return f"关联图片: {'; '.join(parts)}" if parts else ""
 
@@ -113,7 +114,7 @@ def _image_hint(hit: SearchHit) -> str:
 def _build_evidence_context(hits: list[SearchHit]) -> str:
     """Assemble the numbered evidence block fed to the LLM.
 
-    Each hit becomes ``[N] document_id=... version_id=... chunk_id=...`` then
+    Each hit becomes ``[N] document_id=... chunk_id=...`` then
     the evidence text, then — when the hit carries associated figures — a
     ``关联图片:`` line so a text-only LLM can still cite which figure the
     user should look at ("见证据[1]的图3: 双碳目标路线图").
@@ -122,7 +123,6 @@ def _build_evidence_context(hits: list[SearchHit]) -> str:
     for index, hit in enumerate(hits, start=1):
         header = (
             f"[{index}] document_id={hit.metadata.get('document_id')} "
-            f"version_id={hit.metadata.get('version_id')} "
             f"chunk_id={hit.metadata.get('chunk_id')} title={hit.title} "
             f"source={hit.source_path} page={hit.metadata.get('page')}"
         )
@@ -237,7 +237,7 @@ def fallback_answer(question: str, hits: list[SearchHit]) -> dict[str, object]:
         # Marker consumed by ``answer_evaluation.run_answer_eval`` to split
         # coverage / citation stats between real LLM answers and fallback
         # evidence summaries. A user running ``mmrag eval --answer-quality``
-        # on a machine without ``OPENAI_*`` / ``VLM_*`` creds needs the
+        # on a machine without a configured LLM connection needs the
         # report to distinguish "the LLM is broken" from "we never called
         # one" — coverage / citation are necessarily near-zero on the
         # fallback path, but that doesn't mean the eval regressed.
@@ -346,6 +346,8 @@ def answer_question(
         )
     assessment = assess_answer_evidence(question, hits or [], get_settings())
     if not assessment.sufficient:
+        log.info("answer_refusal reason=%s candidates=%d", assessment.reason, len(hits or []))
+        runtime_metrics.record_refusal(reason=assessment.reason, candidates=len(hits or []))
         return {
             "question": question,
             "answer": "证据不足，无法基于当前知识库可靠回答。",
@@ -366,6 +368,8 @@ def stream_answer_chunks(
     """
     assessment = assess_answer_evidence(question, hits, get_settings())
     if not assessment.sufficient:
+        log.info("answer_refusal reason=%s candidates=%d", assessment.reason, len(hits))
+        runtime_metrics.record_refusal(reason=assessment.reason, candidates=len(hits))
         yield "证据不足，无法基于当前知识库可靠回答。"
         return
 

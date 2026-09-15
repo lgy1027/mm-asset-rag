@@ -51,8 +51,8 @@ def settings_with_llm(monkeypatch) -> Settings:
     s = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_compat_api_key="sk-test",
-        openai_compat_base_url="https://api.example.com/v1",
+        model_api_key="sk-test",
+        model_base_url="https://api.example.com/v1",
         llm_model="gpt-test",
     )
     return s
@@ -69,7 +69,6 @@ def _stub_post_chat_json(payload: object):
 
 def _hit(asset_id: str, score: float, *, route: str = "text") -> SearchHit:
     """Build a SearchHit for test fixtures."""
-    version_id = f"{asset_id}@1-{'a' * 12}"
     return SearchHit(
         route=route,
         score=score,
@@ -80,8 +79,7 @@ def _hit(asset_id: str, score: float, *, route: str = "text") -> SearchHit:
         evidence=f"evidence for {asset_id}",
         metadata={
             "document_id": asset_id,
-            "version_id": version_id,
-            "chunk_id": f"{version_id}:0",
+            "chunk_id": f"{asset_id}:0",
             "collection": "tests",
             "allowed_principals": [],
             "metadata": {},
@@ -132,7 +130,7 @@ def test_rewrite_no_llm_returns_original_only(monkeypatch) -> None:
         return {"variants": ["x", "y"]}
 
     monkeypatch.setattr(qr, "_post_chat_json", _record)
-    settings = Settings(query_rewrite_enabled=True)  # no openai_* set
+    settings = Settings(query_rewrite_enabled=True)  # no model credentials set
     out = qr.rewrite_query("hello", settings=settings)
     assert out == ["hello"]
     assert calls == [], "LLM should not be called when creds are missing"
@@ -149,8 +147,8 @@ def test_rewrite_parses_json_variants(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_compat_api_key="sk-test",
-        openai_compat_base_url="https://api.example.com/v1",
+        model_api_key="sk-test",
+        model_base_url="https://api.example.com/v1",
         llm_model="gpt-test",
     )
     out = qr.rewrite_query("用户原句", settings=settings)
@@ -166,8 +164,8 @@ def test_rewrite_parses_bare_list(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_compat_api_key="sk-test",
-        openai_compat_base_url="https://api.example.com/v1",
+        model_api_key="sk-test",
+        model_base_url="https://api.example.com/v1",
         llm_model="gpt-test",
     )
     out = qr.rewrite_query("orig", settings=settings)
@@ -181,8 +179,8 @@ def test_rewrite_parses_garbage_returns_original(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_compat_api_key="sk-test",
-        openai_compat_base_url="https://api.example.com/v1",
+        model_api_key="sk-test",
+        model_base_url="https://api.example.com/v1",
         llm_model="gpt-test",
     )
     out = qr.rewrite_query("原始查询", settings=settings)
@@ -199,8 +197,8 @@ def test_rewrite_timeout_returns_original(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_compat_api_key="sk-test",
-        openai_compat_base_url="https://api.example.com/v1",
+        model_api_key="sk-test",
+        model_base_url="https://api.example.com/v1",
         llm_model="gpt-test",
     )
     out = qr.rewrite_query("hello", settings=settings)
@@ -241,8 +239,8 @@ def test_rewrite_empty_query_returns_empty_string(monkeypatch) -> None:
     settings = Settings(
         query_rewrite_enabled=True,
         query_rewrite_n_variants=3,
-        openai_compat_api_key="sk-test",
-        openai_compat_base_url="https://api.example.com/v1",
+        model_api_key="sk-test",
+        model_base_url="https://api.example.com/v1",
         llm_model="gpt-test",
     )
     out = qr.rewrite_query("", settings=settings)

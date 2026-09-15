@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.18"]
+requires = ["hatchling>=1.18,<1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,7 +8,7 @@ dynamic = ["version"]
 description = "Multimodal knowledge base for documents and images with intent-aware retrieval, grounded answers, and evidence images."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "Apache-2.0"
+license = "AGPL-3.0-or-later"
 authors = [
     { name = "lgy1027", email = "lgy1027@users.noreply.github.com" },
 ]
@@ -16,7 +16,7 @@ keywords = ["multimodal-retrieval", "cross-modal", "vector-search", "rag", "qdra
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -85,6 +85,9 @@ path = "mm_asset_rag/__init__.py"
 [tool.hatch.build.targets.wheel]
 packages = ["mm_asset_rag"]
 exclude  = ["tests", "examples", "docs", "scripts"]
+
+[tool.hatch.build.targets.sdist]
+only-include = ["mm_asset_rag", "README.md", "LICENSE", "NOTICE", "pyproject.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

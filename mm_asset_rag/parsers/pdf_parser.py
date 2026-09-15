@@ -200,11 +200,7 @@ def submit_paddleocr_vl_job(file_path: Path | str) -> str:
             )
 
     if response.status_code != 200:
-        # Don't put ``response.text`` in the exception message — it is the
-        # upstream service's raw error body (version/trace/internal host) and
-        # can leak via the streamed error event. Log it server-side, surface
-        # only the status code to callers.
-        print(f"PaddleOCR-VL submit failed: {response.status_code} {response.text}")
+        print(f"PaddleOCR-VL submit failed: HTTP {response.status_code}")
         raise RuntimeError(f"PaddleOCR-VL submit failed: HTTP {response.status_code}")
     return str(response.json()["data"]["jobId"])
 
@@ -239,7 +235,7 @@ def poll_paddleocr_vl_job(job_id: str) -> str:
 
         attempt = 0  # reset on success
         if response.status_code != 200:
-            print(f"PaddleOCR-VL poll failed: {response.status_code} {response.text}")
+            print(f"PaddleOCR-VL poll failed: HTTP {response.status_code}")
             raise RuntimeError(f"PaddleOCR-VL poll failed: HTTP {response.status_code}")
         payload = response.json()["data"]
         state = payload["state"]

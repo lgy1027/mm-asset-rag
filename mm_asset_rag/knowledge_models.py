@@ -1,4 +1,4 @@
-"""Immutable identities for the versioned knowledge-base schema."""
+"""Immutable identities for the knowledge-base schema."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class AccessPolicy:
 
 @dataclass(frozen=True)
 class Asset:
-    """Immutable physical bytes backing one document version.
+    """Immutable physical bytes backing the current document.
 
     ``content_hash`` is a content descriptor, not a public document identity.
     """
@@ -103,66 +103,11 @@ class Document:
 
 
 @dataclass(frozen=True)
-class DocumentVersion:
-    """One immutable content-addressed revision of a document."""
-
-    document_id: str
-    version_number: int
-    content_hash: str
-    version_id: str
-
-    def __post_init__(self) -> None:
-        if not self.document_id:
-            raise ValueError("document_id is required")
-        if self.version_number < 1:
-            raise ValueError("version_number must be positive")
-        if not self.content_hash:
-            raise ValueError("content_hash is required")
-        expected = f"{self.document_id}@{self.version_number}-{self.content_hash}"
-        if self.version_id != expected:
-            raise ValueError("version_id does not match document version identity")
-
-    @classmethod
-    def create(
-        cls, document: Document, content_hash: str, *, version_number: int = 1
-    ) -> DocumentVersion:
-        if not content_hash:
-            raise ValueError("content_hash is required")
-        if version_number < 1:
-            raise ValueError("version_number must be positive")
-        return cls(
-            document_id=document.document_id,
-            version_number=version_number,
-            content_hash=content_hash,
-            version_id=f"{document.document_id}@{version_number}-{content_hash}",
-        )
-
-    def advance(self, content_hash: str) -> DocumentVersion:
-        if not content_hash:
-            raise ValueError("content_hash is required")
-        version_number = self.version_number + 1
-        return type(self)(
-            document_id=self.document_id,
-            version_number=version_number,
-            content_hash=content_hash,
-            version_id=f"{self.document_id}@{version_number}-{content_hash}",
-        )
-
-    def to_record(self) -> dict[str, object]:
-        return {
-            "document_id": self.document_id,
-            "version_number": self.version_number,
-            "content_hash": self.content_hash,
-            "version_id": self.version_id,
-        }
-
-
-@dataclass(frozen=True)
 class Chunk:
-    """A retrievable, deterministically identified document-version segment."""
+    """A retrievable, deterministically identified current-document segment."""
 
     chunk_id: str
-    document_version: DocumentVersion
+    document: Document
     asset: Asset
     ordinal: int
     text: str
@@ -173,22 +118,20 @@ class Chunk:
     def __post_init__(self) -> None:
         if self.ordinal < 0:
             raise ValueError("ordinal must be non-negative")
-        expected = f"{self.document_version.version_id}:{self.ordinal}"
+        expected = f"{self.document.document_id}:{self.ordinal}"
         if self.chunk_id != expected:
             raise ValueError("chunk_id does not match document chunk identity")
-        if self.asset.content_hash != self.document_version.content_hash:
-            raise ValueError("chunk asset and document version content hashes must match")
         object.__setattr__(self, "metadata", _immutable_mapping(self.metadata))
 
     @property
     def document_id(self) -> str:
-        return self.document_version.document_id
+        return self.document.document_id
 
     @classmethod
     def create(
         cls,
         *,
-        document_version: DocumentVersion,
+        document: Document,
         asset: Asset,
         ordinal: int,
         text: str,
@@ -197,8 +140,8 @@ class Chunk:
         metadata: Mapping[str, object] | None = None,
     ) -> Chunk:
         return cls(
-            chunk_id=f"{document_version.version_id}:{ordinal}",
-            document_version=document_version,
+            chunk_id=f"{document.document_id}:{ordinal}",
+            document=document,
             asset=asset,
             ordinal=ordinal,
             text=text,
@@ -210,7 +153,7 @@ class Chunk:
     def to_record(self) -> dict[str, object]:
         return {
             "chunk_id": self.chunk_id,
-            "document_version": self.document_version.to_record(),
+            "document": self.document.to_record(),
             "asset": self.asset.to_record(),
             "ordinal": self.ordinal,
             "text": self.text,
@@ -221,18 +164,18 @@ class Chunk:
 
     @classmethod
     def from_record(cls, payload: object) -> Chunk:
-        """Decode a complete v2 chunk row and reject legacy metadata rows."""
-        if not isinstance(payload, dict) or "asset_id" in payload:
-            raise ValueError("legacy asset-only rows are unsupported")
-        version_data = payload.get("document_version")
+        """Decode a complete current-document chunk row."""
+        if not isinstance(payload, dict) or "asset_id" in payload or "document_version" in payload:
+            raise ValueError("legacy chunk rows are unsupported")
+        document_data = payload.get("document")
         asset_data = payload.get("asset")
         source_data = payload.get("source")
         policy_data = payload.get("access_policy")
         if not all(
             isinstance(value, dict)
-            for value in (version_data, asset_data, source_data, policy_data)
+            for value in (document_data, asset_data, source_data, policy_data)
         ):
-            raise ValueError("chunk is missing v2 identity fields")
+            raise ValueError("chunk is missing identity fields")
         principals = policy_data.get("allowed_principals")
         policy_metadata = policy_data.get("metadata", {})
         chunk_metadata = payload.get("metadata", {})
@@ -244,11 +187,19 @@ class Chunk:
             raise ValueError("chunk policy or metadata is invalid")
         return cls(
             chunk_id=str(payload["chunk_id"]),
-            document_version=DocumentVersion(
-                document_id=str(version_data["document_id"]),
-                version_number=int(version_data["version_number"]),
-                content_hash=str(version_data["content_hash"]),
-                version_id=str(version_data["version_id"]),
+            document=Document(
+                document_id=str(document_data["document_id"]),
+                title=str(document_data.get("title", "")),
+                source=Source(
+                    source_id=str(document_data["source"]["source_id"]),
+                    uri=str(document_data["source"].get("uri", "")),
+                    provider=str(document_data["source"].get("provider", "upload")),
+                ),
+                access_policy=AccessPolicy(
+                    collection=str(policy_data["collection"]),
+                    allowed_principals=tuple(str(value) for value in principals),
+                    metadata=policy_metadata,
+                ),
             ),
             asset=Asset(
                 content_hash=str(asset_data["content_hash"]),

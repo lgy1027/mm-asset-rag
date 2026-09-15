@@ -28,7 +28,7 @@ def _clear_settings_cache():
 
 
 def _ollama_settings(monkeypatch) -> Settings:
-    """Strip OPENAI_* then populate EMBEDDING_* with the ollama bge-m3 triple."""
+    """Populate EMBEDDING_* with the ollama bge-m3 connection triple."""
     for key in (
         "EMBEDDING_API_KEY",
         "EMBEDDING_BASE_URL",
@@ -42,7 +42,7 @@ def _ollama_settings(monkeypatch) -> Settings:
 
 
 def test_text_embedder_reads_ollama_bge_m3(monkeypatch) -> None:
-    """The provider pulls its creds from the EMBEDDING_* env vars, not OPENAI_*."""
+    """The provider pulls its credentials from the EMBEDDING_* env vars."""
     s = _ollama_settings(monkeypatch)
     emb = TextEmbedder(settings=s)
     assert emb.api_key == "ollama"

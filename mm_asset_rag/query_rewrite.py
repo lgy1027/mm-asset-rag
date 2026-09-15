@@ -286,7 +286,7 @@ def rewrite_query(
     if not (creds[0] and creds[1] and creds[2]):
         # No LLM configured: silent fallback. Log at debug to avoid
         # spamming logs every search when the user hasn't set up an LLM.
-        log.debug("rewrite_query skipped: no LLM creds (set OPENAI_* or VLM_*)")
+        log.debug("rewrite_query skipped: no LLM connection (set MODEL_* or LLM_*)")
         return [query]
 
     n = _clamp_n_variants(settings.query_rewrite_n_variants)

@@ -19,10 +19,12 @@ from .pdf_parser import (
     parse_with_markitdown,
     parse_with_paddleocr_vl,
 )
+from .table_parser import parse_table
 
 __all__ = [
     "parse_image",
     "parse_pdf",
+    "parse_table",
     "parse_with_docling",
     "parse_with_markitdown",
     "parse_with_paddleocr_vl",
@@ -148,6 +150,8 @@ class _MarkItDownDocumentParser:
 
     def parse(self, asset, **options):
         _ = options
+        if asset.file_path.suffix.lower() in {".csv", ".tsv", ".xlsx"}:
+            return parse_table(asset)
         return parse_with_markitdown(asset)
 
 

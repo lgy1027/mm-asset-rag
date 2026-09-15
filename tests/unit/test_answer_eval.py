@@ -166,7 +166,7 @@ def test_documents_100_answer_cases_are_loadable_and_scored() -> None:
 
 
 def test_offline_no_llm_runs_gracefully(tmp_home, monkeypatch) -> None:
-    """No ``OPENAI_*`` creds -> coverage + citation still run; faithfulness
+    """Without LLM credentials, coverage + citation still run; faithfulness
     is ``skipped=True``; ``answer_source="fallback"`` on every row.
 
     Uses the bundled default ``answer_v1_cases.json`` (4 EN + 4 ZH cases).

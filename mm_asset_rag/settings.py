@@ -31,13 +31,9 @@ class Settings(BaseSettings):
     mm_asset_rag_home: Path | None = None
 
     # ─── API auth / host guard ───────────────────────────────────────────
-    # A static bearer token guarding write endpoints
-    # (/tasks/*/retry, /tasks/*/cancel, /upload/preview, /upload/confirm,
-    # /eval). Leave unset to keep the zero-config loopback default (no
-    # auth) — only set this when exposing the API beyond localhost. Clients
-    # pass it as ``Authorization: Bearer <token>`` or ``X-API-Key: <token>``.
-    # Read endpoints (/search /answer /chat /documents /tasks /health) stay
-    # open so the bundled web UI works without a token.
+    # A static bearer token guarding mutations and provider-quota endpoints.
+    # Leave unset only for loopback development. Clients pass it as
+    # ``Authorization: Bearer <token>`` or ``X-API-Key: <token>``.
     mmrag_api_token: str | None = None
     # Comma-separated trusted Host headers for ``TrustedHostMiddleware``.
     # Default locks the API to loopback (``127.0.0.1``, ``localhost``) so a
@@ -54,8 +50,8 @@ class Settings(BaseSettings):
 
     # ─── LLM (OpenAI-compatible chat completion) ─────────────────────────
     # Shared remote OpenAI-compatible connection for LLM, VLM and embedding.
-    openai_compat_api_key: str | None = None
-    openai_compat_base_url: str | None = None
+    model_api_key: str | None = None
+    model_base_url: str | None = None
     llm_api_key: str | None = None
     llm_base_url: str | None = None
     llm_model: str | None = None
@@ -288,6 +284,12 @@ class Settings(BaseSettings):
     chunk_max_tokens: int = 800
     chunk_overlap_tokens: int = 60
     chunk_tokenizer: str | None = None
+
+    # ─── Table parsing budgets ───────────────────────────────────────────
+    table_max_rows: int = 100_000
+    table_max_columns: int = 256
+    table_max_cell_chars: int = 32_768
+    table_max_total_chars: int = 20_000_000
 
     # ─── PDF embedded-image extraction (tier-1 multimodal) ───────────────
     # PyMuPDF parses text only by default; embedded figures are dropped.
@@ -546,8 +548,8 @@ class Settings(BaseSettings):
         if not self.llm_model:
             return None, None, None
         return (
-            self.llm_base_url or self.openai_compat_base_url,
-            self.llm_api_key or self.openai_compat_api_key,
+            self.llm_base_url or self.model_base_url,
+            self.llm_api_key or self.model_api_key,
             self.llm_model,
         )
 
@@ -561,8 +563,8 @@ class Settings(BaseSettings):
         if not self.vlm_model:
             return None, None, None
         return (
-            self.vlm_base_url or self.openai_compat_base_url,
-            self.vlm_api_key or self.openai_compat_api_key,
+            self.vlm_base_url or self.model_base_url,
+            self.vlm_api_key or self.model_api_key,
             self.vlm_model,
         )
 
@@ -570,8 +572,8 @@ class Settings(BaseSettings):
     def text_embedding_creds(self) -> tuple[str | None, str | None, str | None]:
         """Return the explicit embedding model with its resolved remote connection."""
         return (
-            self.embedding_api_key or self.openai_compat_api_key,
-            self.embedding_base_url or self.openai_compat_base_url,
+            self.embedding_api_key or self.model_api_key,
+            self.embedding_base_url or self.model_base_url,
             self.embedding_model,
         )
 

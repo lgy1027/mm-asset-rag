@@ -3,7 +3,7 @@
 > Multimodal knowledge base — index documents and images, then automatically choose document, image, or image-to-image retrieval. Grounded answers include their evidence and associated in-document figures.
 
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-green)](LICENSE)
 [![Tests](https://img.shields.io/badge/tests-pytest-orange)](.github/workflows/test.yml)
 [![Coverage](https://img.shields.io/badge/coverage-80%25-yellow)](tests/)
 
@@ -125,16 +125,17 @@ mmrag-api
 #    edit title/tags if needed, then click Confirm & Ingest.
 
 # 3. Search / answer from CLI after ingest completes
-mmrag search "which document covers retrieval-augmented generation?"
-mmrag answer "which document covers retrieval-augmented generation?"
+mmrag search "which document covers retrieval-augmented generation?" --collection default --principal local-user
+mmrag answer "which document covers retrieval-augmented generation?" --collection default --principal local-user --min-confidence 0.5
 ```
 
-CLI ingestion is also upload-first (PDFs, images, and Office docs — docx/pptx/xlsx/html/md):
+CLI ingestion is also upload-first (PDFs, images, Office docs, and tables —
+docx/pptx/xlsx/html/md/txt/csv/tsv):
 
 ```bash
-mmrag parse ./paper.pdf ./photo.jpg ./deck.pptx
+mmrag parse ./paper.pdf ./photo.jpg ./deck.pptx --collection default --principal local-user
 mmrag reindex
-mmrag search "find the beach photo"
+mmrag search "find the beach photo" --collection default --principal local-user
 ```
 
 > **Qdrant local-file lock is single-process.** While `mmrag-api` is running, run `mmrag reindex` from another terminal and it will fail with a "storage already accessed" lock error. Either stop the API first, or point `QDRANT_URL` at a Qdrant server for concurrent access.
@@ -167,11 +168,11 @@ All settings come from environment variables (a `.env` file in the current direc
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `MM_ASSET_RAG_HOME` | Where to put uploaded assets, parsed data, indexes, task log. | `~/.mm_asset_rag` |
-| `OPENAI_COMPAT_API_KEY` / `OPENAI_COMPAT_BASE_URL` / `LLM_MODEL` | Optional LLM for `/answer` and `/chat`. | — |
+| `MODEL_API_KEY` / `MODEL_BASE_URL` / `LLM_MODEL` | Optional LLM for `/answer` and `/chat`. | — |
 | `EMBEDDING_*` | Text embedding provider (defaults to OpenAI-compatible). | — |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server mode (omit to use local file mode). | — |
 | `CLIP_MODEL` | Sentence-transformers CLIP model name (with `[clip]` extra). | `clip-ViT-B-32` |
-| `VLM_BASE_URL` / `VLM_API_KEY` / `VLM_MODEL` | VLM for upload auto-tagging and image captions. Falls back to `OPENAI_*`. | — |
+| `VLM_BASE_URL` / `VLM_API_KEY` / `VLM_MODEL` | VLM for upload auto-tagging and image captions. Falls back to `MODEL_*`. | — |
 | `AUTO_META_ENABLED` | Enable VLM title/description/tag extraction during upload preview. | `true` |
 | `PADDLEOCR_VL_API_TOKEN` | PaddleOCR-VL API token for scanned PDFs. | — |
 | `OCR_BACKEND` | Image OCR backend: `local` (PP-OCRv6 via `[ocr]` extra) or `http`. | `local` |
@@ -195,11 +196,11 @@ To score your own corpus, author a case file and pass `--cases` (or set `EVAL_CA
 
 ```bash
 # 1. Ingest your eval corpus with document IDs matching the qrels.
-mmrag parse ./my_eval_corpus/*.pdf
+mmrag parse ./my_eval_corpus/*.pdf --collection default --principal local-user
 # 2. Run the evaluation
-mmrag eval                              # bundled default sample
-mmrag eval --cases my_cases.json        # your own case set
-mmrag eval --v2                         # v2: multi-dimensional, Chinese-primary
+mmrag eval --collection default --principal local-user                              # bundled default sample
+mmrag eval --cases my_cases.json --collection default --principal local-user        # your own case set
+mmrag eval --v2 --collection default --principal local-user                         # v2: multi-dimensional, Chinese-primary
 ```
 
 When no LLM is configured, the eval still runs (it measures retrieval only); `/answer`-dependent cases degrade gracefully.
@@ -232,8 +233,8 @@ mm-asset-rag/
 │   ├── registry.py       # Module-level parsers / embedders / backends registries
 │   ├── paths.py          # on-disk layout under $MM_ASSET_RAG_HOME
 │   ├── assets.py         # Asset dataclass
-│   ├── schema.py         # SearchHit, ParsedDocument
-│   ├── document_store.py # unified ParsedDocument JSONL store
+│   ├── schema.py         # public retrieval schemas
+│   ├── document_store.py # parsed chunk JSONL store
 │   ├── answer.py         # grounded answer generation (streaming + sync)
 │   ├── evaluation.py     # mini regression suite
 │   ├── retrieval.py      # hybrid merge + normalize
@@ -272,4 +273,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [CODE_OF_CONDUCT.md](.github/CODE_OF_
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
+GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later). See
+[LICENSE](LICENSE) and [NOTICE](NOTICE).

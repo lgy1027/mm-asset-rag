@@ -18,7 +18,7 @@ Reads from ``Settings`` (pydantic-settings singleton):
 - ``auto_meta_max_tokens`` (default 800)
 
 Network calls hit ``VLM_BASE_URL / VLM_API_KEY / VLM_MODEL`` (with the
-same ``OPENAI_*`` fallbacks as the legacy caption path). When any of
+same shared ``MODEL_*`` connection as the caption path). When any of
 those three is missing, the helpers return ``None`` and the caller
 falls back to the sniff-derived title and an empty tag list.
 """
@@ -87,7 +87,7 @@ class AutoMeta:
 def _vlm_creds() -> tuple[str, str, str] | None:
     """Return ``(base_url, api_key, model)`` or ``None`` when unconfigured.
 
-    Delegates to :attr:`Settings.vlm_creds` (VLM_* preferred, OPENAI_*
+    Delegates to :attr:`Settings.vlm_creds` (VLM_* preferred, MODEL_*
     fallback) so the VLM channel and the LLM channel share one resolution
     rule — a deployment that configures either triple gets both paths.
     """

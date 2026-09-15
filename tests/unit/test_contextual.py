@@ -21,7 +21,7 @@ from mm_asset_rag.contextual import (
     generate_chunk_context,
     generate_doc_summary,
 )
-from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, DocumentVersion, Source
+from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, Source
 from mm_asset_rag.knowledge_models import Asset as PersistedAsset
 from mm_asset_rag.llm_transport import LlmRateLimiter
 from mm_asset_rag.schema import ParsedChunk
@@ -42,7 +42,6 @@ def _stored_chunks(texts: list[str], *, context: str) -> list[Chunk]:
         access_policy=AccessPolicy(collection="tests", allowed_principals=()),
     )
     content_hash = "c" * 64
-    version = DocumentVersion.create(document, content_hash)
     asset = PersistedAsset(
         content_hash=content_hash,
         source_type="pdf",
@@ -50,7 +49,7 @@ def _stored_chunks(texts: list[str], *, context: str) -> list[Chunk]:
     )
     return [
         Chunk.create(
-            document_version=version,
+            document=document,
             asset=asset,
             ordinal=index,
             text=text,
@@ -102,7 +101,7 @@ def test_generate_doc_summary_builds_prompt_and_strips_think(tmp_home, monkeypat
 def test_generate_chunk_context_degrades_on_failure(tmp_home, monkeypatch):
     """Any LLM failure (network / missing creds) → empty string, never raise."""
     # No credentials → immediate "" without a request. Patch the credential
-    # resolver directly because Settings loads OPENAI_* from the on-disk .env
+    # resolver directly because Settings loads credentials from the on-disk .env
     # (the real home .env has live MiniMax creds), which would bypass a pure
     # env-var monkeypatch.
     with patch("mm_asset_rag.contextual._llm_credentials", return_value=(None, None, None)):
@@ -291,10 +290,7 @@ def test_enrich_noop_without_credentials_writes_no_cache(tmp_home, monkeypatch) 
 
     Pins the credentials at ``(None, None, None)`` via the same
     ``_llm_credentials`` seam the other no-creds test uses, so the result
-    doesn't depend on whatever ``OPENAI_*`` / ``VLM_*`` happens to be in
-    the host environment (Contextual Retrieval now falls back to ``VLM_*``
-    via ``Settings.llm_creds``, so delenv-ing only ``OPENAI_*`` is no
-    longer enough to guarantee "unconfigured").
+    doesn't depend on credentials in the host environment.
     """
     docs = [_doc("片段一", chunk_index=0), _doc("片段二", chunk_index=1)]
     cache_path = tmp_home / "parsed" / "a1" / "context.jsonl"

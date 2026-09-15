@@ -10,15 +10,17 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
 from .answer import answer_json
 from .config import load_env
 from .evaluation import run_eval, write_eval_report
-from .paths import get_documents_jsonl
+from .paths import get_documents_jsonl, get_eval_cases_dir
 from .search_service import SearchInputError, dispatch_search, get_search_service
 from .service import ParseOptions, get_service
+from .settings import get_settings
 from .upload_pipeline import UserEdits, get_pipeline
 
 
@@ -27,7 +29,9 @@ def _collect_upload_files(inputs: list[Path]) -> list[tuple[str, Path]]:
     files: list[tuple[Path, Path]] = []
     for input_path in inputs:
         if input_path.is_dir():
-            files.extend((input_path, path) for path in sorted(input_path.rglob("*")) if path.is_file())
+            files.extend(
+                (input_path, path) for path in sorted(input_path.rglob("*")) if path.is_file()
+            )
         else:
             files.append((input_path.parent, input_path))
     return [(str(path.relative_to(root)), path) for root, path in files]
@@ -167,7 +171,6 @@ def _serialize_hit(hit) -> dict[str, object]:
     metadata = hit.metadata if isinstance(hit.metadata, dict) else {}
     return {
         "document_id": metadata.get("document_id"),
-        "version_id": metadata.get("version_id"),
         "chunk_id": metadata.get("chunk_id"),
         "title": hit.title,
         "source_type": hit.source_type,
@@ -229,8 +232,35 @@ def _resolve_cli_cases_path(value: str | None) -> str | Path | None:
     return None if resolved is None else str(resolved)
 
 
+@contextmanager
+def _image_eval_settings():
+    """Keep image qrels focused on retrieval, not optional LLM enhancements."""
+    settings = get_settings()
+    original = settings.query_rewrite_enabled, settings.reranker_enabled
+    settings.query_rewrite_enabled = False
+    settings.reranker_enabled = False
+    try:
+        yield
+    finally:
+        settings.query_rewrite_enabled, settings.reranker_enabled = original
+
+
 def command_eval(args: argparse.Namespace) -> None:
     cases_path = _resolve_cli_cases_path(args.cases)
+    if getattr(args, "image_eval", False):
+        from .evaluation_v2 import run_auto_image_eval_v2, write_eval_report_v2
+
+        with _image_eval_settings():
+            results = run_auto_image_eval_v2(
+                top_k=args.top_k,
+                cases_path=cases_path,
+                collection=args.collection,
+                metadata_filter=args.metadata_filter,
+                principal=args.principal,
+            )
+        write_eval_report_v2({"image_auto": results})
+        safe_print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
+        return
     if args.answer_quality:
         from .answer_evaluation import run_answer_eval, write_answer_eval_report
 
@@ -255,12 +285,12 @@ def command_eval(args: argparse.Namespace) -> None:
             safe_print(
                 "\n[answer-quality] no LLM creds configured - every case ran "
                 "via fallback_answer (coverage / citation = 0). Set "
-                "OPENAI_* / VLM_* to score /answer."
+                "MODEL_* or LLM_* to score /answer."
             )
         elif skipped == len(results) and results:
             safe_print(
                 "\n[answer-quality] every case skipped faithfulness "
-                "(check OPENAI_* / VLM_* creds or raise EVAL_JUDGE_MAX_CASES)."
+                "(check MODEL_* / LLM_* configuration or raise EVAL_JUDGE_MAX_CASES)."
             )
         return
     if args.v2:
@@ -273,12 +303,12 @@ def command_eval(args: argparse.Namespace) -> None:
             metadata_filter=args.metadata_filter,
             principal=args.principal,
         )
-        # Only the text→text group runs here; the text→image / image→image
-        # groups live in their own one-shots under ``evaluation_v2.__main__``.
-        # ``write_eval_report_v2`` expects a ``{group_name: [V2Result, ...]}``
-        # mapping, so we wrap the text→text results. The default ``mmrag eval``
-        # output compares against v1's ``run_eval``, which is also text→text.
-        write_eval_report_v2({"text_to_text": results})
+        results_by_group: dict[str, list[object]] = {}
+        for result in results:
+            results_by_group.setdefault(str(getattr(result, "group", "text_to_text")), []).append(
+                result
+            )
+        write_eval_report_v2(results_by_group)
         safe_print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
         return
     results = run_eval(
@@ -290,6 +320,28 @@ def command_eval(args: argparse.Namespace) -> None:
     )
     write_eval_report(results)
     safe_print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
+
+
+def command_make_table_cases(args: argparse.Namespace) -> None:
+    """Generate a row-level v2 case file for a CSV question-and-answer table."""
+    from .table_evaluation import build_csv_cases
+
+    source = Path(args.source).expanduser()
+    if not source.is_file():
+        raise SystemExit(f"CSV source not found: {source}")
+    output = Path(args.output)
+    if output.is_absolute() or ".." in output.parts or output.suffix.lower() != ".json":
+        raise SystemExit("--output must be a relative .json path inside eval_cases/")
+    cases = build_csv_cases(
+        source,
+        document_id=args.document_id,
+        question_column=args.question_column,
+        evidence_column=args.evidence_column,
+    )
+    target = get_eval_cases_dir() / output
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(cases, ensure_ascii=False, indent=2), encoding="utf-8")
+    safe_print(str(target))
 
 
 def command_answer(args: argparse.Namespace) -> None:
@@ -329,7 +381,7 @@ def command_retry(args: argparse.Namespace) -> None:
 
 
 def command_documents(args: argparse.Namespace) -> None:
-    """List logical documents and their latest immutable version."""
+    """List current logical documents."""
     from . import asset_index
 
     latest = {}
@@ -341,9 +393,7 @@ def command_documents(args: argparse.Namespace) -> None:
             policy.metadata.get(key) != value for key, value in (args.metadata_filter or {}).items()
         ):
             continue
-        current = latest.get(record.document.document_id)
-        if current is None or record.version.version_number > current.version.version_number:
-            latest[record.document.document_id] = record
+        latest[record.document.document_id] = record
     safe_print(
         json.dumps(
             [
@@ -351,7 +401,7 @@ def command_documents(args: argparse.Namespace) -> None:
                     "document_id": record.document.document_id,
                     "title": record.document.title,
                     "source": record.document.source.to_record(),
-                    "latest_version": record.version.to_record(),
+                    "asset": record.asset.to_record(),
                 }
                 for _document_id, record in sorted(latest.items())
             ],
@@ -368,8 +418,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    parse_cmd = subparsers.add_parser("parse", help="Parse and index PDF/image files")
-    parse_cmd.add_argument("files", nargs="+", help="PDF/image files to ingest")
+    parse_cmd = subparsers.add_parser(
+        "parse", help="Parse and index PDF, image, Office, and table files"
+    )
+    parse_cmd.add_argument(
+        "files",
+        nargs="+",
+        help="Files to ingest: PDF, images, DOCX/PPTX/XLSX, CSV/TSV, HTML, Markdown, or text",
+    )
     parse_cmd.add_argument(
         "--document-id",
         help="Stable logical document identity (allowed only for one input file)",
@@ -394,7 +450,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Backend for office/text documents (docx/pptx/xlsx/html/md): "
         "markitdown (default, core dep) or docling (needs [docling] extra).",
     )
-    parse_cmd.add_argument("--ocr", action="store_true", help="Run local OCR HTTP for images")
+    parse_cmd.add_argument("--ocr", action="store_true", help="Run local OCR for standalone images")
     parse_cmd.add_argument(
         "--vlm", action="store_true", help="Run OpenAI-compatible VLM captions for images"
     )
@@ -415,7 +471,7 @@ def build_parser() -> argparse.ArgumentParser:
             "before indexing. Improves precision when queries use generic terms "
             "(e.g. 'diffusion' matching DDPM vs Stable Diffusion). opt-in: costs "
             "~1 LLM call per chunk; cached under parsed/<id>/context.jsonl so "
-            "reindex reuses it. Requires OPENAI_* LLM credentials."
+            "reindex reuses it. Requires MODEL_* or LLM_* credentials."
         ),
     )
     parse_cmd.set_defaults(func=command_parse)
@@ -482,6 +538,16 @@ def build_parser() -> argparse.ArgumentParser:
     # any of its members, so both flags live here rather than one per branch.
     eval_mode = eval_cmd.add_mutually_exclusive_group()
     eval_mode.add_argument(
+        "--image",
+        dest="image_eval",
+        action="store_true",
+        help=(
+            "Run automatic image-retrieval qrels, including negative refusal cases. "
+            "Query rewrite and reranking are disabled for a deterministic retrieval gate. "
+            "Writes eval_report_v2.json."
+        ),
+    )
+    eval_mode.add_argument(
         "--v2",
         action="store_true",
         help=(
@@ -499,10 +565,22 @@ def build_parser() -> argparse.ArgumentParser:
             "faithfulness). Writes eval_report_answer.json. Text→text cases "
             "only in v0; image-route cases raise ValueError. Coverage / "
             "citation always run; faithfulness is skipped when no LLM creds "
-            "are configured (set OPENAI_* or VLM_*)."
+            "are configured (set MODEL_* or LLM_*)."
         ),
     )
     eval_cmd.set_defaults(func=command_eval)
+
+    table_cases_cmd = subparsers.add_parser(
+        "make-table-cases", help="Generate row-level v2 evaluation cases from a CSV Q&A table"
+    )
+    table_cases_cmd.add_argument("source", help="CSV source file")
+    table_cases_cmd.add_argument("--document-id", required=True)
+    table_cases_cmd.add_argument("--question-column", required=True)
+    table_cases_cmd.add_argument("--evidence-column", required=True)
+    table_cases_cmd.add_argument(
+        "--output", required=True, help="Relative .json path under MM_ASSET_RAG_HOME/eval_cases/"
+    )
+    table_cases_cmd.set_defaults(func=command_make_table_cases)
 
     answer_cmd = subparsers.add_parser("answer", help="Answer with retrieved multimodal evidence")
     answer_cmd.add_argument("question")
@@ -544,7 +622,9 @@ def build_parser() -> argparse.ArgumentParser:
     retry_cmd.set_defaults(func=command_retry)
 
     documents_cmd = subparsers.add_parser(
-        "documents", help="List logical documents and their latest versions"
+        "documents",
+        help="List current logical documents",
+        description="List current documents visible to an access-policy context.",
     )
     documents_cmd.add_argument("--collection", required=True, help="Access-policy collection")
     documents_cmd.add_argument("--principal", required=True, help="Requesting principal")

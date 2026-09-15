@@ -55,8 +55,8 @@ def test_provider_embed_texts_success(monkeypatch) -> None:
     # would leak into ``creds[1]`` and the request would miss the mock.
     # Use the isolated-settings helper that strips the embedding env vars.
     s = _isolated_settings(monkeypatch)
-    s.openai_compat_api_key = "test-key"
-    s.openai_compat_base_url = "https://api.example.com/v1"
+    s.model_api_key = "test-key"
+    s.model_base_url = "https://api.example.com/v1"
     s.embedding_model = "text-embed-3-small"
     s.embedding_api_key = "test-key"
     s.embedding_base_url = "https://api.example.com/v1"
@@ -77,8 +77,8 @@ def test_provider_embed_texts_retries_on_429(monkeypatch) -> None:
     monkeypatch.setenv("EMBEDDING_RETRY_COUNT", "3")
     monkeypatch.setenv("EMBEDDING_REQUEST_INTERVAL", "0")
     s = _isolated_settings(monkeypatch)
-    s.openai_compat_api_key = "test-key"
-    s.openai_compat_base_url = "https://api.example.com/v1"
+    s.model_api_key = "test-key"
+    s.model_base_url = "https://api.example.com/v1"
     s.embedding_model = "text-embed-3-small"
     s.embedding_api_key = "test-key"
     s.embedding_base_url = "https://api.example.com/v1"
@@ -105,8 +105,8 @@ def test_provider_embed_texts_retries_on_429(monkeypatch) -> None:
 @responses.activate
 def test_provider_honors_batch_size(monkeypatch) -> None:
     s = _isolated_settings(monkeypatch)
-    s.openai_compat_api_key = "test-key"
-    s.openai_compat_base_url = "https://api.example.com/v1"
+    s.model_api_key = "test-key"
+    s.model_base_url = "https://api.example.com/v1"
     s.embedding_model = "text-embed-3-small"
     s.embedding_api_key = "test-key"
     s.embedding_base_url = "https://api.example.com/v1"

@@ -11,7 +11,7 @@
    ├─ 可选 VLM 抽标题/标签/描述(auto_meta,需配 LLM)
    └─ 用户可编辑预览卡 → confirm
         │
-        └─ 落盘到 assets/{pdfs|images}/,起后台 parse+index 线程
+        └─ 落盘到 assets/{pdfs|images|documents}/,起后台 parse+index 线程
 ```
 
 ## 二、解析:按文件类型选解析器
@@ -20,7 +20,8 @@
 | --- | --- | --- |
 | **文本型 PDF** | PyMuPDF | 逐页文本 + 行级位置;页内嵌图单独抽出 |
 | **扫描型 PDF**(几乎无文字) | 自动 fallback **本地 PP-OCRv6** | 逐页 200dpi 渲图 → OCR 出文字 |
-| **Office/HTML/MD**(docx/pptx/xlsx/html/md) | MarkItDown | 转文本;内联 base64 图解码落地 |
+| **Office/HTML/MD**(docx/pptx/xlsx/html/md/txt) | MarkItDown | 转文本;内联 base64 图解码落地 |
+| **表格**(csv/tsv/xlsx) | 行感知表格解析器 | 表头 + 每行值转为可检索文本 |
 | **独立图片**(jpg/png) | 本地 PP-OCRv6 + 可选 VLM 描述 | 图里的文字 + 图的语义描述 |
 
 > 扫描 PDF 有百度 token 才走在线 PaddleOCR-VL,否则本地零外网。
@@ -115,5 +116,6 @@ top-k 证据
 2. **嵌在文档里的图**通过 OCR / VLM caption 转成文字,走文本检索。
 
 文本检索永远是主力(三路混合 + 重排),CLIP 是图片语义检索的补充通道。
-默认全本地零外网(ollama 本地 embedding + 本地 OCR),只在主动配百度 token
-或在线 LLM 时才联网。
+文本 embedding 始终通过 OpenAI-compatible `/embeddings` 接口调用；它可以指向
+本地 Ollama，也可以指向远程服务。本地 PP-OCR 不需要网络，在线 PaddleOCR-VL 和
+LLM/VLM 仅在显式配置后才调用。

@@ -308,7 +308,7 @@ def sniff(path: Path) -> SniffedAsset:
 
     # HTML / Markdown / plain text — sniffed by extension (no robust magic
     # bytes for these). Parsed by the document parser too.
-    _TEXT_SUFFIXES = {".html", ".htm", ".md", ".markdown", ".txt"}
+    _TEXT_SUFFIXES = {".html", ".htm", ".md", ".markdown", ".txt", ".csv", ".tsv"}
     if path.suffix.lower() in _TEXT_SUFFIXES:
         return SniffedAsset(
             asset_id=asset_id,

@@ -51,7 +51,7 @@ except ImportError:  # pragma: no cover - exercised only on non-Unix platforms
 from . import asset_index, auto_meta
 from .assets import IngestAsset, from_sniffed, persisted_asset
 from .auto_meta import AutoMeta
-from .knowledge_models import AccessPolicy, Document, DocumentVersion, Source
+from .knowledge_models import AccessPolicy, Document, Source
 from .paths import physical_cache_id
 from .settings import get_settings
 from .sniff import SniffedAsset, sniff
@@ -112,10 +112,9 @@ class _PreparedAsset:
     asset: IngestAsset
     sha256: str
     document_id: str
-    document_version: int
-    version_id: str
-    record: asset_index.DocumentVersionRecord
+    record: asset_index.DocumentRecord
     already_persisted: bool = False
+    superseded_relative_path: str | None = None
 
 
 # ─── Preview DTOs ──────────────────────────────────────────────────────
@@ -530,23 +529,16 @@ class UploadPipeline:
                 self._rollback_moves(moved)
                 raise UploadCommitError(f"failed to move uploaded file into assets: {exc}") from exc
 
-            new_positions = [
-                index for index, item in enumerate(prepared) if not item.already_persisted
-            ]
-            new_items = [prepared[index] for index in new_positions]
             try:
-                persisted_records = asset_index.upsert_records([item.record for item in new_items])
+                persisted_records = asset_index.upsert_records([item.record for item in prepared])
             except Exception as exc:
                 self._rollback_moves(moved)
-                version_id = new_items[0].version_id if new_items else "unknown"
-                raise UploadCommitError(
-                    f"document-version persistence failed for {version_id}: {exc}"
-                ) from exc
+                raise UploadCommitError(f"document persistence failed: {exc}") from exc
 
             # A concurrent confirm can win the idempotence race after this
             # process prepared its candidate path. Reconcile to the record's
             # canonical physical path and discard our duplicate bytes.
-            for position, persisted in zip(new_positions, persisted_records, strict=True):
+            for position, persisted in enumerate(persisted_records):
                 item = prepared[position]
                 if persisted.asset.relative_path == item.asset.relative_path:
                     continue
@@ -571,6 +563,18 @@ class UploadPipeline:
                         page_count=item.asset.page_count,
                     ),
                 )
+
+            current_paths = {record.asset.relative_path for record in persisted_records}
+            for item in prepared:
+                superseded = item.superseded_relative_path
+                if not superseded or superseded in current_paths:
+                    continue
+                try:
+                    (self.assets_root / superseded).unlink(missing_ok=True)
+                except OSError as exc:
+                    log.warning(
+                        "confirm: could not remove superseded asset %s: %s", superseded, exc
+                    )
 
             # Preserve the cache when the user rejected every preview: the
             # web UI's 400 response tells them to "re-edit" and we want
@@ -715,18 +719,14 @@ class UploadPipeline:
             suffix = _suffix_for(source_path, sniffed.source_type)
             content_sha = self._sha256_file(source_path)
             base_asset_id = f"{id_stem}_{content_sha[:8]}"
-            existing = asset_index.find_version(document_id, content_sha)
-            if existing is not None:
+            existing = asset_index.find_document(document_id)
+            already_persisted = existing is not None and existing.asset.content_hash == content_sha
+            if already_persisted:
                 target = self.assets_root / existing.asset.relative_path
                 relative_path = existing.asset.relative_path
-                document_version = existing.version.version_number
             else:
                 target = _unique_target_path(target_dir, base_asset_id, suffix, reserved)
                 relative_path = str(target.relative_to(self.assets_root))
-                # ``upsert_record`` allocates the version while holding the
-                # index lock. This candidate only supplies a deterministic
-                # in-memory record before the byte move succeeds.
-                document_version = 1
             asset_id = physical_cache_id(relative_path)
             normalized_edit = None
             if edit is not None:
@@ -758,19 +758,16 @@ class UploadPipeline:
                     asset=asset,
                     sha256=content_sha,
                     document_id=document_id,
-                    document_version=document_version,
-                    version_id=DocumentVersion.create(
-                        document, content_sha, version_number=document_version
-                    ).version_id,
-                    record=existing
-                    or asset_index.DocumentVersionRecord(
+                    record=asset_index.DocumentRecord(
                         document=document,
-                        version=DocumentVersion.create(
-                            document, content_sha, version_number=document_version
-                        ),
                         asset=persisted_asset(asset, content_sha),
                     ),
-                    already_persisted=existing is not None,
+                    already_persisted=already_persisted,
+                    superseded_relative_path=(
+                        existing.asset.relative_path
+                        if existing is not None and not already_persisted
+                        else None
+                    ),
                 )
             )
 
