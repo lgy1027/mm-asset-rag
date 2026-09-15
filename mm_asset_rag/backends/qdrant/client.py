@@ -41,6 +41,7 @@ def reset_qdrant_client_cache() -> None:
         if _QDRANT_CLIENT is not None:
             with contextlib.suppress(Exception):
                 _QDRANT_CLIENT.close()
+            _remove_owned_lock(_QDRANT_CLIENT_KEY)
         _QDRANT_CLIENT = None
         _QDRANT_CLIENT_KEY = None
 
@@ -72,6 +73,7 @@ def get_qdrant_client() -> QdrantClient:
             if _QDRANT_CLIENT is not None:
                 with contextlib.suppress(Exception):
                     _QDRANT_CLIENT.close()
+                _remove_owned_lock(_QDRANT_CLIENT_KEY)
                 _QDRANT_CLIENT = None
                 _QDRANT_CLIENT_KEY = None
         return QdrantClient(
@@ -87,7 +89,6 @@ def get_qdrant_client() -> QdrantClient:
             # without making healthy calls hang.
             timeout=30,
         )
-
     qdrant_path = get_indexes_dir() / "qdrant"
     key = str(qdrant_path)
     with _QDRANT_CLIENT_LOCK:
@@ -97,6 +98,15 @@ def get_qdrant_client() -> QdrantClient:
             _QDRANT_CLIENT = QdrantClient(path=key)
             _QDRANT_CLIENT_KEY = key
         return _QDRANT_CLIENT
+
+
+def _remove_owned_lock(client_key: str | None) -> None:
+    """Remove a local lock after this process closes its cached client."""
+    if not client_key:
+        return
+    lock = Path(client_key) / ".lock"
+    with contextlib.suppress(OSError):
+        lock.unlink()
 
 
 def _clean_stale_lock(qdrant_path: Path) -> None:

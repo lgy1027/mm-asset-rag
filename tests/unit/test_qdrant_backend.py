@@ -524,6 +524,24 @@ def test_get_qdrant_client_resets_after_reset(tmp_path, monkeypatch) -> None:
         lambda: tmp_path / "indexes",
     )
     qdrant_client.reset_qdrant_client_cache()
+
+
+def test_reset_qdrant_client_cache_removes_owned_lock(tmp_path, monkeypatch) -> None:
+    """Resetting a cached local client removes the lock it owns itself."""
+    lock = tmp_path / ".lock"
+    lock.write_text("", encoding="utf-8")
+    closed: list[bool] = []
+
+    class _FakeClient:
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr(qdrant_client, "_QDRANT_CLIENT", _FakeClient())
+    monkeypatch.setattr(qdrant_client, "_QDRANT_CLIENT_KEY", str(tmp_path))
+    qdrant_client.reset_qdrant_client_cache()
+
+    assert closed == [True]
+    assert not lock.exists()
     c1 = qdrant_client.get_qdrant_client()
     qdrant_client.reset_qdrant_client_cache()
     c2 = qdrant_client.get_qdrant_client()
