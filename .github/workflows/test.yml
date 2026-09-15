@@ -35,7 +35,10 @@ jobs:
         # locally before merging dependency changes. Tools (ruff / pytest)
         # land in ``.venv/bin``; subsequent steps invoke them via ``uv run``
         # so the venv is resolved without a manual activate.
-        run: uv sync --extra dev
+        # The unit suite exercises the optional Chinese-CLIP adapter too.
+        # Install both image and Chinese-CLIP extras so those tests run in the
+        # same dependency set as the supported multimodal backends.
+        run: uv sync --extra dev --extra clip --extra cn_clip
 
       - name: Lint (ruff)
         run: |
