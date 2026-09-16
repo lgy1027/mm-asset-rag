@@ -22,6 +22,7 @@ from __future__ import annotations
 from typing import Generic, TypeVar
 
 from .protocols import Embedder, KnowledgeBackend, Parser
+from .settings import get_settings
 
 T = TypeVar("T")
 
@@ -94,3 +95,13 @@ def get_backend(name: str) -> KnowledgeBackend:
 
         register_builtin_backends()
     return backends.get(name)
+
+
+def get_active_backend() -> KnowledgeBackend:
+    """Return the backend selected by the process configuration.
+
+    Application code should use this helper rather than naming a built-in
+    adapter. Registration stays explicit, while deployment selects the
+    implementation through ``VECTOR_BACKEND`` / ``Settings.vector_backend``.
+    """
+    return get_backend(get_settings().vector_backend)

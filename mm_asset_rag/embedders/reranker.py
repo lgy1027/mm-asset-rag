@@ -184,14 +184,9 @@ class Reranker:
 # ─── HTTP rerank API provider ──────────────────────────────────────────
 
 
-# Per-provider defaults: (api_base, model, form) where ``form`` is the
-# request/response shape — "flat" (Cohere form) or "nested" (DashScope-native).
-# Resolved when the matching settings field is None so users only set
-# ``RERANKER_PROVIDER`` + the key. Add a new flat/nested provider = one entry
-# here + one Literal value in settings.py; a novel wire shape = subclass and
-# override ``_score_text_pairs``.
-# 百炼 defaults to the DashScope-native nested endpoint (universal host, works
-# with just an API key) rather than the per-workspace flat compatible one.
+# Provider defaults are ``(api_base, model, form)``. New flat/nested providers
+# need one entry and a Settings Literal; a new wire shape needs an adapter.
+# DashScope uses its API-key-only nested endpoint by default.
 _HTTP_PROVIDER_DEFAULTS: dict[str, tuple[str, str, str]] = {
     "siliconflow": ("https://api.siliconflow.cn/v1/rerank", "BAAI/bge-reranker-v2-m3", "flat"),
     "dashscope": (

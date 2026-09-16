@@ -50,7 +50,6 @@ from .api_streaming import (
     _safe_stream_error,
 )
 from .api_streaming import _STREAM_ERR_MAX_CHARS as _STREAM_ERR_MAX_CHARS
-from .backends.qdrant.client import get_qdrant_client
 from .evaluation_service import EvaluationCommand, get_evaluation_service
 from .observability import runtime_metrics
 from .paths import (
@@ -60,6 +59,7 @@ from .paths import (
     physical_cache_id,
     safe_parsed_image_path,
 )
+from .registry import get_active_backend
 from .search_service import dispatch_search, get_search_service
 from .service import ParseOptions, get_service
 from .settings import get_settings
@@ -74,11 +74,9 @@ async def lifespan(app: FastAPI):
     with suppress(Exception):
         get_pipeline().cleanup_expired_caches()
     yield
-    # Graceful shutdown: close the qdrant client so it removes its .lock
-    # file. If the process is killed before this runs, the next startup
-    # tolerates a stale local Qdrant lock.
+    # Backends own their resources (for example, Qdrant's local-file lock).
     with suppress(Exception):
-        get_qdrant_client().close()
+        get_active_backend().close()
 
 
 app = FastAPI(
@@ -102,18 +100,8 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=_resolve_trusted_hosts()
 
 # ─── Request body size limit ─────────────────────────────────────────────
 #
-# Starlette streams multipart bodies into a ``SpooledTemporaryFile`` *before*
-# the route handler runs, so the in-handler ``upload_max_*`` byte checks
-# only gate the copy into ``incoming_dir`` — a 50 GB POST would still fill
-# ``/tmp`` before our 413 fires. This middleware wraps ``receive`` so the
-# body is rejected as soon as the cumulative byte count crosses the
-# configured cap, before Starlette spools it to disk.
-#
-# The cap is the per-batch upload limit (``upload_max_batch_bytes``, default
-# 200 MiB) — large enough that ordinary JSON requests (search/answer/chat,
-# tens of KB) sail through, small enough to bound a malicious upload. The
-# limit applies to every request body; NDJSON/JSON payloads are tiny so this
-# never rejects legitimate traffic.
+# Starlette spools multipart bodies before route handlers run. Bound the ASGI
+# receive stream so oversized uploads are rejected before they fill ``/tmp``.
 
 
 class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
@@ -341,9 +329,9 @@ def health(
         "version": __version__,
         "files": len(asset_files),
         "documents_jsonl_exists": get_documents_jsonl().exists(),
-        "text_index_exists": _qdrant_collection_alive("text"),
-        "image_index_exists": _qdrant_collection_alive("image"),
-        "vector_backend": "qdrant",
+        "text_index_exists": _backend_index_exists("text"),
+        "image_index_exists": _backend_index_exists("image"),
+        "vector_backend": get_active_backend().name,
         "model": get_settings().llm_model or "",
     }
     if deep:
@@ -357,31 +345,10 @@ def health(
     return payload
 
 
-def _qdrant_collection_alive(kind: str) -> bool:
-    """True iff any Qdrant collection for ``kind`` ('text'/'image') exists.
-
-    Resolves collections from the live server (via
-    ``_existing_collections_for``), not the module's active-cache. A cold-start
-    API process that never ingested would otherwise see ``text_collection()``
-    fall back to the bare base name ``multimodal_text`` (the real collection is
-    ``multimodal_text_<dim>d``) and ``collection_exists`` would wrongly return
-    False — reporting the index as missing on ``/health`` right after boot.
-
-    Swallows every error: /health must stay 200 even when Qdrant local-mode
-    is locked by another process, the server is unreachable, or no
-    collection has been created yet.
-    """
+def _backend_index_exists(kind: str) -> bool:
+    """Query the active backend without exposing backend-specific health logic."""
     try:
-        from .backends.qdrant.client import get_qdrant_client
-        from .backends.qdrant.collections import (
-            IMAGE_COLLECTION_BASE,
-            TEXT_COLLECTION_BASE,
-            _existing_collections_for,
-        )
-
-        client = get_qdrant_client()
-        base = TEXT_COLLECTION_BASE if kind == "text" else IMAGE_COLLECTION_BASE
-        return bool(_existing_collections_for(client, base))
+        return get_active_backend().index_exists(kind)
     except Exception:
         return False
 

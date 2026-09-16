@@ -564,16 +564,16 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
     get_settings.cache_clear()
 
     # text-to-image should go through the backend, not the rewrite wrapper.
-    with patch("mm_asset_rag.search_service.get_backend") as get_backend:
-        backend = get_backend.return_value
+    with patch("mm_asset_rag.search_service.get_active_backend") as get_active_backend:
+        backend = get_active_backend.return_value
         backend.search_text_to_image.return_value = []
         dispatch_search(query="q", mode="text-to-image", image_path=None, top_k=5)
         backend.search_text_to_image.assert_called_once()
     assert rewrite_calls == [], "text-to-image must not invoke the rewrite wrapper"
 
     # image-to-image (with sandboxed path stubbed) — rewrite is also skipped here.
-    with patch("mm_asset_rag.search_service.get_backend") as get_backend:
-        backend = get_backend.return_value
+    with patch("mm_asset_rag.search_service.get_active_backend") as get_active_backend:
+        backend = get_active_backend.return_value
         backend.search_image.return_value = []
         dispatch_search(query="q", mode="image-to-image", image_path="img.png", top_k=5)
         backend.search_image.assert_called_once()

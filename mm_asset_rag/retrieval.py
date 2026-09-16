@@ -228,9 +228,9 @@ def hybrid_search(
     single-stage path transparently.
     """
     if backend is None:
-        from .registry import get_backend
+        from .registry import get_active_backend
 
-        backend = get_backend("qdrant")
+        backend = get_active_backend()
 
     settings = get_settings()
     reranker = get_default_reranker()

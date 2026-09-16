@@ -45,24 +45,9 @@ class IntentWeights:
     image_to_image: float
 
 
-# Default per-intent RRF weight triples.
-#
-# Tuning notes:
-# * PRECISE_KEYWORD: short exact phrases → down-weight dense (text → 0.60)
-#   and let the BM25 channels (fused via RRF_WEIGHT_BM25/_ZH) carry the
-#   recall. Keeping a non-zero text_to_image lets a precise phrase still
-#   surface a relevant cover figure.
-# * DESCRIPTIVE: long paraphrase → trust the dense channel (text → 0.85),
-#   trim text_to_image (0.15) so off-topic thumbnails don't leak in.
-# * ENTITY_LOOKUP: a single named entity often pairs with a logo / photo;
-#   raise text_to_image slightly (0.25) so an entity query has a real shot
-#   at a relevant image hit.
-# * CHINESE: CJK-heavy queries — text=0.70 is HIGHER than PRECISE_KEYWORD's
-#   0.60 (BM25-zh is enabled by default and can carry more weight via the
-#   channel's RRF bias), but LOWER than the global ``hybrid_weight_text``
-#   default of 0.80 — the BM25-zh channel doesn't need extra RRF text
-#   weight to dominate when it already wins on its own. image_to_image
-#   stays at 0.15 matching the historical global default.
+# Defaults favor lexical retrieval for exact phrases, dense retrieval for
+# descriptions, image recall for named entities, and text for CJK-heavy
+# queries. Deployments can override each triple through Settings.
 DEFAULT_INTENT_WEIGHTS: dict[QueryIntent, IntentWeights] = {
     QueryIntent.PRECISE_KEYWORD: IntentWeights(text=0.60, text_to_image=0.20, image_to_image=0.15),
     QueryIntent.DESCRIPTIVE: IntentWeights(text=0.85, text_to_image=0.15, image_to_image=0.10),

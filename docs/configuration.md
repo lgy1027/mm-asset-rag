@@ -98,6 +98,7 @@ pip install -e ".[clip]"
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `VECTOR_BACKEND` | `qdrant` | Registered search/index backend selected at runtime |
 | `QDRANT_URL` | unset | Remote Qdrant URL; unset = local file mode |
 | `QDRANT_API_KEY` | unset | Remote Qdrant API key |
 | `QDRANT_TEXT_COLLECTION` | `multimodal_text` | Base text collection name |
@@ -112,9 +113,9 @@ pip install -e ".[clip]"
 Collection names auto-suffix by vector dimension, e.g. `multimodal_text_2560d`. Leave `QDRANT_ACTIVE_*_COLLECTION` unset to use the auto suffix; set them only to pin a collection that does not match the current embedder's dim.
 
 The built-in `QdrantBackend` is registered as the implementation of the
-search and indexing backend ports. Application callers use `SearchService`
-and those ports, so Qdrant settings affect the active adapter without making
-API, CLI, answer, or evaluation code depend on Qdrant helper functions.
+search and indexing backend ports. `VECTOR_BACKEND` selects the registered
+adapter; application callers use `SearchService` and those ports, so API,
+CLI, answer, and evaluation code do not depend on Qdrant helper functions.
 
 ## Retrieval tuning
 

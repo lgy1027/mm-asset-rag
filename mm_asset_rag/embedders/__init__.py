@@ -1,12 +1,7 @@
 """Embedder implementations and their registration.
 
-Adding a new modality (audio, video frame, …) is a three-line change:
-
-1. Drop ``audio_embedder.py`` here whose class satisfies
-   ``mm_asset_rag.protocols.Embedder``.
-2. ``register_embedder(...)`` below.
-3. The active collection naming + dim lookup in ``backends.qdrant``
-   picks it up automatically.
+Add an embedder by registering an implementation of ``Embedder`` here. The
+active backend remains responsible for indexing and querying that modality.
 """
 
 from __future__ import annotations

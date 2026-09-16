@@ -30,6 +30,7 @@ def test_defaults_applied_when_no_env(monkeypatch):
         "ENABLE_OCR",
         "ENABLE_VLM",
         "AUTO_INDEX",
+        "VECTOR_BACKEND",
         "QDRANT_UPSERT_BATCH_SIZE",
         "LLM_TIMEOUT",
         "CLIP_MODEL",
@@ -46,6 +47,7 @@ def test_defaults_applied_when_no_env(monkeypatch):
     assert s.enable_vlm is False
     assert s.image_provider == "clip"
     assert s.auto_index is True
+    assert s.vector_backend == "qdrant"
     assert s.qdrant_upsert_batch_size == 16
     assert s.llm_timeout == 120.0
     assert s.clip_model == "clip-ViT-B-32"
@@ -81,11 +83,13 @@ def test_env_var_overrides_default(monkeypatch):
     monkeypatch.setenv("ENABLE_OCR", "true")
     monkeypatch.setenv("ENABLE_VLM", "1")
     monkeypatch.setenv("QDRANT_UPSERT_BATCH_SIZE", "64")
+    monkeypatch.setenv("VECTOR_BACKEND", "stub")
     s = Settings(_env_file=None)
     assert s.pdf_parser == "paddleocr_vl"
     assert s.enable_ocr is True
     assert s.enable_vlm is True
     assert s.qdrant_upsert_batch_size == 64
+    assert s.vector_backend == "stub"
 
 
 def test_api_bind_address_can_be_configured(monkeypatch):

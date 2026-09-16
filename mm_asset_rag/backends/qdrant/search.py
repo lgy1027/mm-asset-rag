@@ -82,7 +82,7 @@ def _embed_bm25_zh_query(query: str) -> models.SparseVector | None:
     idf = _load_bm25_zh_idf()
     if not idf:
         return None
-    from ... import bm25_zh as _bm25_zh_mod
+    from . import bm25_zh as _bm25_zh_mod
 
     tokens = _bm25_zh_mod.tokenize_zh(query)
     return _bm25_zh_mod.bm25_zh_encode_query(tokens, idf)

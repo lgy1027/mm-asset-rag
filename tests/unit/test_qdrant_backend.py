@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from qdrant_client import QdrantClient, models
 
+from mm_asset_rag.backends import qdrant as qdrant_backend
 from mm_asset_rag.backends.qdrant import client as qdrant_client
 from mm_asset_rag.backends.qdrant import indexing as qdrant_indexing
 from mm_asset_rag.backends.qdrant import search as qdrant_search
@@ -40,6 +41,38 @@ def test_registered_qdrant_adapter_implements_search_and_index_ports() -> None:
 
     assert isinstance(backend, SearchBackend)
     assert isinstance(backend, IndexBackend)
+
+
+def test_qdrant_backend_owns_document_deletion_lifecycle(monkeypatch) -> None:
+    """Service code delegates multi-collection deletion to the Qdrant adapter."""
+    backend = qdrant_backend.QdrantBackend()
+    fake_client = MagicMock()
+    monkeypatch.setattr(backend, "_client", lambda: fake_client)
+    monkeypatch.setattr(
+        qdrant_backend,
+        "get_settings",
+        lambda: type(
+            "S", (),
+            {
+                "qdrant_active_text_collection": "active_text",
+                "qdrant_active_image_collection": None,
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        qdrant_backend.collections,
+        "_strict_existing_collections_for",
+        lambda _client, base: [f"{base}_1024d"],
+    )
+
+    counts = backend.delete_documents({"guide"})
+
+    assert counts == {"text": 2, "image": 1}
+    assert [call.kwargs["collection_name"] for call in fake_client.delete.call_args_list] == [
+        "active_text",
+        "multimodal_text_1024d",
+        "multimodal_image_1024d",
+    ]
 
 
 def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(

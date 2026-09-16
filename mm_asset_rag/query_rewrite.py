@@ -410,9 +410,9 @@ def multi_query_search(
     weights: list[float] = []
     if image_path is not None:
         if backend is None:
-            from .registry import get_backend
+            from .registry import get_active_backend
 
-            backend = get_backend("qdrant")
+            backend = get_active_backend()
         try:
             i2i_hits = backend.search_image(image_path=image_path, top_k=top_k)
         except Exception as exc:
@@ -542,9 +542,9 @@ def _multi_query_text(
     if not queries:
         return []
     if backend is None:
-        from .registry import get_backend
+        from .registry import get_active_backend
 
-        backend = get_backend("qdrant")
+        backend = get_active_backend()
     effective_min = get_settings().min_score if min_score is None else min_score
     if len(queries) == 1:
         hits = backend.search_text(query=queries[0], top_k=top_k)

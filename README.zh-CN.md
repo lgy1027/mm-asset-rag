@@ -30,7 +30,7 @@
                                                                 │ embed
                                                                 ▼
                   ┌─────────────────────────────────────────────────┐
-                  │                  Qdrant (本地 / 服务)            │
+                  │          向量后端（内置 Qdrant）                 │
                   │  multimodal_text_<dim>d    multimodal_image_<dim>d│
                   │   dense · bm25 · bm25_zh      CLIP / CN-CLIP     │
                   └───────────────┬─────────────────────────────────┘
@@ -58,7 +58,7 @@
 - **跨模态检索** — PDF / Office 文档里嵌的图会被抽出来,可选让 VLM 打 caption,这样纯文本 query 也能命中"只有图的 slide";`find images similar to this one` 这种 query 走 CLIP image collection。同一份素材库同时喂两条线。
 - **Upload-first 摄入** — 不再需要 `asset_manifest.json`。`/upload/preview` 嗅探文件魔数,提取维度 / PDF 元数据,可调用 VLM 取 title / description / tags,`/upload/confirm` 才真正解析 + 索引。
 - **解析** — PDF:PyMuPDF(本地,默认)或 PaddleOCR-VL(API,扫描件更准)或 docling(本地,版面感知);Office 文档:MarkItDown(默认)或 docling;图片:OCR + VLM caption。
-- **索引** — Qdrant(本地文件或 server)。文本点携带 dense + BM25 + 中文 BM25-zh 三个稀疏通道;图片点带 CLIP 向量。
+- **索引** — Qdrant 是内置后端（本地文件或 server）。可通过 `VECTOR_BACKEND` 选择其他已注册后端；Qdrant 文本点携带 dense、BM25 和 BM25-zh 向量，图片点携带 CLIP 向量。
 - **可选生成** — OpenAI 兼容 chat completion,严格基于证据,支持 NDJSON 流式;没配 LLM 时 `/answer` / `/chat` 返回 evidence 摘要而不是报错 — 检索本身永远能工作。
 - **Web UI** — 自带单页 HTML(`mm_asset_rag/web/index.html`),FastAPI 直接 serve,做上传预览、任务状态、聊天。
 
@@ -168,8 +168,7 @@ POST /upload/preview (multipart files)
 POST /upload/confirm (cache_id + 编辑过的 previews)
   ├─ 把确认的文件搬到 assets/pdfs、assets/images 或 assets/documents
   ├─ 解析 PDF / image / document → documents.jsonl
-  ├─ 文本 chunk upsert 到 Qdrant text collection
-  └─ 图片向量 upsert 到 Qdrant image collection
+  └─ 通过当前后端索引文本 chunk 和图片向量（默认 Qdrant）
 ```
 
 ## 配置
@@ -181,9 +180,11 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 | `MM_ASSET_RAG_HOME` | 上传素材、parsed data、索引、任务历史放哪 | `~/.mm_asset_rag` |
 | `MODEL_API_KEY` / `MODEL_BASE_URL` / `LLM_MODEL` | `/answer` 和 `/chat` 的可选 LLM | — |
 | `EMBEDDING_*` | 文本 embedding provider(默认 OpenAI 兼容) | — |
+| `VECTOR_BACKEND` | 运行时选用的已注册检索/索引后端 | `qdrant` |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server 模式(不填走本地文件) | — |
 | `CLIP_MODEL` | sentence-transformers CLIP 模型名(配 `[clip]` extra) | `clip-ViT-B-32` |
 | `IMAGE_PROVIDER` | `clip` / `cn_clip` | `clip` |
+| `VLM_BASE_URL` / `VLM_API_KEY` / `VLM_MODEL` | 上传自动标注和图片 caption 的 VLM；默认复用 `MODEL_*` | — |
 | `OCR_BACKEND` | 图片 OCR:`local`(PP-OCRv6,`[ocr]` extra)或 `http` | `local` |
 | `OCR_HTTP_URL` | 自建 OCR 端点(只 `OCR_BACKEND=http` 时用) | — |
 | `AUTO_META_ENABLED` | 上传 preview 时是否走 VLM title / description / tag | `true` |
@@ -251,7 +252,7 @@ mm-asset-rag/
 │   ├── retrieval.py      # hybrid merge + normalize
 │   ├── parsers/          # PDF / image 解析实现
 │   ├── embedders/        # text / image embedding 实现
-│   └── backends/         # Qdrant backend 实现
+│   └── backends/         # 后端适配器（内置 Qdrant）
 ├── tests/unit/           # 离线单元测试
 ├── tests/integration/    # 标记 @pytest.mark.integration
 ├── docs/                 # architecture、configuration、api、quickstart
@@ -260,13 +261,12 @@ mm-asset-rag/
 
 ### 加新模态(audio、video)
 
-三行改动,不用动中央 dispatch:
+1. 实现并注册满足 `protocols.Parser` 的解析器。
+2. 实现并注册满足 `protocols.Embedder` 的嵌入器。
+3. 为新 source type 增加 API/CLI 路由。
+4. 扩展当前后端，使其能索引和查询该模态。
 
-1. 写 `parsers/audio_parser.py`,类满足 `protocols.Parser`。
-2. 在 `parsers/__init__.py` 末尾 `register_parser(AudioParser())`。
-3. 写 `embedders/audio_embedder.py`,类满足 `protocols.Embedder`,同样 `register_embedder(...)`。
-
-FastAPI、CLI、Qdrant backend 全部从 registry 运行时读。
+Registry 消除了中心化实现查找；路由和后端能力仍需显式实现。
 
 ## 文档
 

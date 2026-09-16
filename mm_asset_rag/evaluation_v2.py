@@ -427,9 +427,9 @@ def _execute_image_eval_search(
     try:
         relative_path = image_path.resolve().relative_to(get_assets_dir().resolve())
     except ValueError:
-        from .backends.qdrant.search import image_to_image_search
+        from .registry import get_active_backend
 
-        return image_to_image_search(image_path, top_k=command.top_k)
+        return get_active_backend().search_image(image_path=image_path, top_k=command.top_k)
     return search(
         SearchCommand(
             query=command.query,

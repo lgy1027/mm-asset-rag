@@ -4,15 +4,9 @@ Capability Protocols describe the contracts each backend / parser / embedder
 may satisfy. The runtime ``Registry`` (in ``registry.py``) provides a single
 source of truth for what implementations are available.
 
-Adding a new modality (e.g. audio) is a three-line change in this codebase:
-
-1. Write ``parsers/audio_parser.py`` whose class satisfies ``Parser``.
-2. In ``mm_asset_rag/parsers/__init__.py`` (or a dedicated module), call
-   ``register_parser(AudioParser())``.
-3. The CLI ``--pdf-parser`` analog ``--audio-parser`` slot auto-appears in
-   argparse because ``parsers.all()`` is queried.
-
-No central dispatch table needs editing.
+New parsers and embedders register against these protocols. Supporting a new
+modality end to end also requires the active backend and user-facing routes to
+handle that modality.
 """
 
 from __future__ import annotations
@@ -186,6 +180,22 @@ class IndexBackend(Protocol):
     def upsert_image(
         self, *, progress_cb: object | None = None, force_recreate: bool = False
     ) -> tuple[int, str]: ...
+
+    def delete_documents(self, document_ids: set[str]) -> dict[str, int]:
+        """Delete documents from all backend-native index representations."""
+        ...
+
+    def index_exists(self, kind: str) -> bool:
+        """Return whether a backend-native text or image index is available."""
+        ...
+
+    def invalidate_caches(self) -> None:
+        """Discard backend-derived in-process caches after a corpus mutation."""
+        ...
+
+    def close(self) -> None:
+        """Release backend-owned process resources during application shutdown."""
+        ...
 
 
 @runtime_checkable

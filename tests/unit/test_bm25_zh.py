@@ -1,4 +1,4 @@
-"""Tests for ``mm_asset_rag.bm25_zh`` — Chinese-aware BM25 encoder.
+"""Tests for the Qdrant adapter's Chinese-aware BM25 encoder.
 
 Pure-Python unit tests. The first call to ``tokenize_zh`` triggers
 jieba's lazy initialisation (downloads the dict on a cold cache), so
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 from qdrant_client import models
 
-from mm_asset_rag import bm25_zh
+from mm_asset_rag.backends.qdrant import bm25_zh
 from mm_asset_rag.schema import ParsedChunk
 
 # ─── tokenize_zh ─────────────────────────────────────────────────────────

@@ -112,19 +112,10 @@ def split_by_heading(
 
 # ─── Recursive token-budget splitting ────────────────────────────────────
 #
-# ``split_by_heading`` produces one chunk per detected heading. Long
-# sections (a 10-page methods chapter under a single ``# Methods``) still
-# become a single oversized chunk — the dense embedder truncates it, BM25
-# signal dilutes, and the cross-encoder reranker is misled by long-body
-# token frequency. ``recursive_split`` caps each chunk to a token budget
-# with overlap, walking a hierarchy of separators so cuts land on natural
-# boundaries (paragraph → line → sentence → char).
-#
-# Benchmark guidance (Vecta 7-strategy + arXiv 8-method surveys): a
-# ~500-token recursive chunk wins on retrieval accuracy; >800 starts to
-# dilute. Corpus- and model-agnostic: token counts default to a character
-# approximation (token ≈ chars/3.5, mixed zh/en) with no tokenizer
-# dependency, with an optional HF tokenizer upgrade path.
+# Heading splits can still leave oversized sections. ``recursive_split``
+# enforces a token budget with overlap, preferring paragraph, line, sentence,
+# then character boundaries. It uses a character estimate by default and an
+# optional Hugging Face tokenizer when configured.
 
 # Separator hierarchy, coarsest first. Paragraph break is preferred over
 # line break over sentence end over space over char. CJK sentence-enders

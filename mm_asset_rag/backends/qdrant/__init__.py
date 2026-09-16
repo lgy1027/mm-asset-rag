@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from qdrant_client import models
+
+from ...settings import get_settings
 from . import client, collections, indexing, search
 
 
@@ -42,6 +45,66 @@ class QdrantBackend:
             progress_cb=progress_cb,
             force_recreate=force_recreate,
         )
+
+    def delete_documents(self, document_ids: set[str]) -> dict[str, int]:
+        """Delete exact document payloads from every live Qdrant collection."""
+        if not document_ids:
+            return {"text": 0, "image": 0}
+        settings = get_settings()
+        qdrant = self._client()
+        groups = {
+            "text": [
+                *(
+                    [settings.qdrant_active_text_collection]
+                    if settings.qdrant_active_text_collection
+                    else []
+                ),
+                *collections._strict_existing_collections_for(
+                    qdrant, collections.TEXT_COLLECTION_BASE
+                ),
+            ],
+            "image": [
+                *(
+                    [settings.qdrant_active_image_collection]
+                    if settings.qdrant_active_image_collection
+                    else []
+                ),
+                *collections._strict_existing_collections_for(
+                    qdrant, collections.IMAGE_COLLECTION_BASE
+                ),
+            ],
+        }
+        selector = models.FilterSelector(
+            filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="document_id", match=models.MatchAny(any=sorted(document_ids))
+                    )
+                ]
+            )
+        )
+        counts = {"text": 0, "image": 0}
+        for kind, names in groups.items():
+            for name in dict.fromkeys(names):
+                qdrant.delete(collection_name=name, points_selector=selector)
+                counts[kind] += 1
+        return counts
+
+    def index_exists(self, kind: str) -> bool:
+        """Check live dimension-suffixed collections without leaking client details."""
+        try:
+            base = (
+                collections.TEXT_COLLECTION_BASE if kind == "text" else collections.IMAGE_COLLECTION_BASE
+            )
+            return bool(collections._existing_collections_for(self._client(), base))
+        except Exception:
+            return False
+
+    def invalidate_caches(self) -> None:
+        indexing.invalidate_bm25_zh_idf_cache()
+
+    def close(self) -> None:
+        self._client().close()
 
     def search_text(self, *, query, top_k, search_filter=None):
         return search.text_search(query, top_k=top_k, search_filter=search_filter)

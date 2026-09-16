@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # ─── Paths ───────────────────────────────────────────────────────────
     mm_asset_rag_home: Path | None = None
 
+    # ─── Vector backend ───────────────────────────────────────────────────
+    # The registry resolves this name to the active SearchBackend / IndexBackend
+    # implementation. ``qdrant`` is bundled; deployments may register another
+    # backend during application startup.
+    vector_backend: str = "qdrant"
+
     # ─── API auth / host guard ───────────────────────────────────────────
     # A static bearer token guarding mutations and provider-quota endpoints.
     # Leave unset only for loopback development. Clients pass it as
@@ -235,7 +241,7 @@ class Settings(BaseSettings):
     reranker_api_timeout: float = 30.0
 
     # ─── Chinese BM25 ─────────────────────────────────────────────────────
-    # Companion sparse vector produced by ``mm_asset_rag.bm25_zh``
+    # Companion sparse vector produced by the Qdrant adapter's ``bm25_zh`` module.
     # (jieba tokenisation + Okapi BM25). Stored alongside the existing
     # English fastembed BM25 in the same Qdrant collection, then fused
     # via RRF at query time. The hybrid-text query prefetches both

@@ -73,17 +73,13 @@ mm-asset-rag/
 
 ## Adding a new modality (audio, video)
 
-Three-line change, no central dispatch to edit:
+1. Implement and register a `Parser` in `parsers/`.
+2. Implement and register an `Embedder` in `embedders/`.
+3. Add API/CLI routing for the source type.
+4. Extend the active backend to index and query the modality.
 
-1. Drop `parsers/audio_parser.py` whose class satisfies the
-   `Parser` Protocol in `mm_asset_rag/protocols.py`.
-2. In `parsers/__init__.py`, `register_parser(AudioParser())`.
-3. Drop `embedders/audio_embedder.py` whose class satisfies the
-   `Embedder` Protocol, and `register_embedder(...)` it.
-
-The FastAPI app, the CLI, and the Qdrant backend all read from the
-registries at runtime — no `if asset.source_type == "pdf"` branch ever
-needs touching.
+Registries remove central implementation lookup, but each new modality still
+needs explicit transport and backend support.
 
 ## Adding a different parser implementation
 

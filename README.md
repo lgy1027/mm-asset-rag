@@ -30,7 +30,7 @@
                                                                 │ embed
                                                                 ▼
                   ┌─────────────────────────────────────────────────┐
-                  │                  Qdrant (local/server)           │
+                  │          Vector backend (Qdrant built-in)        │
                   │  multimodal_text_<dim>d    multimodal_image_<dim>d│
                   │   dense · bm25 · bm25_zh      CLIP / CN-CLIP     │
                   └───────────────┬─────────────────────────────────┘
@@ -60,7 +60,7 @@ A small, self-contained Python package for **multimodal retrieval** over user-up
 - **Cross-modal retrieval**: embedded figures in PDFs and Office docs are extracted and (optionally) given VLM captions so a text query can hit a figure-only slide; a `find images similar to this one` query hits the CLIP image collection. The same asset store feeds both.
 - **Upload-first ingestion**: no `asset_manifest.json`. `/upload/preview` sniffs file magic bytes, extracts dimensions / PDF metadata, optionally asks a VLM for title / description / tags, then `/upload/confirm` parses and indexes.
 - **Parsing**: PyMuPDF (local, default) or PaddleOCR-VL (API, better for scanned PDFs) or docling (local, layout-aware) for PDFs; MarkItDown (default) or docling for Office docs (docx/pptx/xlsx/html); OCR + VLM captioning for images.
-- **Indexing**: Qdrant (local file or server). Text points carry dense + BM25 + Chinese-aware BM25-zh sparse vectors; image points carry CLIP vectors.
+- **Indexing**: Qdrant is the built-in backend (local file or server). Select another registered backend with `VECTOR_BACKEND`; Qdrant text points carry dense + BM25 + BM25-zh vectors, and image points carry CLIP vectors.
 - **Optional generation**: OpenAI-compatible chat completion with strict evidence grounding and NDJSON streaming. When no LLM is configured, `/answer` and `/chat` return an evidence summary instead of failing — retrieval still works.
 - **Web UI**: a bundled single-page HTML (`mm_asset_rag/web/index.html`) served by FastAPI for upload preview, task status, and chat.
 
@@ -91,6 +91,13 @@ Optional CLIP-based image embeddings (recommended if you want text→image / ima
 pip install "mm-asset-rag[clip]"     # sentence-transformers CLIP
 ```
 
+Optional Chinese CLIP and local OCR support:
+
+```bash
+pip install "mm-asset-rag[cn_clip]"  # Chinese CLIP
+pip install "mm-asset-rag[ocr]"      # PP-OCRv6 via ONNX Runtime
+```
+
 Optional multi-format Office document parsing (docx/pptx/xlsx/html) beyond the default MarkItDown:
 
 ```bash
@@ -113,7 +120,7 @@ uv sync --extra dev
 
 ## Quick start
 
-> **第一次用?** 先看 [docs/quickstart.md](docs/quickstart.md) —— 从零搭环境(ollama + bge-m3 + Qdrant 本地)到第一次 `mmrag search` 出结果的 30 分钟路径,含新手常见坑。下面的 Quick start 假定环境已配好。
+> **First time here?** See [docs/quickstart.md](docs/quickstart.md) for the full setup path, from local Ollama and Qdrant to a first `mmrag search`. This quick start assumes the environment is ready.
 
 ```bash
 # 1. Start the API + web UI
@@ -157,8 +164,7 @@ POST /upload/preview (multipart files)
 POST /upload/confirm (cache_id + edited previews)
   ├─ move confirmed files into assets/pdfs, assets/images, or assets/documents
   ├─ parse PDF/image/document into documents.jsonl
-  ├─ upsert text chunks into Qdrant text collection
-  └─ upsert image vectors into Qdrant image collection
+  └─ index text chunks and image vectors through the active backend (Qdrant by default)
 ```
 
 ## Configuration
@@ -170,8 +176,10 @@ All settings come from environment variables (a `.env` file in the current direc
 | `MM_ASSET_RAG_HOME` | Where to put uploaded assets, parsed data, indexes, task log. | `~/.mm_asset_rag` |
 | `MODEL_API_KEY` / `MODEL_BASE_URL` / `LLM_MODEL` | Optional LLM for `/answer` and `/chat`. | — |
 | `EMBEDDING_*` | Text embedding provider (defaults to OpenAI-compatible). | — |
+| `VECTOR_BACKEND` | Registered search/index backend. | `qdrant` |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server mode (omit to use local file mode). | — |
 | `CLIP_MODEL` | Sentence-transformers CLIP model name (with `[clip]` extra). | `clip-ViT-B-32` |
+| `IMAGE_PROVIDER` | `clip` or `cn_clip`. | `clip` |
 | `VLM_BASE_URL` / `VLM_API_KEY` / `VLM_MODEL` | VLM for upload auto-tagging and image captions. Falls back to `MODEL_*`. | — |
 | `AUTO_META_ENABLED` | Enable VLM title/description/tag extraction during upload preview. | `true` |
 | `PADDLEOCR_VL_API_TOKEN` | PaddleOCR-VL API token for scanned PDFs. | — |
@@ -240,7 +248,7 @@ mm-asset-rag/
 │   ├── retrieval.py      # hybrid merge + normalize
 │   ├── parsers/          # PDF/image parser implementations
 │   ├── embedders/        # text/image embedder implementations
-│   └── backends/         # Qdrant backend implementation
+│   └── backends/         # backend adapters (Qdrant built in)
 ├── tests/unit/           # offline unit tests
 ├── tests/integration/    # marked @pytest.mark.integration
 ├── docs/                 # architecture, configuration, api
@@ -249,13 +257,12 @@ mm-asset-rag/
 
 ### Adding a new modality (audio, video)
 
-Three-line change, no central dispatch to edit:
+1. Implement and register a parser that satisfies `protocols.Parser`.
+2. Implement and register an embedder that satisfies `protocols.Embedder`.
+3. Add API/CLI routing for the new source type.
+4. Extend the selected backend to index and query that modality.
 
-1. Drop `parsers/audio_parser.py` whose class satisfies `protocols.Parser`.
-2. `register_parser(AudioParser())` in `parsers/__init__.py`.
-3. Drop `embedders/audio_embedder.py` whose class satisfies `protocols.Embedder`, and `register_embedder(...)` it.
-
-The FastAPI app, CLI, and Qdrant backend all read from the registries at runtime.
+The registry removes central implementation lookup; routing and backend capabilities remain explicit.
 
 ## Documentation
 

@@ -22,13 +22,6 @@ from typing import Any
 from . import asset_index
 from . import parsers as _parsers  # noqa: F401  # register built-in parsers
 from .assets import IngestAsset, from_sniffed
-from .backends.qdrant.client import get_qdrant_client
-from .backends.qdrant.collections import (
-    IMAGE_COLLECTION_BASE,
-    TEXT_COLLECTION_BASE,
-    _strict_existing_collections_for,
-)
-from .backends.qdrant.indexing import invalidate_bm25_zh_idf_cache
 from .config import load_env
 from .document_store import documents_jsonl_lock
 from .ingest_workflow import IngestWorkflow
@@ -41,6 +34,7 @@ from .paths import (
     get_parsed_dir,
     physical_cache_id,
 )
+from .protocols import KnowledgeBackend
 from .query_preprocess import invalidate_vocab_cache
 from .registry import get_backend
 from .registry import get_parser as get_parser
@@ -147,8 +141,10 @@ class IngestService:
         *,
         task_store: TaskStore | None = None,
         workflow: IngestWorkflow | None = None,
+        backend: KnowledgeBackend | None = None,
     ) -> None:
         self._settings = settings or get_settings()
+        self._backend = backend if backend is not None else get_backend(self._settings.vector_backend)
         self._task_store = task_store if task_store is not None else TaskStore()
         self._workflow = workflow if workflow is not None else IngestWorkflow()
         self._tasks: dict[str, TaskRecord] = {}
@@ -159,6 +155,11 @@ class IngestService:
         # force-interrupted, so cancel is cooperative — a task mid-parse of
         # one large asset still finishes that asset before stopping.
         self._cancel_flags: dict[str, threading.Event] = {}
+
+    @property
+    def backend(self) -> KnowledgeBackend:
+        """The configured index backend, exposed to the ingest workflow."""
+        return self._backend
 
     # ─── Public API used by both FastAPI and CLI ─────────────────────────
 
@@ -295,8 +296,8 @@ class IngestService:
         return rec
 
     def reindex(self, text_only: bool = False, image_only: bool = False) -> tuple[str, ...]:
-        """Force-recreate Qdrant collections and re-upsert from documents.jsonl."""
-        backend = get_backend("qdrant")
+        """Force-recreate the active backend indexes from documents.jsonl."""
+        backend = self._backend
         results = []
         if not image_only:
             _n, name = backend.upsert_text(force_recreate=True)
@@ -315,27 +316,9 @@ class IngestService:
         return tuple(results)
 
     def _invalidate_search_caches(self) -> None:
-        """Drop in-process vocab + BM25-zh IDF caches after a reindex or
-        successful ingest.
-
-        ``query_preprocess`` caches the corpus vocab used for query
-        expansion / hyphenisation, and the Qdrant index caches the
-        IDF vector used by the BM25-zh sparse index. Both caches are
-        derived from the *current* Qdrant collection state, so after a
-        ``force_recreate=True`` reindex (or any successful ``upsert_text``
-        / ``upsert_image`` on the ingest path) the cached values go
-        stale and silently degrade retrieval quality. We invalidate
-        them here so the next query rebuilds them against the new data.
-
-        Lazy imports keep ``service`` from hard-depending on either
-        module at import time (e.g. ``invalidate_bm25_zh_idf_cache``
-        may not exist yet in older deployed builds), and
-        ``suppress(Exception)`` ensures cache invalidation can never
-        crash the task-completion path — at worst we print nothing
-        and the next query pays the cache-miss cost.
-        """
+        """Drop corpus and backend-derived caches after an index mutation."""
         invalidate_vocab_cache()
-        invalidate_bm25_zh_idf_cache()
+        self._backend.invalidate_caches()
 
     def list_tasks(self) -> list[TaskRecord]:
         """Return the task history ordered by most recent ``updated_at``.
@@ -507,11 +490,11 @@ class IngestService:
             return report
 
         try:
-            counts = self._delete_qdrant_documents({document_id})
+            counts = self._backend.delete_documents({document_id})
             report.text_collections_scanned = counts["text"]
             report.image_collections_scanned = counts["image"]
         except Exception as exc:
-            report.errors.append(f"qdrant delete failed: {exc}")
+            report.errors.append(f"backend delete failed: {exc}")
             _restore_file_snapshot(docs_path, docs_snapshot)
             _restore_file_snapshot(index_path, index_snapshot)
             report.errors.extend(_rollback_staged_paths(staged))
@@ -529,56 +512,6 @@ class IngestService:
             report.errors.append(f"staged physical cleanup failed: {exc}")
         self._invalidate_search_caches()
         return report
-
-    def _delete_qdrant_documents(self, document_ids: set[str]) -> dict[str, int]:
-        """Delete exact document payloads from every active dimension collection."""
-        if not document_ids:
-            return {"text": 0, "image": 0}
-        from qdrant_client.http import models
-
-        client = get_qdrant_client()
-        groups = {
-            "text": list(
-                dict.fromkeys(
-                    [
-                        *(
-                            [self._settings.qdrant_active_text_collection]
-                            if self._settings.qdrant_active_text_collection
-                            else []
-                        ),
-                        *_strict_existing_collections_for(client, TEXT_COLLECTION_BASE),
-                    ]
-                )
-            ),
-            "image": list(
-                dict.fromkeys(
-                    [
-                        *(
-                            [self._settings.qdrant_active_image_collection]
-                            if self._settings.qdrant_active_image_collection
-                            else []
-                        ),
-                        *_strict_existing_collections_for(client, IMAGE_COLLECTION_BASE),
-                    ]
-                )
-            ),
-        }
-        selector = models.FilterSelector(
-            filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="document_id",
-                        match=models.MatchAny(any=sorted(document_ids)),
-                    )
-                ]
-            )
-        )
-        counts = {"text": 0, "image": 0}
-        for kind, collections in groups.items():
-            for collection in collections:
-                client.delete(collection_name=collection, points_selector=selector)
-                counts[kind] += 1
-        return counts
 
     # ─── Internals ─────────────────────────────────────────────────────
 

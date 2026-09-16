@@ -67,22 +67,9 @@ def _embed_bm25(texts: list[str]) -> list[models.SparseVector]:
 
 
 # ─── Chinese BM25 query-side ─────────────────────────────────────────────
-# The indexing side (``build_qdrant_text_index``) writes the per-corpus
-# IDF table to ``$MM_ASSET_RAG_HOME/indexes/bm25_zh_idf.json`` once per
-# rebuild. The query side caches it in-process so we don't re-read the
-# file on every ``mmrag search``.
-#
-# The cache is versioned by the IDF file's ``stat`` mtime so it stays
-# correct across *process* boundaries: a long-lived API server keeps the
-# cached table even after a separate ``mmrag reindex`` CLI rewrites the
-# file on disk, but the next ``_load_bm25_zh_idf`` call sees the new
-# mtime and re-reads. (An in-process ``invalidate`` flag alone can't
-# reach another process.) The file ``stat()`` and ``read_text()`` run
-# outside the lock (so concurrent loads don't serialise on disk IO);
-# the cache hit check and the cache store are each under the lock. The
-# read+store pair isn't atomic, but it can't let stale data get "stuck"
-# the way the pre-mtime flag-only cache could: every load re-checks
-# mtime, so a rewrite mid-load just means the *next* load re-reads.
+# Rebuilds persist the corpus IDF table. Query processes cache it by file mtime,
+# so a separate ``mmrag reindex`` is detected on the next lookup. Disk reads
+# happen outside the lock; cache checks and writes stay synchronized.
 
 _BM25_ZH_IDF_CACHE: tuple[int, dict] | None = None  # (mtime_ns, table)
 _BM25_ZH_IDF_LOCK = threading.Lock()
@@ -398,7 +385,7 @@ def build_qdrant_text_index(
     settings = get_settings()
     bm25_zh_vectors: list[models.SparseVector] | None = None
     if settings.bm25_zh_enabled:
-        from ... import bm25_zh as _bm25_zh_mod
+        from . import bm25_zh as _bm25_zh_mod
 
         bm25_zh_vectors, bm25_zh_idf = _bm25_zh_mod.build_bm25_zh_index(
             documents,

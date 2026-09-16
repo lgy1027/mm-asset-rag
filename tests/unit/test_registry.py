@@ -12,7 +12,9 @@ from mm_asset_rag.registry import (
     Registry,
     backends,
     embedders,
+    get_active_backend,
     parsers,
+    register_backend,
     register_embedder,
     register_parser,
 )
@@ -48,6 +50,37 @@ class StubTextEmbedder:
 
     def embed_batch(self, contents) -> list[list[float]]:
         return [self.embed(c) for c in contents]
+
+
+class StubBackend:
+    name = "stub"
+
+    def ensure_collection(self, **kwargs):
+        return None
+
+    def drop_collection(self, name):
+        return None
+
+    def upsert(self, **kwargs):
+        return 0
+
+    def retrieve_existing_ids(self, **kwargs):
+        return set()
+
+    def upsert_text(self, **kwargs):
+        return 0, "text"
+
+    def upsert_image(self, **kwargs):
+        return 0, "image"
+
+    def search_text(self, **kwargs):
+        return []
+
+    def search_text_to_image(self, **kwargs):
+        return []
+
+    def search_image(self, **kwargs):
+        return []
 
 
 # ─── Registry basics ─────────────────────────────────────────────────────
@@ -199,6 +232,14 @@ def test_register_embedder_indexes_by_modality_and_name():
     register_embedder(StubTextEmbedder())
     embedder = embedders.get(("text", "stub_text"))
     assert embedder.dim() == 4
+
+
+def test_get_active_backend_uses_configured_backend_name(monkeypatch):
+    """Application services select a backend through Settings, not a Qdrant literal."""
+    register_backend(StubBackend())
+    monkeypatch.setattr("mm_asset_rag.registry.get_settings", lambda: type("S", (), {"vector_backend": "stub"})())
+
+    assert get_active_backend().name == "stub"
 
 
 # ─── get_default_*_embedder lazy registration ───────────────────────────

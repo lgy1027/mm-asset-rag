@@ -12,7 +12,7 @@ from .observability import runtime_metrics
 from .paths import get_assets_dir
 from .protocols import SearchBackend, SearchFilter
 from .query_rewrite import hybrid_search_with_rewrite, text_search_with_rewrite
-from .registry import get_backend
+from .registry import get_active_backend
 from .schema import SearchHit
 
 log = logging.getLogger(__name__)
@@ -167,7 +167,7 @@ class SearchService:
     """Execute typed retrieval commands through the active search backend."""
 
     def __init__(self, backend: SearchBackend | None = None) -> None:
-        self._backend = backend if backend is not None else get_backend("qdrant")
+        self._backend = backend if backend is not None else get_active_backend()
 
     def execute(self, command: SearchCommand) -> list[SearchHit]:
         started_at = perf_counter()

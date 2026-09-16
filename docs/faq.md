@@ -288,12 +288,13 @@ python -m pip install --upgrade --force-reinstall onnxruntime
 
 ### 我加了一个新 modality(audio),要怎么注册
 
-详见 README 末「Adding a new modality」节。三步:
-1. `parsers/audio_parser.py` 写 `class AudioParser:` 实现 `protocols.Parser`。
-2. `parsers/__init__.py` 末尾 `register_parser(AudioParser())`。
-3. `embedders/audio_embedder.py` + `register_embedder(...)`。
+详见 README 末「Adding a new modality」节：
+1. 实现并注册满足 `protocols.Parser` 的解析器。
+2. 实现并注册满足 `protocols.Embedder` 的嵌入器。
+3. 为新 source type 增加 API/CLI 路由。
+4. 扩展当前后端，使其能索引和查询该模态。
 
-FastAPI、CLI、Qdrant backend 都从 registry 读,不动 dispatch。
+Registry 负责实现查找；路由和后端能力仍需显式实现。
 
 ### `/chat/stream` 用 reasoning 模型,前端看到一堆 `<think>...</think>`
 

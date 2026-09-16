@@ -108,7 +108,7 @@ def command_parse(args: argparse.Namespace) -> None:
 
 
 def command_reindex(args: argparse.Namespace) -> None:
-    """Drop and rebuild the qdrant collections from documents.jsonl.
+    """Drop and rebuild the active backend indexes from documents.jsonl.
 
     Routes through :meth:`IngestService.reindex` so the CLI and any
     other caller share one implementation — and one lock-detection
@@ -117,15 +117,14 @@ def command_reindex(args: argparse.Namespace) -> None:
     — e.g. after changing the embedding model or fixing a corrupted
     collection.
 
-    qdrant local mode is single-process: stop the API server (or any other
-    mm-asset-rag process) before running this command, otherwise the local
-    storage lock will block. Use ``QDRANT_URL`` (server mode) if you need
-    concurrent access.
+    The bundled Qdrant local mode is single-process: stop the API server (or
+    any other mm-asset-rag process) before running this command, otherwise
+    the local storage lock will block. Use ``QDRANT_URL`` (server mode) if
+    you need concurrent access.
 
     ``--yes`` skips the interactive confirmation — useful for CI / scripts
     and for the "switch CLIP model" recipe in ``docs/eval-report-v3.md``.
     """
-    from .backends.qdrant.client import QdrantLockHeldError
     from .service import get_service
 
     if not args.yes:
@@ -147,7 +146,7 @@ def command_reindex(args: argparse.Namespace) -> None:
             text_only=args.text_only,
             image_only=args.image_only,
         )
-    except QdrantLockHeldError as exc:
+    except RuntimeError as exc:
         raise SystemExit(f"error: {exc}") from exc
     for name in names:
         print(f"[reindex] {name}")

@@ -1,12 +1,7 @@
 """Parser implementations and their registration.
 
-Adding a new modality is a three-line change:
-
-1. Drop a file like ``audio_parser.py`` here whose class satisfies
-   ``mm_asset_rag.protocols.Parser``.
-2. Import + ``register_parser`` it below.
-3. (Optional) ship a CLI flag in ``mm_asset_rag.cli`` that calls
-   ``get_parser("audio", name)`` based on user input.
+Add a parser by importing it here and calling ``register_parser``. An end-to-end
+modality also needs routing and active-backend support.
 """
 
 from __future__ import annotations

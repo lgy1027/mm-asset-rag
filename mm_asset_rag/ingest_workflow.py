@@ -77,7 +77,7 @@ class IngestWorkflow:
             )
 
         try:
-            backend = service_module.get_backend("qdrant")
+            backend = service.backend
             text_n, text_name = backend.upsert_text(progress_cb=_progress)
             service._patch(record, current=f"text indexed · {text_name}")
             image_n, _image_name = backend.upsert_image(progress_cb=_progress)
@@ -224,7 +224,7 @@ class IngestWorkflow:
                 raw_path = get_parsed_dir() / cache_key / "raw.jsonl"
                 if not raw_path.exists() and status_key not in refreshed_documents:
                     service_module._remove_document_rows_from_documents_jsonl(status_key)
-                    service._delete_qdrant_documents({status_key})
+                    service.backend.delete_documents({status_key})
                     refreshed_documents.add(status_key)
                 if raw_path.exists() and raw_path.stat().st_size > 0:
                     skipped += 1

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -64,6 +65,19 @@ def test_health_endpoint_reports_status(client: TestClient) -> None:
     assert "embedder_configured" not in body
 
 
+def test_health_uses_active_backend_capabilities(client: TestClient, monkeypatch) -> None:
+    from mm_asset_rag import api
+
+    backend = SimpleNamespace(name="milvus", index_exists=lambda kind: kind == "text")
+    monkeypatch.setattr(api, "get_active_backend", lambda: backend)
+
+    body = client.get("/health").json()
+
+    assert body["vector_backend"] == "milvus"
+    assert body["text_index_exists"] is True
+    assert body["image_index_exists"] is False
+
+
 def test_openapi_version_matches_package_version() -> None:
     assert app.version == __version__
 
@@ -104,46 +118,17 @@ def test_health_deep_reports_false_when_unconfigured(client: TestClient, monkeyp
     assert body["embedder_configured"] is False
 
 
-def test_qdrant_collection_alive_resolves_dim_suffix_without_active_cache(monkeypatch):
-    """Cold-start /health: the API process may not have ingested, so the
-    module's active-collection cache is empty. ``_qdrant_collection_alive``
-    must still see the real ``multimodal_text_1024d`` collection (resolved
-    from the live server) instead of falling back to the bare base name and
-    reporting the index as missing."""
+def test_backend_index_exists_is_false_when_backend_raises(monkeypatch):
+    """Health stays available even when the selected backend cannot be reached."""
     from mm_asset_rag import api
 
-    class _Coll:
-        def __init__(self, n: str) -> None:
-            self.name = n
-
-    fake_client = MagicMock()
-    fake_client.get_collections.return_value = MagicMock(
-        collections=[_Coll("multimodal_text_1024d"), _Coll("multimodal_image_768d")]
-    )
     monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant.client.get_qdrant_client", lambda: fake_client
+        api,
+        "get_active_backend",
+        lambda: SimpleNamespace(index_exists=lambda _kind: (_ for _ in ()).throw(RuntimeError())),
     )
 
-    assert api._qdrant_collection_alive("text") is True
-    assert api._qdrant_collection_alive("image") is True
-
-
-def test_qdrant_collection_alive_false_when_no_collection(monkeypatch):
-    """No matching collection on the server → False (not an error)."""
-    from mm_asset_rag import api
-
-    class _Coll:
-        def __init__(self, n: str) -> None:
-            self.name = n
-
-    fake_client = MagicMock()
-    fake_client.get_collections.return_value = MagicMock(collections=[_Coll("unrelated")])
-    monkeypatch.setattr(
-        "mm_asset_rag.backends.qdrant.client.get_qdrant_client", lambda: fake_client
-    )
-
-    assert api._qdrant_collection_alive("text") is False
-    fake_client.collection_exists.assert_not_called()  # never the bare-base path
+    assert api._backend_index_exists("text") is False
 
 
 def test_root_serves_bundled_ui(client: TestClient) -> None:

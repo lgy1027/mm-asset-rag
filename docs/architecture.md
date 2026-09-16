@@ -70,7 +70,8 @@ The runtime registry selects the adapters that satisfy the declared
 | `SearchBackend` / `IndexBackend` | `name` | `backends/__init__.py` registers the Qdrant adapter |
 | `VectorBackend`   | `name`              | Legacy aggregate port retained for compatible adapters   |
 
-Adding a new modality (audio, video) is a three-line change — see
+Adding a modality requires parser and embedder registration plus explicit
+API/CLI routing and active-backend support. See
 [CONTRIBUTING.md](../CONTRIBUTING.md#adding-a-new-modality-audio-video).
 
 ## Task persistence
