@@ -173,24 +173,25 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 
 ## 配置
 
-所有配置走环境变量(当前目录下的 `.env` 自动加载)。最常用的几个:
+所有配置走环境变量（当前目录下的 `.env` 自动加载）。先配置模型能力和 RAG 档位；底层调参统一收进高级参考。
 
 | 变量 | 作用 | 默认 |
 | --- | --- | --- |
 | `MM_ASSET_RAG_HOME` | 上传素材、parsed data、索引、任务历史放哪 | `~/.mm_asset_rag` |
-| `MODEL_API_KEY` / `MODEL_BASE_URL` / `LLM_MODEL` | `/answer` 和 `/chat` 的可选 LLM | — |
-| `EMBEDDING_*` | 文本 embedding provider(默认 OpenAI 兼容) | — |
+| `MODEL_API_KEY` / `MODEL_BASE_URL` | LLM、VLM、文本 embedding 共用的 OpenAI 兼容连接 | — |
+| `EMBEDDING_MODEL` / `EMBEDDING_*` | 必填的文本 embedding 模型及可选 provider 覆盖 | — |
+| `LLM_MODEL` | `/answer`、`/chat` 和查询改写的可选 LLM | — |
+| `VLM_MODEL` / `VLM_*` | 上传元数据和图片 caption 的可选 VLM | — |
+| `RERANKER_*` | 可选的二阶段重排 provider 与模型 | 关闭 |
+| `INGESTION_PROFILE` | `fast`、`balanced`、`precision` 三档摄入成本/质量策略 | `balanced` |
+| `RETRIEVAL_PROFILE` | `fast`、`balanced`、`precision` 三档检索策略 | `balanced` |
 | `VECTOR_BACKEND` | 运行时选用的已注册检索/索引后端 | `qdrant` |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server 模式(不填走本地文件) | — |
 | `CLIP_MODEL` | sentence-transformers CLIP 模型名(配 `[clip]` extra) | `clip-ViT-B-32` |
 | `IMAGE_PROVIDER` | `clip` / `cn_clip` | `clip` |
-| `VLM_BASE_URL` / `VLM_API_KEY` / `VLM_MODEL` | 上传自动标注和图片 caption 的 VLM；默认复用 `MODEL_*` | — |
 | `OCR_BACKEND` | 图片 OCR:`local`(PP-OCRv6,`[ocr]` extra)或 `http` | `local` |
-| `OCR_HTTP_URL` | 自建 OCR 端点(只 `OCR_BACKEND=http` 时用) | — |
-| `AUTO_META_ENABLED` | 上传 preview 时是否走 VLM title / description / tag | `true` |
-| `PADDLEOCR_VL_API_TOKEN` | PaddleOCR-VL API token(扫描 PDF) | — |
 
-完整列表见 [`.env.example`](.env.example) 和 [`docs/configuration.md`](docs/configuration.md)。
+档位只会补足未显式设置的高级变量，已有 `.env` 中的显式值保持原行为。简洁模板见 [`.env.example`](.env.example)，高级调优见 [`docs/configuration.md`](docs/configuration.md)。
 
 ## 评估
 

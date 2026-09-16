@@ -22,27 +22,68 @@ $MM_ASSET_RAG_HOME/
 
 There is no `asset_manifest.json`; `/upload/confirm` creates a logical `Document` and its current physical `Asset` record. Re-uploading the same `document_id` replaces that asset and its chunks. Public lifecycle and retrieval interfaces use `document_id`; physical assets and cache keys remain internal implementation details.
 
-## Core variables
+## Start with these settings
 
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `MM_ASSET_RAG_HOME` | `~/.mm_asset_rag` | Runtime data directory |
-| `MODEL_API_KEY` | unset | Shared remote OpenAI-compatible API key |
-| `MODEL_BASE_URL` | unset | Shared remote OpenAI-compatible base URL |
-| `LLM_MODEL` | unset | Optional chat model |
-| `VLM_MODEL` | unset | Optional vision model |
-| `LLM_TIMEOUT` | `120.0` | Chat timeout seconds |
-| `LLM_REQUESTS_PER_MINUTE` | `5` | Process-local maximum chat request starts per minute; retries count |
-| `LLM_MAX_RETRIES` | `2` | Retries after the first transient 429, timeout, connection, or 5xx failure |
-| `LLM_RETRY_BACKOFF_SECONDS` | `1.0` | Base exponential retry backoff seconds when `Retry-After` is absent |
-| `ANSWER_MIN_RERANK_SCORE` | `0.0` | Raw cross-encoder relevance floor for answer evidence; never uses final hybrid score |
-| `ANSWER_MIN_LEXICAL_COVERAGE` | `0.2` | Minimum local meaningful-query-term coverage when no usable rerank score exists |
+The public configuration surface is intentionally small. Configure the
+capabilities you use, one storage backend, and two optional RAG profiles.
+Leave the advanced settings below at their defaults until you have evaluation
+data that justifies tuning them.
+
+| Area | Variables | Required when | Notes |
+| --- | --- | --- | --- |
+| Shared provider connection | `MODEL_API_KEY`, `MODEL_BASE_URL` | Using a remote LLM, VLM, or text embedding provider | Each capability inherits this connection unless it supplies an override. |
+| Text embedding | `EMBEDDING_MODEL` | Always, before indexing or search | `EMBEDDING_API_KEY` / `EMBEDDING_BASE_URL` only apply when it uses another provider. |
+| LLM | `LLM_MODEL` | `/answer`, `/chat`, or query rewrite | Without it, answer endpoints return an evidence summary. |
+| VLM | `VLM_MODEL` | VLM metadata or figure captions | It is separate from the chat LLM so a text-only deployment stays lightweight. |
+| Image embedding | `IMAGE_PROVIDER`, `CLIP_MODEL` | Text-to-image or image-to-image retrieval | Optional; install the matching extra first. |
+| Reranker | `RERANKER_ENABLED`, `RERANKER_PROVIDER`, `RERANKER_API_*` | Second-stage relevance ranking | Optional; it falls back to first-stage retrieval when unavailable. |
+| Storage | `VECTOR_BACKEND`, `QDRANT_URL`, `QDRANT_API_KEY` | Every deployment | Qdrant is the bundled backend; an unset URL uses local storage. |
+| Deployment | `MM_ASSET_RAG_HOME`, `MMRAG_API_*` | Custom runtime path or non-loopback API | Keep the default loopback binding for local development. |
 
 ### Capability-specific overrides
 
-LLM, VLM and embedding use the shared `MODEL_*` connection by default. Set a capability's own `*_BASE_URL` and `*_API_KEY` only when it uses a different provider. There is no cross-capability credential or model fallback.
+LLM, VLM and embedding use the shared `MODEL_*` connection by default. Set a
+capability's own `*_BASE_URL` and `*_API_KEY` only when it uses a different
+provider. A capability always needs its own model name; models never fall back
+across capabilities.
 
-When neither triple is complete, `/answer` and `/chat` return evidence-summary fallback answers instead of failing.
+### RAG profiles
+
+`INGESTION_PROFILE` and `RETRIEVAL_PROFILE` group quality/cost choices without
+forcing users to understand chunk overlap, query fan-out, or RRF weights. Both
+default to `balanced`. A profile supplies a default only when the corresponding
+advanced variable is absent, so an existing explicit `.env` value always wins.
+
+| Profile | Ingestion behavior | Retrieval behavior |
+| --- | --- | --- |
+| `fast` | Disables automatic metadata, PDF figure extraction and scanned-PDF fallback; uses larger chunks with less overlap. | Keeps first-stage retrieval only; no query rewrite, rerank, or intent routing. |
+| `balanced` | Current defaults: automatic metadata and figure extraction stay available; standard 500-token chunks. | Current defaults: hybrid retrieval without optional quality stages. |
+| `precision` | Uses 400-token chunks with more overlap and preserves scanned-PDF fallback / figure extraction. | Enables configured reranking, query rewrite, and intent-aware routing. Missing model or reranker credentials still fall back safely. |
+
+Profiles do not enable OCR, VLM, image captions, or an image embedder by
+themselves: those are explicit model capabilities with dependency and cost
+implications. Enable them only when the relevant provider and package are
+installed.
+
+For a typical text RAG deployment, this is enough:
+
+```dotenv
+MODEL_API_KEY=...
+MODEL_BASE_URL=https://provider.example/v1
+EMBEDDING_MODEL=...
+LLM_MODEL=...
+RETRIEVAL_PROFILE=precision
+```
+
+For local development, `MODEL_*` can point at an OpenAI-compatible local
+endpoint such as Ollama. See [`.env.example`](../.env.example) for the compact
+template.
+
+## Advanced settings reference
+
+The remaining sections document expert-level tuning and operational limits.
+They remain supported for compatibility, but should generally be changed only
+with a reproducible evaluation or a concrete deployment requirement.
 
 ## API auth + host guard
 

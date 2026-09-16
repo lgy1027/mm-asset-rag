@@ -12,8 +12,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, ClassVar, Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,8 +28,66 @@ class Settings(BaseSettings):
         extra="forbid",
     )
 
+    # Profile defaults only fill settings absent from the environment or
+    # constructor. They never overwrite an explicitly tuned deployment.
+    _INGESTION_PROFILE_DEFAULTS: ClassVar[dict[str, dict[str, Any]]] = {
+        "fast": {
+            "auto_meta_enabled": False,
+            "pdf_extract_images": False,
+            "pdf_scan_fallback_enabled": False,
+            "chunk_target_tokens": 700,
+            "chunk_max_tokens": 1000,
+            "chunk_overlap_tokens": 20,
+        },
+        "balanced": {},
+        "precision": {
+            "pdf_scan_fallback_enabled": True,
+            "pdf_extract_images": True,
+            "chunk_target_tokens": 400,
+            "chunk_max_tokens": 650,
+            "chunk_overlap_tokens": 80,
+        },
+    }
+    _RETRIEVAL_PROFILE_DEFAULTS: ClassVar[dict[str, dict[str, Any]]] = {
+        "fast": {
+            "reranker_enabled": False,
+            "query_rewrite_enabled": False,
+            "hybrid_intent_routing_enabled": False,
+        },
+        "balanced": {},
+        "precision": {
+            "reranker_enabled": True,
+            "query_rewrite_enabled": True,
+            "hybrid_intent_routing_enabled": True,
+        },
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_profile_defaults(cls, data: Any) -> Any:
+        """Fill unconfigured tuning knobs from the selected user profile."""
+        if not isinstance(data, dict):
+            return data
+
+        values = dict(data)
+        for profile_field, profiles in (
+            ("ingestion_profile", cls._INGESTION_PROFILE_DEFAULTS),
+            ("retrieval_profile", cls._RETRIEVAL_PROFILE_DEFAULTS),
+        ):
+            profile = values.get(profile_field, values.get(profile_field.upper(), "balanced"))
+            for field, default in profiles.get(profile, {}).items():
+                if field not in values and field.upper() not in values:
+                    values[field] = default
+        return values
+
     # ─── Paths ───────────────────────────────────────────────────────────
     mm_asset_rag_home: Path | None = None
+
+    # ─── User-facing RAG profiles ────────────────────────────────────────
+    # Profiles bundle sensible quality/cost defaults. Individual advanced
+    # variables always take precedence, so existing .env files remain stable.
+    ingestion_profile: Literal["fast", "balanced", "precision"] = "balanced"
+    retrieval_profile: Literal["fast", "balanced", "precision"] = "balanced"
 
     # ─── Vector backend ───────────────────────────────────────────────────
     # The registry resolves this name to the active SearchBackend / IndexBackend

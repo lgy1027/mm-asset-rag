@@ -92,6 +92,53 @@ def test_env_var_overrides_default(monkeypatch):
     assert s.vector_backend == "stub"
 
 
+def test_precision_retrieval_profile_enables_quality_stages(monkeypatch):
+    """The precision profile opts into configured quality stages."""
+    monkeypatch.setenv("RETRIEVAL_PROFILE", "precision")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.retrieval_profile == "precision"
+    assert settings.reranker_enabled is True
+    assert settings.query_rewrite_enabled is True
+    assert settings.hybrid_intent_routing_enabled is True
+
+
+def test_explicit_retrieval_knob_wins_over_profile(monkeypatch):
+    """A deployment can opt out of an individual profile default."""
+    monkeypatch.setenv("RETRIEVAL_PROFILE", "precision")
+    monkeypatch.setenv("RERANKER_ENABLED", "false")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.reranker_enabled is False
+    assert settings.query_rewrite_enabled is True
+
+
+def test_fast_ingestion_profile_uses_lower_cost_defaults(monkeypatch):
+    """The fast ingestion profile avoids optional extraction work by default."""
+    monkeypatch.setenv("INGESTION_PROFILE", "fast")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.ingestion_profile == "fast"
+    assert settings.auto_meta_enabled is False
+    assert settings.pdf_extract_images is False
+    assert settings.chunk_target_tokens == 700
+    assert settings.chunk_overlap_tokens == 20
+
+
+def test_explicit_ingestion_knob_wins_over_profile(monkeypatch):
+    """A deployment can retain a feature while using the fast profile."""
+    monkeypatch.setenv("INGESTION_PROFILE", "fast")
+    monkeypatch.setenv("PDF_EXTRACT_IMAGES", "true")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.pdf_extract_images is True
+    assert settings.auto_meta_enabled is False
+
+
 def test_api_bind_address_can_be_configured(monkeypatch):
     monkeypatch.setenv("MMRAG_API_HOST", "0.0.0.0")
     monkeypatch.setenv("MMRAG_API_PORT", "18011")

@@ -169,24 +169,25 @@ POST /upload/confirm (cache_id + edited previews)
 
 ## Configuration
 
-All settings come from environment variables (a `.env` file in the current directory is loaded automatically). The most important ones:
+All settings come from environment variables (a `.env` file in the current directory is loaded automatically). Start with the capability choices and RAG profiles below; detailed tuning stays in the advanced reference.
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `MM_ASSET_RAG_HOME` | Where to put uploaded assets, parsed data, indexes, task log. | `~/.mm_asset_rag` |
-| `MODEL_API_KEY` / `MODEL_BASE_URL` / `LLM_MODEL` | Optional LLM for `/answer` and `/chat`. | — |
-| `EMBEDDING_*` | Text embedding provider (defaults to OpenAI-compatible). | — |
+| `MODEL_API_KEY` / `MODEL_BASE_URL` | Shared OpenAI-compatible connection for LLM, VLM, and embedding. | — |
+| `EMBEDDING_MODEL` / `EMBEDDING_*` | Required text embedding model and optional provider override. | — |
+| `LLM_MODEL` | Optional LLM for `/answer`, `/chat`, and query rewrite. | — |
+| `VLM_MODEL` / `VLM_*` | Optional VLM for upload metadata and image captions. | — |
+| `RERANKER_*` | Optional second-stage reranker provider and model. | disabled |
+| `INGESTION_PROFILE` | `fast`, `balanced`, or `precision` ingestion cost/quality defaults. | `balanced` |
+| `RETRIEVAL_PROFILE` | `fast`, `balanced`, or `precision` retrieval defaults. | `balanced` |
 | `VECTOR_BACKEND` | Registered search/index backend. | `qdrant` |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server mode (omit to use local file mode). | — |
 | `CLIP_MODEL` | Sentence-transformers CLIP model name (with `[clip]` extra). | `clip-ViT-B-32` |
 | `IMAGE_PROVIDER` | `clip` or `cn_clip`. | `clip` |
-| `VLM_BASE_URL` / `VLM_API_KEY` / `VLM_MODEL` | VLM for upload auto-tagging and image captions. Falls back to `MODEL_*`. | — |
-| `AUTO_META_ENABLED` | Enable VLM title/description/tag extraction during upload preview. | `true` |
-| `PADDLEOCR_VL_API_TOKEN` | PaddleOCR-VL API token for scanned PDFs. | — |
 | `OCR_BACKEND` | Image OCR backend: `local` (PP-OCRv6 via `[ocr]` extra) or `http`. | `local` |
-| `OCR_HTTP_URL` | External OCR endpoint (only used when `OCR_BACKEND=http`). | — |
 
-See [`.env.example`](.env.example) and [`docs/configuration.md`](docs/configuration.md) for the full list.
+Profiles fill advanced defaults only when that variable is absent, so existing explicit `.env` values keep their behavior. See [`.env.example`](.env.example) for the compact template and [`docs/configuration.md`](docs/configuration.md) for advanced tuning.
 
 ## Evaluation
 
