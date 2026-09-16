@@ -52,7 +52,8 @@ def test_qdrant_backend_owns_document_deletion_lifecycle(monkeypatch) -> None:
         qdrant_backend,
         "get_settings",
         lambda: type(
-            "S", (),
+            "S",
+            (),
             {
                 "qdrant_active_text_collection": "active_text",
                 "qdrant_active_image_collection": None,

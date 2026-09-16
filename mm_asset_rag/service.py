@@ -144,7 +144,9 @@ class IngestService:
         backend: KnowledgeBackend | None = None,
     ) -> None:
         self._settings = settings or get_settings()
-        self._backend = backend if backend is not None else get_backend(self._settings.vector_backend)
+        self._backend = (
+            backend if backend is not None else get_backend(self._settings.vector_backend)
+        )
         self._task_store = task_store if task_store is not None else TaskStore()
         self._workflow = workflow if workflow is not None else IngestWorkflow()
         self._tasks: dict[str, TaskRecord] = {}

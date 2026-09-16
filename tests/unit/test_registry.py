@@ -237,7 +237,9 @@ def test_register_embedder_indexes_by_modality_and_name():
 def test_get_active_backend_uses_configured_backend_name(monkeypatch):
     """Application services select a backend through Settings, not a Qdrant literal."""
     register_backend(StubBackend())
-    monkeypatch.setattr("mm_asset_rag.registry.get_settings", lambda: type("S", (), {"vector_backend": "stub"})())
+    monkeypatch.setattr(
+        "mm_asset_rag.registry.get_settings", lambda: type("S", (), {"vector_backend": "stub"})()
+    )
 
     assert get_active_backend().name == "stub"
 

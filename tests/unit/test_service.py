@@ -43,6 +43,7 @@ def test_delete_document_removes_current_index_record(tmp_home: Path, monkeypatc
     record = _record()
     upsert_record(record)
     write_documents([_chunk(record)])
+
     class Backend:
         def delete_documents(self, document_ids):
             return {"text": 0, "image": 0}

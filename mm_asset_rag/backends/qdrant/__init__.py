@@ -94,7 +94,9 @@ class QdrantBackend:
         """Check live dimension-suffixed collections without leaking client details."""
         try:
             base = (
-                collections.TEXT_COLLECTION_BASE if kind == "text" else collections.IMAGE_COLLECTION_BASE
+                collections.TEXT_COLLECTION_BASE
+                if kind == "text"
+                else collections.IMAGE_COLLECTION_BASE
             )
             return bool(collections._existing_collections_for(self._client(), base))
         except Exception:
