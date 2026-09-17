@@ -58,9 +58,9 @@ docling = ["docling>=2.0,<3.0"]
 # models ship inside the rapidocr wheel, so no extra download is needed.
 ocr = ["rapidocr>=3.9.0,<4.0", "onnxruntime>=1.16,<2.0"]
 # Local audio/video transcription: FunASR (paraformer-zh + fsmn-vad + ct-punc).
-# Heavy on purpose — pulls torch CPU + modelscope; models download from
+# Heavy on purpose — pulls torch + modelscope; models download from
 # ModelScope on first use. ffmpeg on PATH is also required (not pip).
-asr = ["funasr>=1.1.0,<2.0"]
+asr = ["funasr>=1.1.0,<2.0", "torch>=2.0", "torchaudio>=2.0"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",

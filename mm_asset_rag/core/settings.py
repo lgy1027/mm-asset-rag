@@ -496,6 +496,11 @@ class Settings(BaseSettings):
     audio_parser: str = "funasr"
     # Target length when merging ASR sentences into indexable chunks.
     audio_chunk_seconds: int = 30
+    # video backend: ffmpeg (subtitles → audio-track ASR → optional VLM
+    # frame captions) is the only built-in.
+    video_parser: str = "ffmpeg"
+    # Seconds between sampled keyframes for the VLM-caption tier.
+    video_frame_interval_s: int = 10
     enable_ocr: bool = False
     enable_vlm: bool = False
     image_provider: Literal["clip", "cn_clip"] = "clip"

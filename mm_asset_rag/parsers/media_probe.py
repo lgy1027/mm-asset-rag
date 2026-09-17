@@ -106,3 +106,89 @@ def normalize_to_wav(
         raise MediaProbeError(f"ffmpeg normalisation timed out on {source.name}") from exc
     if proc.returncode != 0 or not out_path.exists():
         raise MediaProbeError(f"ffmpeg could not decode {source.name}: {proc.stderr.strip()[:200]}")
+
+
+def subtitle_streams(probe: dict) -> list[dict]:
+    """Subtitle streams from a probe, annotated with a language tag."""
+    streams = [s for s in probe.get("streams", []) if s.get("codec_type") == "subtitle"]
+    for s in streams:
+        tags = s.get("tags") or {}
+        s["language"] = tags.get("language", "")
+    return streams
+
+
+def extract_subtitle_stream(
+    source: Path,
+    out_path: Path,
+    *,
+    index: int = 0,
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+) -> None:
+    """Extract subtitle stream ``index`` as plain subrip text.
+
+    ffmpeg converts whatever the container carries (mov_text / subrip /
+    ass / webvtt) to srt text; failure raises :class:`MediaProbeError`
+    and the caller falls back to ASR.
+    """
+    ffmpeg = _require("ffmpeg")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        f"0:s:{index}",
+        "-c:s",
+        "srt",
+        str(out_path),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        raise MediaProbeError(f"ffmpeg subtitle extraction timed out on {source.name}") from exc
+    if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
+        raise MediaProbeError(
+            f"ffmpeg could not extract subtitles from {source.name}: {proc.stderr.strip()[:200]}"
+        )
+
+
+def extract_frames(
+    source: Path,
+    out_dir: Path,
+    *,
+    interval_s: int = 10,
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+) -> list[Path]:
+    """Sample one JPEG frame per ``interval_s`` into ``out_dir``.
+
+    Returns frame paths in timeline order (``frame_0001.jpg`` …); frame N
+    covers ``[(N-1)*interval, N*interval)``. Sampling (vs scene
+    detection) keeps this CPU-cheap; scene-cut precision is a possible
+    later refinement, not a blocker for retrieval.
+    """
+    ffmpeg = _require("ffmpeg")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pattern = str(out_dir / "frame_%04d.jpg")
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-i",
+        str(source),
+        "-vf",
+        f"fps=1/{max(int(interval_s), 1)}",
+        "-q:v",
+        "4",
+        pattern,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        raise MediaProbeError(f"ffmpeg frame extraction timed out on {source.name}") from exc
+    if proc.returncode != 0:
+        raise MediaProbeError(
+            f"ffmpeg could not extract frames from {source.name}: {proc.stderr.strip()[:200]}"
+        )
+    frames = sorted(out_dir.glob("frame_*.jpg"))
+    if not frames:
+        raise MediaProbeError(f"ffmpeg produced no frames for {source.name}")
+    return frames

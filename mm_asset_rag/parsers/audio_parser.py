@@ -125,7 +125,7 @@ def _cache_path(asset_id: str) -> Path:
     return get_asr_dir() / f"{asset_id}.json"
 
 
-def _transcript_for(asset: IngestAsset) -> list[dict]:
+def transcript_for(asset: IngestAsset) -> list[dict]:
     """Cached sentence-level transcript for the asset's media file."""
     source = asset.file_path
     try:
@@ -176,7 +176,7 @@ def parse_audio(
     """
     _ = engine  # single built-in engine; keeps the signature stable
     window_s = chunk_seconds if chunk_seconds is not None else get_settings().audio_chunk_seconds
-    sentences = _transcript_for(asset)
+    sentences = transcript_for(asset)
     chunks: list[ParsedChunk] = []
     for window in merge_sentences_into_windows(sentences, chunk_seconds=window_s):
         if not window["text"]:
@@ -206,4 +206,5 @@ __all__ = [
     "MediaProbeError",
     "merge_sentences_into_windows",
     "parse_audio",
+    "transcript_for",
 ]

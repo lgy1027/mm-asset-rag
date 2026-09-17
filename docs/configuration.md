@@ -508,30 +508,45 @@ The threshold default of `10` is tuned for genuinely scanned (image-only) PDFs, 
 | `PADDLEOCR_VL_USE_CHART_RECOGNITION` | `false` | Paddle option |
 | `PADDLEOCR_VL_IMAGE_HOSTS` | unset | Comma-separated extra hosts allowed for OCR image downloads (SSRF allow-list extension; default: only the `PADDLEOCR_VL_JOB_URL` host). Private/loopback/link-local IPs are always refused. |
 
-## Audio ingest (local FunASR)
+## Audio / video ingest (local FunASR + ffmpeg)
 
-Audio uploads (mp3 / wav / m4a / flac / ogg / wma) are transcribed locally
-by FunASR (paraformer-zh + fsmn-vad + ct-punc) into timestamped chunks that
-enter the normal text index — embedding, BM25, rewrite, and rerank all work
-unchanged. Design and the video roadmap: [`docs/design-audio-video.md`](design-audio-video.md).
+Audio uploads (mp3 / wav / m4a / flac / ogg / wma) and video uploads
+(mp4 / mkv / mov / webm / avi / wmv) become timestamped chunks on the
+normal text index — embedding, BM25, rewrite, and rerank all work
+unchanged. Design and roadmap: [`docs/design-audio-video.md`](design-audio-video.md).
+
+**Video** runs a three-tier cascade in priority order:
+
+1. **Embedded subtitles** (srt/vtt/ass/mov_text/…) — cheapest and verbatim;
+   bitmap subtitle codecs (pgs/dvdsub) skip straight to tier 2.
+2. **Audio-track ASR** — same FunASR pipeline as audio uploads
+   (`ffmpeg -vn` drops the video track during normalisation).
+3. **Keyframe VLM captions** (opt-in) — one frame every
+   `VIDEO_FRAME_INTERVAL_S` seconds gets a concise caption via the
+   configured `VLM_*`, covering slides/diagrams/silent footage that
+   speech and subtitles never mention. Enable with the same
+   `--vlm` / `enable_vlm` flag as image captions.
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
 | `AUDIO_PARSER` | `funasr` | Registered audio parser name (`funasr` is the only built-in) |
-| `AUDIO_CHUNK_SECONDS` | `30` | Target length when merging ASR sentences into indexable chunks |
+| `VIDEO_PARSER` | `ffmpeg` | Registered video parser name (`ffmpeg` is the only built-in) |
+| `AUDIO_CHUNK_SECONDS` | `30` | Target length when merging ASR sentences / subtitle cues into indexable chunks |
+| `VIDEO_FRAME_INTERVAL_S` | `10` | Seconds between sampled keyframes for the VLM-caption tier |
 
 Prerequisites, both degrade gracefully (the asset fails with a readable
 reason, the rest of the batch is unaffected):
 
-1. **ffmpeg on PATH** (`brew install ffmpeg`) — normalises any ffmpeg-
-   readable media to 16 kHz mono WAV before ASR.
-2. **`[asr]` extra**: `uv sync --extra asr` — pulls the FunASR stack
-   (torch CPU + modelscope); models download from ModelScope on first use.
+1. **ffmpeg on PATH** (`brew install ffmpeg`) — normalisation, subtitle
+   extraction, and frame sampling all shell out to it.
+2. **`[asr]` extra**: `uv sync --all-extras` (or `--extra asr`) — pulls
+   the FunASR stack (torch + modelscope); models download from
+   ModelScope on first use. Subtitle-only videos don't need it.
 
 Transcripts are cached under `$MM_ASSET_RAG_HOME/asr/` keyed by source
 mtime/size, so reindex and force re-parse reuse them without re-running
-ASR. Retrieved chunks carry `start` / `end` (seconds) in their metadata
-for playback positioning.
+ASR. Retrieved chunks carry `start` / `end` (seconds) and, for frame
+captions, `frame_path` in their metadata for playback positioning.
 
 ## Tracing / observability
 

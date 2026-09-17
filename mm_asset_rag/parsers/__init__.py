@@ -16,12 +16,14 @@ from .pdf_parser import (
     parse_with_paddleocr_vl,
 )
 from .table_parser import parse_table
+from .video_parser import parse_video
 
 __all__ = [
     "parse_audio",
     "parse_image",
     "parse_pdf",
     "parse_table",
+    "parse_video",
     "parse_with_docling",
     "parse_with_markitdown",
     "parse_with_paddleocr_vl",
@@ -117,6 +119,22 @@ class _FunAsrAudioParser:
         return parse_audio(asset)
 
 
+class _FfmpegVideoParser:
+    """ffmpeg-based video pipeline (``source_type="video"``).
+
+    Tiers: embedded subtitles → audio-track ASR (reuses the funasr
+    path) → optional VLM keyframe captions. ffmpeg on PATH required;
+    VLM captions additionally need ``VLM_*`` creds and the caller's
+    ``enable_vlm`` (same opt-in convention as the image parser).
+    """
+
+    name = "ffmpeg"
+    source_type = "video"
+
+    def parse(self, asset, **options):
+        return parse_video(asset, enable_vlm=bool(options.get("enable_vlm", False)))
+
+
 class _DoclingPdfParser:
     """docling as a PDF backend (``--pdf-parser docling``).
 
@@ -180,3 +198,4 @@ register_parser(_DoclingDocumentParser())
 register_parser(_MarkItDownDocumentParser())
 register_parser(_ImageParser())
 register_parser(_FunAsrAudioParser())
+register_parser(_FfmpegVideoParser())
