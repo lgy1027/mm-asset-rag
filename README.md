@@ -268,6 +268,7 @@ The registry removes central implementation lookup; routing and backend capabili
 - [Data flow(文本 vs 图片两条线)](docs/data-flow.md)
 - [Configuration](docs/configuration.md)
 - [Tracing / observability](docs/configuration.md#tracing--observability)
+- [音视频检索设计(Phase 1)](docs/design-audio-video.md)
 - [HTTP API](docs/api.md)
 - [Upload flow](docs/upload-flow.md)
 - [FAQ & 故障排查](docs/faq.md)

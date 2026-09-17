@@ -52,10 +52,11 @@ _ZIP_MAGIC = b"PK\x03\x04"
 class SniffedAsset:
     """What sniff() reports about a single uploaded file.
 
-    ``source_type`` is one of ``"pdf"``, ``"image"``, ``"document"``, or
-    ``"unknown"``. ``"document"`` covers the office/text formats the
-    document parser handles (docx / pptx / xlsx / html). When ``unknown``,
-    the caller should reject the upload rather than try to parse it.
+    ``source_type`` is one of ``"pdf"``, ``"image"``, ``"document"``,
+    ``"audio"``, ``"video"``, or ``"unknown"``. ``"document"`` covers the
+    office/text formats the document parser handles (docx / pptx / xlsx /
+    html). When ``unknown``, the caller should reject the upload rather
+    than try to parse it.
     """
 
     asset_id: str
@@ -179,6 +180,50 @@ def _sniff_office(path: Path) -> tuple[str, str] | None:
     return source_type, ext
 
 
+def _sniff_media(path: Path, magic: bytes) -> tuple[str, str] | None:
+    """Identify audio/video by magic bytes. Returns ``(source_type, ext)``.
+
+    Covers the container families ffmpeg handles natively. Container-level
+    only — we don't probe streams here (sniff stays pure-magic, no
+    subprocess); e.g. ``OggS`` classifies as audio even for the rare ogg
+    video, and an audio-only ``.mp4`` still classifies as video. The
+    parsers refine via ffprobe and fail per-asset when a track is missing.
+    """
+    # MP3: ID3 tag or MPEG audio frame sync (0xFFE_).
+    if magic.startswith(b"ID3") or (
+        len(magic) >= 2 and magic[0] == 0xFF and magic[1] & 0xE0 == 0xE0
+    ):
+        return "audio", ".mp3"
+    # RIFF family: WAVE (audio) / AVI (video) — WEBP was handled earlier.
+    if magic.startswith(b"RIFF") and len(magic) >= 12:
+        if magic[8:12] == b"WAVE":
+            return "audio", ".wav"
+        if magic[8:12] == b"AVI ":
+            return "video", ".avi"
+    if magic.startswith(b"fLaC"):
+        return "audio", ".flac"
+    if magic.startswith(b"OggS"):
+        return "audio", ".ogg"
+    # Matroska / WebM share the EBML header.
+    if magic.startswith(b"\x1a\x45\xdf\xa3"):
+        return "video", path.suffix.lower() or ".mkv"
+    # ISO BMFF (mp4/m4a/mov/…): a ``ftyp`` box at offset 4; the major brand
+    # at offset 8 separates audio-only (M4A/M4B) from video containers.
+    if len(magic) >= 12 and magic[4:8] == b"ftyp":
+        major = magic[8:12]
+        if major in (b"M4A ", b"M4B "):
+            return "audio", ".m4a"
+        if major == b"qt  ":
+            return "video", ".mov"
+        return "video", ".mp4"
+    # ASF (WMV/WMA): GUID prefix; the extension separates audio from video.
+    if magic.startswith(b"\x30\x26\xb2\x75"):
+        if path.suffix.lower() == ".wma":
+            return "audio", ".wma"
+        return "video", ".wmv"
+    return None
+
+
 def sniff(path: Path) -> SniffedAsset:
     """Top-level entry point.
 
@@ -275,6 +320,20 @@ def sniff(path: Path) -> SniffedAsset:
             width=w,
             height=h,
             image_metadata=exif,
+            error=error,
+        )
+
+    # Audio / video — media formats parsed by the audio/video parsers
+    # (source_type="audio" / "video"). Magic bytes only; the parsers do
+    # their own ffmpeg-based validation and stream probing.
+    media = _sniff_media(path, magic)
+    if media is not None:
+        return SniffedAsset(
+            asset_id=asset_id,
+            title=title,
+            source_type=media[0],
+            relative_path=relative_path,
+            file_size=size,
             error=error,
         )
 

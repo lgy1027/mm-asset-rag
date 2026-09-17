@@ -267,6 +267,9 @@ class IngestWorkflow:
                     elif asset.source_type == "document":
                         parser = service_module.get_parser("document", options.document_parser)
                         documents = parser.parse(asset)
+                    elif asset.source_type == "audio":
+                        parser = service_module.get_parser("audio", options.audio_parser)
+                        documents = parser.parse(asset)
                     else:
                         documents = []
                 except Exception as exc:

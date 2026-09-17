@@ -7,6 +7,7 @@ modality also needs routing and active-backend support.
 from __future__ import annotations
 
 from ..core.registry import register_parser
+from .audio_parser import parse_audio
 from .image_parser import parse_image
 from .pdf_parser import (
     parse_pdf,
@@ -17,6 +18,7 @@ from .pdf_parser import (
 from .table_parser import parse_table
 
 __all__ = [
+    "parse_audio",
     "parse_image",
     "parse_pdf",
     "parse_table",
@@ -98,6 +100,23 @@ class _ImageParser:
         )
 
 
+class _FunAsrAudioParser:
+    """Local FunASR transcription for audio (``source_type="audio"``).
+
+    Optional heavy backend: requires ffmpeg on PATH and the ``[asr]``
+    extra (torch + modelscope stack, downloaded from ModelScope on first
+    use). Registered unconditionally — like docling, the lazy import means
+    registration is free and the dependency surfaces at parse time.
+    """
+
+    name = "funasr"
+    source_type = "audio"
+
+    def parse(self, asset, **options):
+        _ = options
+        return parse_audio(asset)
+
+
 class _DoclingPdfParser:
     """docling as a PDF backend (``--pdf-parser docling``).
 
@@ -160,3 +179,4 @@ register_parser(_DoclingPdfParser())
 register_parser(_DoclingDocumentParser())
 register_parser(_MarkItDownDocumentParser())
 register_parser(_ImageParser())
+register_parser(_FunAsrAudioParser())

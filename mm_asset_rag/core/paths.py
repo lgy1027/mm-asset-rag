@@ -82,6 +82,18 @@ def get_captions_dir() -> Path:
     return path
 
 
+def get_asr_dir() -> Path:
+    """Transcript cache for audio/video ASR (``asr/``).
+
+    Lives outside ``parsed/<id>/`` (which force re-parse clears) so
+    re-parsing reuses the transcript without re-running ASR; the cache
+    entries key on source mtime/size to invalidate stale media.
+    """
+    path = get_data_dir() / "asr"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def get_indexes_dir() -> Path:
     return get_data_dir() / "indexes"
 

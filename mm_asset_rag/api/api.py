@@ -568,12 +568,34 @@ async def upload_preview(
             target = incoming_dir / name
             if target.exists():
                 target = incoming_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
+            # Per-type streaming cap: media files (audio/video) get their own
+            # ceiling by extension; everything else is bounded by the
+            # document cap. The preview stage re-checks after sniffing.
+            media_suffixes = {
+                ".mp3",
+                ".wav",
+                ".m4a",
+                ".flac",
+                ".ogg",
+                ".wma",
+                ".mp4",
+                ".mkv",
+                ".mov",
+                ".webm",
+                ".avi",
+                ".wmv",
+            }
+            size_cap = (
+                settings.upload_max_media_bytes
+                if Path(name).suffix.lower() in media_suffixes
+                else settings.upload_max_file_bytes
+            )
             file_bytes = 0
             with target.open("wb") as out:
                 while chunk := f.file.read(1024 * 1024):
                     file_bytes += len(chunk)
                     batch_bytes += len(chunk)
-                    if file_bytes > settings.upload_max_file_bytes:
+                    if file_bytes > size_cap:
                         raise HTTPException(
                             status_code=413,
                             detail=f"{name} exceeds upload_max_file_bytes",

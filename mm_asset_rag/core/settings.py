@@ -491,6 +491,11 @@ class Settings(BaseSettings):
     # document backend: markitdown (default, core dep, no ML stack) or
     # docling (optional [docling] extra, heavy torch/transformers stack).
     document_parser: Literal["markitdown", "docling"] = "markitdown"
+    # audio backend: funasr (local, [asr] extra) is the only built-in.
+    # Unregistered names surface at parse time as a per-asset failure.
+    audio_parser: str = "funasr"
+    # Target length when merging ASR sentences into indexable chunks.
+    audio_chunk_seconds: int = 30
     enable_ocr: bool = False
     enable_vlm: bool = False
     image_provider: Literal["clip", "cn_clip"] = "clip"
@@ -498,6 +503,9 @@ class Settings(BaseSettings):
 
     # ─── Upload preview safety limits ─────────────────────────────────────
     upload_max_file_bytes: int = 50 * 1024 * 1024
+    # Audio/video files are larger by nature (a few minutes of 1080p
+    # exceeds the document cap), so media gets its own ceiling.
+    upload_max_media_bytes: int = 1024**3
     upload_max_batch_bytes: int = 200 * 1024 * 1024
     # Max number of files in one /upload/preview batch. Bounds VLM auto-meta
     # spend (one call per file) and keeps the preview response manageable.

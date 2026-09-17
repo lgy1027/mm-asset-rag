@@ -166,7 +166,8 @@ class AssetPreview:
     @property
     def is_supported(self) -> bool:
         return (
-            self.sniff.source_type in {"pdf", "image", "document"} and self.rejected_reason is None
+            self.sniff.source_type in {"pdf", "image", "document", "audio", "video"}
+            and self.rejected_reason is None
         )
 
 
@@ -198,6 +199,10 @@ def _target_subdir(source_type: str) -> str:
         # kept under ``documents/`` so the parser's preserved extension
         # (``.docx`` vs ``.pptx`` …) drives backend selection.
         return "documents"
+    if source_type == "audio":
+        return "audio"
+    if source_type == "video":
+        return "video"
     raise ValueError(f"unsupported source_type: {source_type!r}")
 
 
@@ -269,8 +274,15 @@ def _manifest_tags(raw: object) -> list[str]:
 
 def _resource_rejected_reason(sniffed: SniffedAsset) -> str | None:
     settings = get_settings()
-    if sniffed.file_size and sniffed.file_size > settings.upload_max_file_bytes:
-        return f"file is larger than upload_max_file_bytes ({settings.upload_max_file_bytes})"
+    # Media files (audio/video) get their own ceiling — a few minutes of
+    # 1080p video blows past the document cap.
+    size_cap = (
+        settings.upload_max_media_bytes
+        if sniffed.source_type in {"audio", "video"}
+        else settings.upload_max_file_bytes
+    )
+    if sniffed.file_size and sniffed.file_size > size_cap:
+        return f"file is larger than the {sniffed.source_type} size cap ({size_cap})"
     if (
         sniffed.source_type == "pdf"
         and sniffed.page_count is not None
@@ -293,6 +305,9 @@ def _suffix_for(source_path: Path, source_type: str) -> str:
     if source_type == "document":
         # Preserve the original office/text extension so the parser
         # can pick the right backend (.docx vs .pptx vs .html …).
+        return suffix or ".bin"
+    if source_type in {"audio", "video"}:
+        # Preserve the container extension — the media parsers route on it.
         return suffix or ".bin"
     return suffix or ".bin"
 
@@ -677,7 +692,7 @@ class UploadPipeline:
                 continue
 
             sniffed = sniff(source_path)
-            if sniffed.source_type not in {"pdf", "image", "document"}:
+            if sniffed.source_type not in {"pdf", "image", "document", "audio", "video"}:
                 continue
             resource_reason = _resource_rejected_reason(sniffed)
             if resource_reason is not None:

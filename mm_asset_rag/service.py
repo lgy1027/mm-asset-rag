@@ -101,6 +101,7 @@ class ParseOptions:
     assets: list[IngestAsset] = field(default_factory=list)
     pdf_parser: str = "auto"
     document_parser: str = "markitdown"
+    audio_parser: str = "funasr"
     enable_ocr: bool = False
     enable_vlm: bool = False
     contextual: bool = False
@@ -711,6 +712,7 @@ class IngestService:
         return {
             "pdf_parser": options.pdf_parser,
             "document_parser": options.document_parser,
+            "audio_parser": options.audio_parser,
             "enable_ocr": options.enable_ocr,
             "enable_vlm": options.enable_vlm,
             # Persisted so a retry of a ``--contextual`` task keeps the
@@ -739,6 +741,9 @@ class IngestService:
                 "docling",
             }:
                 options.document_parser = document_parser
+            audio_parser = raw.get("audio_parser")
+            if isinstance(audio_parser, str) and audio_parser:
+                options.audio_parser = audio_parser
             if isinstance(raw.get("enable_ocr"), bool):
                 options.enable_ocr = raw["enable_ocr"]
             if isinstance(raw.get("enable_vlm"), bool):
