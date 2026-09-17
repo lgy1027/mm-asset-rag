@@ -246,6 +246,29 @@ def qdrant_text_search(
     expanded) while the dense channel keeps the original query intact —
     multilingual embeddings are case-aware.
     """
+    from ...core.observability import get_tracer
+
+    with get_tracer().start_span(
+        "qdrant.text_search",
+        attributes={"query": query, "top_k": top_k},
+    ) as span:
+        hits = _qdrant_text_search_impl(
+            query,
+            top_k,
+            include_image_sources=include_image_sources,
+            search_filter=search_filter,
+        )
+        span.update(output={"hits": len(hits)})
+        return hits
+
+
+def _qdrant_text_search_impl(
+    query: str,
+    top_k: int = 5,
+    *,
+    include_image_sources: bool = True,
+    search_filter: SearchFilter | None = None,
+) -> list[SearchHit]:
     from ...query.query_preprocess import preprocess
 
     pre = preprocess(query)

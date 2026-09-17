@@ -9,6 +9,7 @@ from typing import Any
 
 import requests
 
+from .observability import get_tracer
 from .openai_adapters import LlmRateLimiter, LlmTransportError, OpenAIChatAdapter
 from .openai_compatible import require_connection
 from .settings import get_settings
@@ -67,10 +68,26 @@ def post_chat_completion(
         post=post,
         sleep=sleep,
     )
-    return adapter.complete(
-        messages,
-        stream=stream,
-        temperature=temperature,
-        max_tokens=max_tokens,
-        response_format=response_format,
-    )
+    tracer = get_tracer()
+    with tracer.start_generation(
+        "llm.chat_completion",
+        model=model,
+        input=messages,
+        metadata={
+            "stream": stream,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "base_url": base_url,
+        },
+    ) as span:
+        response = adapter.complete(
+            messages,
+            stream=stream,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
+        status_code = getattr(response, "status_code", None)
+        if status_code is not None:
+            span.set_attribute("status_code", status_code)
+        return response

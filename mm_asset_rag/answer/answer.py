@@ -330,6 +330,43 @@ def answer_question(
     principal: str | None = None,
     min_confidence: float = 0.5,
 ) -> dict[str, object]:
+    from ..core.observability import get_tracer
+
+    with get_tracer().start_span(
+        "answer.generate",
+        attributes={"question": question, "top_k": top_k, "hits_provided": hits is not None},
+    ) as span:
+        result = _answer_question_impl(
+            question,
+            top_k,
+            hits,
+            search_service=search_service,
+            collection=collection,
+            metadata_filter=metadata_filter,
+            principal=principal,
+            min_confidence=min_confidence,
+        )
+        span.update(
+            output={
+                "answer_chars": len(str(result.get("answer", ""))),
+                "sources": len(result.get("sources", [])),
+                "refusal": bool(result.get("refusal_reason")),
+            }
+        )
+        return result
+
+
+def _answer_question_impl(
+    question: str,
+    top_k: int = 5,
+    hits: list[SearchHit] | None = None,
+    *,
+    search_service: SearchService | None = None,
+    collection: str | None = None,
+    metadata_filter: dict[str, object] | None = None,
+    principal: str | None = None,
+    min_confidence: float = 0.5,
+) -> dict[str, object]:
     if hits is None:
         if not collection or not principal:
             raise ValueError("collection and principal are required for answer retrieval")

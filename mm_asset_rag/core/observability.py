@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from contextlib import contextmanager
 from threading import Lock
+from typing import Any, Protocol, runtime_checkable
+
+from .settings import get_settings
 
 
 class RuntimeMetrics:
@@ -62,3 +66,128 @@ class RuntimeMetrics:
 
 
 runtime_metrics = RuntimeMetrics()
+
+
+# ─── Pluggable tracing ─────────────────────────────────────────────────────
+#
+# ``RuntimeMetrics`` above is process-local and always on. Tracing here is
+# optional and provider-pluggable: the default ``NoOpTracer`` costs nothing,
+# and a real provider (Langfuse via the ``[langfuse]`` extra) plugs in
+# through ``Settings.tracing_provider`` without any call site importing the
+# SDK. Code instruments against the ``Tracer`` / ``Span`` protocols only.
+
+
+@runtime_checkable
+class Span(Protocol):
+    """One active observation (span or generation) inside a trace."""
+
+    def set_attribute(self, key: str, value: object) -> None:
+        """Attach or overwrite one metadata attribute on this observation."""
+        ...
+
+    def update(
+        self,
+        *,
+        output: object | None = None,
+        usage: dict[str, int] | None = None,
+        metadata: dict[str, object] | None = None,
+        level: str | None = None,
+        status_message: str | None = None,
+    ) -> None:
+        """Merge terminal details (output / token usage / error level)."""
+        ...
+
+
+@runtime_checkable
+class Tracer(Protocol):
+    """Factory for root observations. Implementations must be thread-safe."""
+
+    def start_span(self, name: str, *, attributes: dict[str, object] | None = None) -> Any:
+        """Return a context manager yielding a ``Span``."""
+        ...
+
+    def start_generation(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        input: object | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> Any:
+        """Return a context manager yielding an LLM ``Span``."""
+        ...
+
+    def flush(self) -> None:
+        """Block until all buffered observations are delivered."""
+        ...
+
+
+class _NoOpSpan:
+    def set_attribute(self, key: str, value: object) -> None:
+        return None
+
+    def update(
+        self,
+        *,
+        output: object | None = None,
+        usage: dict[str, int] | None = None,
+        metadata: dict[str, object] | None = None,
+        level: str | None = None,
+        status_message: str | None = None,
+    ) -> None:
+        return None
+
+
+_NO_OP_SPAN = _NoOpSpan()
+
+
+class NoOpTracer:
+    """Default tracer: context managers yield a shared do-nothing span."""
+
+    @contextmanager
+    def start_span(self, name: str, *, attributes: dict[str, object] | None = None):
+        yield _NO_OP_SPAN
+
+    @contextmanager
+    def start_generation(
+        self,
+        name: str,
+        *,
+        model: str | None = None,
+        input: object | None = None,
+        metadata: dict[str, object] | None = None,
+    ):
+        yield _NO_OP_SPAN
+
+    def flush(self) -> None:
+        return None
+
+
+_tracer: Tracer | None = None
+
+
+def _build_tracer(settings: Any) -> Tracer:
+    provider = str(getattr(settings, "tracing_provider", "none") or "none").lower()
+    if provider in {"", "none", "off", "disabled"}:
+        return NoOpTracer()
+    if provider == "langfuse":
+        from .langfuse_tracer import build_langfuse_tracer
+
+        tracer = build_langfuse_tracer(settings)
+        if tracer is not None:
+            return tracer
+    return NoOpTracer()
+
+
+def get_tracer() -> Tracer:
+    """Return the process-wide tracer, building it from settings on first use."""
+    global _tracer
+    if _tracer is None:
+        _tracer = _build_tracer(get_settings())
+    return _tracer
+
+
+def set_tracer(tracer: Tracer | None) -> None:
+    """Install a tracer (tests) or reset to rebuild-from-settings (``None``)."""
+    global _tracer
+    _tracer = tracer

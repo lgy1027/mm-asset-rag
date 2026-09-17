@@ -150,17 +150,30 @@ def dispatch_search(
     principal: str | None = None,
 ) -> list[SearchHit]:
     """Execute one primitive request through the typed search command boundary."""
-    return get_search_service().execute(
-        SearchCommand(
-            query=query,
-            mode=coerce_search_mode(mode),
-            image_path=image_path,
-            top_k=top_k,
-            collection=collection,
-            metadata_filter=metadata_filter,
-            principal=principal,
+    from ..core.observability import get_tracer
+
+    with get_tracer().start_span(
+        "search.dispatch",
+        attributes={
+            "query": query,
+            "mode": str(mode),
+            "top_k": top_k,
+            "collection": collection or "default",
+        },
+    ) as span:
+        hits = get_search_service().execute(
+            SearchCommand(
+                query=query,
+                mode=coerce_search_mode(mode),
+                image_path=image_path,
+                top_k=top_k,
+                collection=collection,
+                metadata_filter=metadata_filter,
+                principal=principal,
+            )
         )
-    )
+        span.update(output={"returned": len(hits or [])})
+        return hits
 
 
 class SearchService:

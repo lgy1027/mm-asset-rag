@@ -129,6 +129,15 @@ class Settings(BaseSettings):
     # original attempt. Authentication and other ordinary 4xx errors do not.
     llm_max_retries: int = 2
     llm_retry_backoff_seconds: float = 1.0
+    # ─── Observability ────────────────────────────────────────────────────
+    # Tracing provider: "none" (default, zero overhead) or "langfuse".
+    # The Langfuse SDK is an optional ``[langfuse]`` extra; when the provider
+    # is selected without the extra installed, tracing silently stays off.
+    tracing_provider: str = "none"
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+
     # Evidence-policy thresholds. These operate on raw reranker / lexical
     # signals, never on final RRF or min-max normalized ranking scores.
     answer_min_rerank_score: float = 0.0

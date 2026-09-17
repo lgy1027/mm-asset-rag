@@ -69,6 +69,14 @@ dev = [
     # 显式声明,避免靠 fastembed 传递间接可用。
     "numpy>=1.26,<3.0",
 ]
+langfuse = [
+    "langfuse>=3,<4",
+    # Propagates OTel context into ThreadPoolExecutor workers so spans
+    # opened by the parallel multi-query rewrite nest under the dispatching
+    # trace instead of becoming orphan root traces. Pure instrumentation,
+    # only activated when the Langfuse tracer is built.
+    "opentelemetry-instrumentation-threading>=0.50b0",
+]
 
 [project.scripts]
 mmrag     = "mm_asset_rag.cli:main"

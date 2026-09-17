@@ -507,6 +507,52 @@ The threshold default of `10` is tuned for genuinely scanned (image-only) PDFs, 
 | `PADDLEOCR_VL_USE_CHART_RECOGNITION` | `false` | Paddle option |
 | `PADDLEOCR_VL_IMAGE_HOSTS` | unset | Comma-separated extra hosts allowed for OCR image downloads (SSRF allow-list extension; default: only the `PADDLEOCR_VL_JOB_URL` host). Private/loopback/link-local IPs are always refused. |
 
+## Tracing / observability
+
+Process-local counters (`/metrics`) are always on and free. Distributed
+tracing is **off by default** and provider-pluggable: application code only
+depends on the provider-neutral `Tracer` / `Span` protocols in
+`mm_asset_rag.core.observability`, so enabling a backend never changes call
+sites and a missing backend never breaks retrieval or answering.
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| `TRACING_PROVIDER` | `none` | `none` (zero overhead) or `langfuse` |
+| `LANGFUSE_PUBLIC_KEY` | unset | Project public key (`pk-lf-…`) |
+| `LANGFUSE_SECRET_KEY` | unset | Project secret key (`sk-lf-…`) |
+| `LANGFUSE_HOST` | `https://cloud.langfuse.com` | Self-host: `http://localhost:3000` |
+
+When `TRACING_PROVIDER=langfuse`:
+
+1. Install the optional SDK: `uv sync --extra langfuse` (the package is an
+   optional extra; without it tracing silently stays off).
+2. Point the three `LANGFUSE_*` settings at your deployment.
+3. Restart the API / CLI. No further configuration is needed.
+
+Instrumented seams (each becomes one span / generation):
+
+- `llm.chat_completion` — every LLM call (model, streaming, params, latency)
+- `search.dispatch` — query / mode / top_k / hit count
+- `qdrant.text_search` — backend text search latency + hit count
+- `rerank.score` — candidate count + blend config
+- `answer.generate` — question, answer length, refusal flag
+- `ingest.task` — task id, asset count, force flag
+
+Buffered events flush at exit; tracing failures degrade to no-op and are
+logged, never raised.
+
+Self-hosted Langfuse (web + Postgres + Redis):
+
+```bash
+docker compose -f scripts/docker-compose.langfuse.yml up -d
+# The compose stack also includes the Langfuse worker, ClickHouse, and MinIO
+# (Langfuse v3 requires all of them). LANGFUSE_INIT_* bootstraps a project
+# with a fixed dev API key pair on first start:
+#   public key: pk-lf-mmrag-dev   secret key: sk-lf-mmrag-dev
+# Override them via environment variables of the same name before `up -d`.
+# Then open http://localhost:3000 (sign in as dev@mmrag.local) to browse traces.
+```
+
 ## Example `.env`
 
 ```dotenv

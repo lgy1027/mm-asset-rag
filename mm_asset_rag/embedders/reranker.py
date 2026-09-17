@@ -63,6 +63,16 @@ class Reranker:
 
     # ── shared pipeline ──────────────────────────────────────────────────
     def rerank(self, query: str, hits: list[SearchHit], *, top_k: int) -> list[SearchHit]:
+        """Score ``hits`` against ``query`` and return the top-k (traced)."""
+        from ..core.observability import get_tracer
+
+        with get_tracer().start_span(
+            "rerank.score",
+            attributes={"candidates": len(hits), "top_k": top_k},
+        ):
+            return self._rerank(query, hits, top_k=top_k)
+
+    def _rerank(self, query: str, hits: list[SearchHit], *, top_k: int) -> list[SearchHit]:
         """Score ``hits`` against ``query`` and return the top-k.
 
         Uses ``hit.evidence`` (the chunk text payload) as the document side of

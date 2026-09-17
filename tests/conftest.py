@@ -126,6 +126,21 @@ def _reset_reranker_state():
     reset_reranker()
 
 
+@pytest.fixture(autouse=True)
+def _reset_tracer_state():
+    """Reset the process-wide tracer singleton around each test.
+
+    ``get_tracer()`` builds once from settings and caches; a test that
+    installs a recording fake (or selects a provider via env) must not leak
+    it into the next test, which expects the default no-op behaviour.
+    """
+    from mm_asset_rag.core.observability import set_tracer
+
+    set_tracer(None)
+    yield
+    set_tracer(None)
+
+
 @pytest.fixture
 def fixed_vector(monkeypatch) -> None:
     """Pin both embedding providers to a fixed deterministic vector.

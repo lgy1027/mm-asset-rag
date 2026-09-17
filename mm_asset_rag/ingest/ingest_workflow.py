@@ -30,6 +30,24 @@ class IngestWorkflow:
         options: ParseOptions,
     ) -> None:
         """Parse and index in sequence, preserving cooperative cancellation."""
+        from ..core.observability import get_tracer
+
+        with get_tracer().start_span(
+            "ingest.task",
+            attributes={
+                "task_id": record.task_id,
+                "assets": len(list(options.assets)),
+                "force": bool(record.force),
+            },
+        ):
+            self._run(service, record, options)
+
+    def _run(
+        self,
+        service: IngestService,
+        record: TaskRecord,
+        options: ParseOptions,
+    ) -> None:
         # Resolve through the compatibility facade so callers that historically
         # patched ``service._run_parse_task`` retain the same test seam.
         from mm_asset_rag import service as service_module
