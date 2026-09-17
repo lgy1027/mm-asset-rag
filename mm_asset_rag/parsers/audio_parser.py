@@ -99,12 +99,13 @@ def _load_asr_model() -> object:
 def _transcribe(wav_path: Path) -> list[dict]:
     """Run FunASR on a normalised WAV; return sentence-level timestamps.
 
-    Falls back to a single whole-file sentence when the model output
-    carries no ``sentence_info`` (e.g. a vad-less build) — chunking then
-    degrades to one chunk instead of failing.
+    ``sentence_timestamp=True`` makes the pipeline emit per-sentence
+    ``sentence_info`` (start/end in ms). Falls back to a single
+    whole-file sentence when that's absent — chunking then degrades to
+    one chunk instead of failing.
     """
     model = _load_asr_model()
-    result = model.generate(input=str(wav_path))  # type: ignore[attr-defined]
+    result = model.generate(input=str(wav_path), sentence_timestamp=True)  # type: ignore[attr-defined]
     payload = result[0] if isinstance(result, list) and result else {}
     sentences = payload.get("sentence_info")
     if isinstance(sentences, list) and sentences:
