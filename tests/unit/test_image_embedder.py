@@ -73,7 +73,7 @@ def test_image_embedder_uses_settings_clip_model(monkeypatch) -> None:
     don't actually load the model here — the test just exercises
     the constructor's read path.
     """
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     settings = get_settings()
     monkeypatch.setattr(settings, "clip_model", "OFA-Sys/chinese-clip-vit-base-patch16")
@@ -237,7 +237,7 @@ def test_embed_image_batch_all_invalid_returns_all_none(
 
 def test_dim_settings_override_skips_probe(fake_embedder: ImageEmbedder, monkeypatch) -> None:
     """``Settings.image_embedding_dim`` 覆盖 probe,跳过模型调用。"""
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "image_embedding_dim", 768)
     # fake_embedder._model 是 fake,如果有 probe 会调用它; 但 probe 也用 _model
@@ -251,7 +251,7 @@ def test_dim_settings_override_beats_cached_value(
     fake_embedder: ImageEmbedder, monkeypatch
 ) -> None:
     """settings 覆盖优先于 _dim 缓存(让运行时切换配置生效)。"""
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "image_embedding_dim", 1024)
     fake_embedder._dim = 512  # 缓存旧值,应被 settings 覆盖
@@ -262,7 +262,7 @@ def test_dim_falls_back_to_probe_when_settings_unset(
     fake_embedder: ImageEmbedder, monkeypatch
 ) -> None:
     """settings 未设时走 probe(fake_embedder 注入的 _model.dim=4)。"""
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "image_embedding_dim", None)
     fake_embedder._dim = None

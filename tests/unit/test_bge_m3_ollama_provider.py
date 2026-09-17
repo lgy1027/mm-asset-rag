@@ -14,13 +14,13 @@ from __future__ import annotations
 import pytest
 import responses
 
+from mm_asset_rag.core.settings import Settings
 from mm_asset_rag.embedders.text_embedder import TextEmbedder
-from mm_asset_rag.settings import Settings
 
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     yield

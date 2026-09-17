@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 ### Changed
+- **包结构按职责重组**:`mm_asset_rag/` 由平铺的顶层模块重组为浅层子包 —— `core/`(契约 + 基础设施:settings, schema, protocols, registry, paths, llm_transport 等)、`ingest/`(上传 → 解析入库)、`query/`(检索)、`answer/`(回答生成)、`eval/`(评测 + eval_data)、`api/`(HTTP 层 + web UI);`service.py`、`cli.py` 留根部,`parsers/`、`embedders/`、`backends/` 不动。破坏性变更:所有 `mm_asset_rag.<module>` 深层 import 路径变更(如 `mm_asset_rag.answer` → `mm_asset_rag.answer.answer`,`mm_asset_rag.evaluation_v2` → `mm_asset_rag.eval.evaluation_v2`),不提供兼容 shim。
 ### Removed
 ### Fixed
 

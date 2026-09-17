@@ -14,14 +14,14 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from .answer import answer_json
-from .config import load_env
-from .evaluation import run_eval, write_eval_report
-from .paths import get_documents_jsonl, get_eval_cases_dir
-from .search_service import SearchInputError, dispatch_search, get_search_service
+from .answer.answer import answer_json
+from .core.config import load_env
+from .core.paths import get_documents_jsonl, get_eval_cases_dir
+from .core.settings import get_settings
+from .eval.evaluation import run_eval, write_eval_report
+from .ingest.upload_pipeline import UserEdits, get_pipeline
+from .query.search_service import SearchInputError, dispatch_search, get_search_service
 from .service import ParseOptions, get_service
-from .settings import get_settings
-from .upload_pipeline import UserEdits, get_pipeline
 
 
 def _collect_upload_files(inputs: list[Path]) -> list[tuple[str, Path]]:
@@ -69,7 +69,7 @@ def command_parse(args: argparse.Namespace) -> None:
 
     pipeline = get_pipeline()
     if args.no_auto_meta:
-        from .upload_pipeline import disable_auto_meta
+        from .ingest.upload_pipeline import disable_auto_meta
 
         disable_auto_meta()
     upload_files = _collect_upload_files(input_paths)
@@ -222,7 +222,7 @@ def _resolve_cli_cases_path(value: str | None) -> str | Path | None:
     file exists. A bad path raises ``ValueError`` / ``FileNotFoundError``;
     we translate both to a CLI-friendly ``SystemExit``.
     """
-    from .paths import resolve_cases_path
+    from .core.paths import resolve_cases_path
 
     try:
         resolved = resolve_cases_path(value)
@@ -247,7 +247,7 @@ def _image_eval_settings():
 def command_eval(args: argparse.Namespace) -> None:
     cases_path = _resolve_cli_cases_path(args.cases)
     if getattr(args, "image_eval", False):
-        from .evaluation_v2 import run_auto_image_eval_v2, write_eval_report_v2
+        from .eval.evaluation_v2 import run_auto_image_eval_v2, write_eval_report_v2
 
         with _image_eval_settings():
             results = run_auto_image_eval_v2(
@@ -261,7 +261,7 @@ def command_eval(args: argparse.Namespace) -> None:
         safe_print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
         return
     if args.answer_quality:
-        from .answer_evaluation import run_answer_eval, write_answer_eval_report
+        from .answer.answer_evaluation import run_answer_eval, write_answer_eval_report
 
         results = run_answer_eval(
             top_k=args.top_k,
@@ -275,7 +275,7 @@ def command_eval(args: argparse.Namespace) -> None:
         # Surface the dominant "all fallback" / "all faithfulness skipped"
         # outcomes so a user on a machine without an LLM doesn't think the
         # eval silently broke — the JSON above will read near-zero.
-        from .answer_evaluation import _aggregate_answer_metrics
+        from .answer.answer_evaluation import _aggregate_answer_metrics
 
         payload = _aggregate_answer_metrics(results)
         breakdown = payload.get("summary", {}).get("answer_sources") or {}
@@ -293,7 +293,7 @@ def command_eval(args: argparse.Namespace) -> None:
             )
         return
     if args.v2:
-        from .evaluation_v2 import run_eval_v2, write_eval_report_v2
+        from .eval.evaluation_v2 import run_eval_v2, write_eval_report_v2
 
         results = run_eval_v2(
             top_k=args.top_k,
@@ -323,7 +323,7 @@ def command_eval(args: argparse.Namespace) -> None:
 
 def command_make_table_cases(args: argparse.Namespace) -> None:
     """Generate a row-level v2 case file for a CSV question-and-answer table."""
-    from .table_evaluation import build_csv_cases
+    from .eval.table_evaluation import build_csv_cases
 
     source = Path(args.source).expanduser()
     if not source.is_file():
@@ -381,7 +381,7 @@ def command_retry(args: argparse.Namespace) -> None:
 
 def command_documents(args: argparse.Namespace) -> None:
     """List current logical documents."""
-    from . import asset_index
+    from .ingest import asset_index
 
     latest = {}
     for record in asset_index.load_records():

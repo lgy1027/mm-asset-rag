@@ -29,8 +29,8 @@ import hashlib
 import re
 from pathlib import Path
 
-from ..assets import IngestAsset
-from ..paths import get_parsed_dir
+from ..core.paths import get_parsed_dir
+from ..ingest.assets import IngestAsset
 from .document_ir import Block, DocumentIR, ImageRef
 
 # Markdown inline image reference whose target is a base64 data URL.

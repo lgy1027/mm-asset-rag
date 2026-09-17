@@ -1,4 +1,4 @@
-"""Tests for mm_asset_rag.paths."""
+"""Tests for mm_asset_rag.core.paths."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mm_asset_rag import paths
+from mm_asset_rag.core import paths
 
 
 def test_get_data_dir_uses_env_var(tmp_home: Path) -> None:

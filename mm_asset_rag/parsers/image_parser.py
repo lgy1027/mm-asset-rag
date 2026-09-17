@@ -5,10 +5,10 @@ from pathlib import Path
 
 import requests
 
-from ..assets import IngestAsset
-from ..paths import get_captions_dir, get_parsed_dir
-from ..schema import ParsedChunk
-from ..settings import get_settings
+from ..core.paths import get_captions_dir, get_parsed_dir
+from ..core.schema import ParsedChunk
+from ..core.settings import get_settings
+from ..ingest.assets import IngestAsset
 
 # Process-wide RapidOCR handle. The PP-OCRv6 small models (det + cls + rec)
 # load in ~0.13s and stay memory-resident; reusing one instance across all

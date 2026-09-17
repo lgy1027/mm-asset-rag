@@ -19,11 +19,11 @@ from unittest.mock import patch
 import pytest
 import requests
 
-from mm_asset_rag import query_rewrite as qr
-from mm_asset_rag.llm_transport import LlmTransportError
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.search_service import dispatch_search
-from mm_asset_rag.settings import Settings, get_settings
+from mm_asset_rag.core.llm_transport import LlmTransportError
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.core.settings import Settings, get_settings
+from mm_asset_rag.query import query_rewrite as qr
+from mm_asset_rag.query.search_service import dispatch_search
 
 # ─── Fixtures ────────────────────────────────────────────────────────────
 
@@ -348,7 +348,7 @@ def test_text_search_with_rewrite_disabled_passes_through(monkeypatch) -> None:
             calls.append(query)
             return [_hit("a", 0.9)]
 
-    monkeypatch.setattr("mm_asset_rag.registry.get_backend", lambda name: _Backend())
+    monkeypatch.setattr("mm_asset_rag.core.registry.get_backend", lambda name: _Backend())
     monkeypatch.setenv("QUERY_REWRITE_ENABLED", "false")
     get_settings.cache_clear()
 
@@ -363,7 +363,7 @@ def test_text_search_with_rewrite_enabled_fans_out_per_variant(monkeypatch) -> N
     """``QUERY_REWRITE_ENABLED=true`` + 3 variants → ``backend.search_text``
     is called 3 times (once per variant) and the results are RRF-merged.
     """
-    from mm_asset_rag import query_rewrite as qr_mod
+    from mm_asset_rag.query import query_rewrite as qr_mod
 
     # Stub the LLM rewrite to produce 3 variants.
     monkeypatch.setattr(
@@ -384,7 +384,7 @@ def test_text_search_with_rewrite_enabled_fans_out_per_variant(monkeypatch) -> N
                 return [_hit("a", 0.8), _hit("b", 0.7)]
             return [_hit("a", 0.95)]
 
-    monkeypatch.setattr("mm_asset_rag.registry.get_backend", lambda name: _Backend())
+    monkeypatch.setattr("mm_asset_rag.core.registry.get_backend", lambda name: _Backend())
     monkeypatch.setenv("QUERY_REWRITE_ENABLED", "true")
     monkeypatch.setenv("QUERY_REWRITE_N_VARIANTS", "3")
     get_settings.cache_clear()
@@ -465,11 +465,11 @@ def test_text_search_multi_variant_explicit_zero_disables_settings_floor(monkeyp
 
 def test_text_search_with_rewrite_never_touches_hybrid(monkeypatch) -> None:
     """Lock down the text-only semantics: ``text_search_with_rewrite`` must
-    not invoke :func:`mm_asset_rag.retrieval.hybrid_search` even when the
+    not invoke :func:`mm_asset_rag.query.retrieval.hybrid_search` even when the
     rewrite LLM returns N variants. (Otherwise ``mode="text"`` callers would
     silently gain image routes, breaking the API contract.)
     """
-    from mm_asset_rag import query_rewrite as qr_mod
+    from mm_asset_rag.query import query_rewrite as qr_mod
 
     monkeypatch.setattr(
         qr_mod, "rewrite_query", lambda query, settings=None: [query, f"{query} alt"]
@@ -479,7 +479,7 @@ def test_text_search_with_rewrite_never_touches_hybrid(monkeypatch) -> None:
         def search_text(self, *, query, top_k):
             return [_hit("a", 0.9)]
 
-    monkeypatch.setattr("mm_asset_rag.registry.get_backend", lambda name: _Backend())
+    monkeypatch.setattr("mm_asset_rag.core.registry.get_backend", lambda name: _Backend())
     # Trip-wire: if ``hybrid_search`` is called, the test fails loudly.
     monkeypatch.setattr(
         qr_mod,
@@ -505,7 +505,7 @@ def test_dispatch_search_text_uses_text_rewrite_wrapper(monkeypatch) -> None:
     for ``mode=hybrid`` (see
     :func:`test_dispatch_search_hybrid_uses_rewrite_when_enabled`).
     """
-    from mm_asset_rag import search_service as service_mod
+    from mm_asset_rag.query import search_service as service_mod
 
     text_calls: list[tuple] = []
     hybrid_calls: list[tuple] = []
@@ -545,7 +545,7 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
     even when ``query_rewrite_enabled=True`` — the rewrite only helps the text side."""
     from pathlib import Path
 
-    from mm_asset_rag import search_service as service_mod
+    from mm_asset_rag.query import search_service as service_mod
 
     rewrite_calls: list[tuple] = []
 
@@ -564,7 +564,7 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
     get_settings.cache_clear()
 
     # text-to-image should go through the backend, not the rewrite wrapper.
-    with patch("mm_asset_rag.search_service.get_active_backend") as get_active_backend:
+    with patch("mm_asset_rag.query.search_service.get_active_backend") as get_active_backend:
         backend = get_active_backend.return_value
         backend.search_text_to_image.return_value = []
         dispatch_search(query="q", mode="text-to-image", image_path=None, top_k=5)
@@ -572,7 +572,7 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
     assert rewrite_calls == [], "text-to-image must not invoke the rewrite wrapper"
 
     # image-to-image (with sandboxed path stubbed) — rewrite is also skipped here.
-    with patch("mm_asset_rag.search_service.get_active_backend") as get_active_backend:
+    with patch("mm_asset_rag.query.search_service.get_active_backend") as get_active_backend:
         backend = get_active_backend.return_value
         backend.search_image.return_value = []
         dispatch_search(query="q", mode="image-to-image", image_path="img.png", top_k=5)
@@ -583,7 +583,7 @@ def test_dispatch_search_image_modes_skip_rewrite(monkeypatch) -> None:
 def test_dispatch_search_hybrid_uses_rewrite_when_enabled(monkeypatch) -> None:
     """``mode=hybrid`` (the default for many endpoints) also funnels
     through ``hybrid_search_with_rewrite`` when enabled."""
-    from mm_asset_rag import search_service as service_mod
+    from mm_asset_rag.query import search_service as service_mod
 
     rewrite_calls: list[tuple] = []
 
@@ -607,7 +607,7 @@ def test_multi_query_dedupes_image_to_image(monkeypatch) -> None:
     even when N variants are fanned out — i2i is invariant to text
     variants and would otherwise be Nx wasted CLIP encode + Qdrant
     round-trip."""
-    from mm_asset_rag import registry
+    from mm_asset_rag.core import registry
 
     queries = ["q0", "q1", "q2", "q3"]
     fake_text_hits = {q: [_hit(f"text-{q}", 0.5, route="text")] for q in queries}

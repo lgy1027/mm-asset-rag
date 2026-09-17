@@ -12,8 +12,8 @@ from typing import Any
 
 import pytest
 
-from mm_asset_rag import auto_meta
-from mm_asset_rag.auto_meta import (
+from mm_asset_rag.ingest import auto_meta
+from mm_asset_rag.ingest.auto_meta import (
     AutoMeta,
     _clean_optional_str,
     _clean_str_list,

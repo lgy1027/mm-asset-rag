@@ -10,8 +10,8 @@ from pathlib import Path
 
 from qdrant_client import QdrantClient
 
-from ...paths import get_indexes_dir
-from ...settings import get_settings
+from ...core.paths import get_indexes_dir
+from ...core.settings import get_settings
 
 
 class QdrantLockHeldError(RuntimeError):

@@ -1,4 +1,4 @@
-from mm_asset_rag.evaluation_reporting import build_report
+from mm_asset_rag.eval.evaluation_reporting import build_report
 
 
 def test_build_report_has_one_stable_envelope() -> None:

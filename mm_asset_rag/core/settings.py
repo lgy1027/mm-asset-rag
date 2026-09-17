@@ -1,0 +1,656 @@
+"""Centralized settings for ``mm-asset-rag``.
+
+Every environment variable the codebase reads is a typed ``Settings`` field
+here. :func:`get_settings` returns a cached singleton — the single read site
+for env vars, so adding one in a module and missing it elsewhere can't
+happen. New code should call ``get_settings().foo`` rather than
+``os.environ.get(...)`` (``paths.py`` reads ``MM_ASSET_RAG_HOME`` directly
+because ``Settings`` depends on it, so it cannot depend on ``Settings``).
+"""
+
+from __future__ import annotations
+
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, ClassVar, Literal
+
+from pydantic import model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    """All runtime-tunable knobs in one place."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="forbid",
+    )
+
+    # Profile defaults only fill settings absent from the environment or
+    # constructor. They never overwrite an explicitly tuned deployment.
+    _INGESTION_PROFILE_DEFAULTS: ClassVar[dict[str, dict[str, Any]]] = {
+        "fast": {
+            "auto_meta_enabled": False,
+            "pdf_extract_images": False,
+            "pdf_scan_fallback_enabled": False,
+            "chunk_target_tokens": 700,
+            "chunk_max_tokens": 1000,
+            "chunk_overlap_tokens": 20,
+        },
+        "balanced": {},
+        "precision": {
+            "pdf_scan_fallback_enabled": True,
+            "pdf_extract_images": True,
+            "chunk_target_tokens": 400,
+            "chunk_max_tokens": 650,
+            "chunk_overlap_tokens": 80,
+        },
+    }
+    _RETRIEVAL_PROFILE_DEFAULTS: ClassVar[dict[str, dict[str, Any]]] = {
+        "fast": {
+            "reranker_enabled": False,
+            "query_rewrite_enabled": False,
+            "hybrid_intent_routing_enabled": False,
+        },
+        "balanced": {},
+        "precision": {
+            "reranker_enabled": True,
+            "query_rewrite_enabled": True,
+            "hybrid_intent_routing_enabled": True,
+        },
+    }
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_profile_defaults(cls, data: Any) -> Any:
+        """Fill unconfigured tuning knobs from the selected user profile."""
+        if not isinstance(data, dict):
+            return data
+
+        values = dict(data)
+        for profile_field, profiles in (
+            ("ingestion_profile", cls._INGESTION_PROFILE_DEFAULTS),
+            ("retrieval_profile", cls._RETRIEVAL_PROFILE_DEFAULTS),
+        ):
+            profile = values.get(profile_field, values.get(profile_field.upper(), "balanced"))
+            for field, default in profiles.get(profile, {}).items():
+                if field not in values and field.upper() not in values:
+                    values[field] = default
+        return values
+
+    # ─── Paths ───────────────────────────────────────────────────────────
+    mm_asset_rag_home: Path | None = None
+
+    # ─── User-facing RAG profiles ────────────────────────────────────────
+    # Profiles bundle sensible quality/cost defaults. Individual advanced
+    # variables always take precedence, so existing .env files remain stable.
+    ingestion_profile: Literal["fast", "balanced", "precision"] = "balanced"
+    retrieval_profile: Literal["fast", "balanced", "precision"] = "balanced"
+
+    # ─── Vector backend ───────────────────────────────────────────────────
+    # The registry resolves this name to the active SearchBackend / IndexBackend
+    # implementation. ``qdrant`` is bundled; deployments may register another
+    # backend during application startup.
+    vector_backend: str = "qdrant"
+
+    # ─── API auth / host guard ───────────────────────────────────────────
+    # A static bearer token guarding mutations and provider-quota endpoints.
+    # Leave unset only for loopback development. Clients pass it as
+    # ``Authorization: Bearer <token>`` or ``X-API-Key: <token>``.
+    mmrag_api_token: str | None = None
+    # Comma-separated trusted Host headers for ``TrustedHostMiddleware``.
+    # Default locks the API to loopback (``127.0.0.1``, ``localhost``) so a
+    # browser cannot reach it via DNS rebinding. When deploying behind a
+    # reverse proxy / on a public host, set this to your public hostname(s)
+    # (e.g. ``rag.example.com``) or ``*`` to disable the check. ``*`` alone
+    # is unsafe without also setting ``mmrag_api_token``.
+    mmrag_trusted_hosts: str | None = None
+    # Listener address for ``mmrag-api``. Keep loopback as the package
+    # default; use ``0.0.0.0`` with an explicit trusted-host policy when the
+    # web UI must be reachable from another machine on the LAN.
+    mmrag_api_host: str = "127.0.0.1"
+    mmrag_api_port: int = 8011
+
+    # ─── LLM (OpenAI-compatible chat completion) ─────────────────────────
+    # Shared remote OpenAI-compatible connection for LLM, VLM and embedding.
+    model_api_key: str | None = None
+    model_base_url: str | None = None
+    llm_api_key: str | None = None
+    llm_base_url: str | None = None
+    llm_model: str | None = None
+    llm_timeout: float = 120.0
+    # Process-local start-rate ceiling for all shared chat-completion callers.
+    # Five requests/minute keeps small hosted providers below common burst
+    # limits; retries are paced too.
+    llm_requests_per_minute: int = 5
+    # Transient 429/network/5xx failures retry this many times after the
+    # original attempt. Authentication and other ordinary 4xx errors do not.
+    llm_max_retries: int = 2
+    llm_retry_backoff_seconds: float = 1.0
+    # Evidence-policy thresholds. These operate on raw reranker / lexical
+    # signals, never on final RRF or min-max normalized ranking scores.
+    answer_min_rerank_score: float = 0.0
+    answer_min_lexical_coverage: float = 0.2
+    retrieval_min_lexical_coverage: float = 0.2
+
+    # ─── Text embedding ───────────────────────────────────────────────────
+    # Text embedding is always remote OpenAI-compatible `/embeddings`.
+    embedding_api_key: str | None = None
+    embedding_base_url: str | None = None
+    embedding_model: str | None = None
+    embedding_batch_size: int = 5
+    embedding_request_interval: float = 0.25
+    embedding_retry_count: int = 5
+    embedding_timeout: float = 120.0
+    embedding_max_input_chars: int = 8192
+    # Override the probed text embedding dim. Default ``None`` lets
+    # ``TextEmbedder.dim()`` lazily probe via a tiny ``embed("probe")``
+    # call (cost: one remote request / one ST encode); set this when
+    # you want to skip that call and fix the dim up front. The Qdrant
+    # collection name is auto-suffixed with this value, so a wrong
+    # setting will surface as a schema mismatch at upsert time.
+    embedding_dim: int | None = None
+    # Sparse / ColBERT capability switches. ``auto`` (default) probes the
+    # exposes ``embed_text_sparse`` / ``embed_text_colbert`` only when the
+    # model is bge-m3 (or another model that supports
+    # ``return_sparse`` / ``return_colbert_vecs``); the OpenAI-compatible
+    # ``TextEmbedder`` never does, so the default OpenAI configuration has
+    # zero schema change and needs no reindex. Set to ``true`` / ``false``
+    # to force-enable / force-disable. Enabling either when the embedder
+    # supports it adds extra prefetch channels + collection sparse /
+    # multi-vector fields — a schema mismatch is raised so the deployer
+    # runs ``mmrag reindex`` to rebuild with the new vectors.
+    embedding_sparse_enabled: Literal["auto", "true", "false"] = "auto"
+    embedding_colbert_enabled: Literal["auto", "true", "false"] = "auto"
+
+    # ─── Image embedding (CLIP, optional) ────────────────────────────────
+    # Default is ``clip-ViT-B-32`` (English-only). For Chinese corpora,
+    # consider ``OFA-Sys/chinese-clip-vit-base-patch16`` (≈ 768d,
+    # Chinese + English) or ``sentence-transformers/clip-ViT-B-32-multilingual-v1``.
+    # ``OFA-Sys/chinese-clip-vit-huge-patch14`` is the strongest
+    # Chinese CLIP we are aware of (~1024d) at the cost of a much larger
+    # download. Reindex after changing this — the active collection
+    # name is dim-suffixed.
+    clip_model: str = "clip-ViT-B-32"
+    # Override the probed image embedding dim. Default ``None`` lets
+    # ``ImageEmbedder.dim()`` / ``CnClipImageEmbedder.dim()`` lazily probe
+    # via ``embed_text("probe")`` (cost: one model encode); set this to
+    # skip the probe. The Qdrant image collection name is auto-suffixed
+    # with this value. Make sure the value matches your model's actual
+    # output (clip-ViT-B-32 → 512, OFA-Sys/chinese-clip-vit-base-patch16
+    # → 768, cn-clip-vit-huge-patch14 → 1024).
+    image_embedding_dim: int | None = None
+
+    # ─── Qdrant ──────────────────────────────────────────────────────────
+    qdrant_url: str | None = None
+    qdrant_api_key: str | None = None
+    qdrant_text_collection: str = "multimodal_text"
+    qdrant_image_collection: str = "multimodal_image"
+    # Optional override for the *active* collection name; falls back to
+    # the base name from ``qdrant_text_collection`` / ``qdrant_image_collection``
+    # suffixed with the embedding dim. Set to e.g. ``multimodal_text_2560d``
+    # to force a specific collection (useful when migrating between
+    # embedding models without rebuilding from scratch).
+    qdrant_active_text_collection: str | None = None
+    qdrant_active_image_collection: str | None = None
+    qdrant_upsert_batch_size: int = 16
+    qdrant_bm25_model: str = "Qdrant/bm25"
+    qdrant_hybrid_prefetch_limit: int = 50
+    # Override where ``fastembed`` looks for the BM25 model files. Leave
+    # unset to use fastembed's platform default (``~/.cache/fastembed`` on
+    # Linux, ``~/Library/Caches/fastembed`` on macOS, ``%LOCALAPPDATA%\\fastembed``
+    # on Windows). Set this explicitly when the default is on a tmpfs /
+    # ephemeral drive (e.g. macOS ``/var/folders/...`` when running under
+    # a sandbox that symlinks ``$TMPDIR``) — fastembed does not read any
+    # ``FASTEMBED_CACHE_PATH``-style env var on its own, so the override
+    # has to flow through here.
+    qdrant_bm25_cache_dir: str | None = None
+
+    # ─── Retrieval tuning ────────────────────────────────────────────────
+    # Weights used by ``retrieval.hybrid_search`` to merge the three
+    # routes (text / text-to-image / image-to-image). The list passed to
+    # ``merge_hits`` is built dynamically from whichever routes actually
+    # participate — ``image-to-image`` is only included when an
+    # ``image_path`` is supplied. Defaults tightened from the historical
+    # ``0.55 / 0.30 / 0.15`` because, on the bundled sample set, the
+    # ``text-to-image`` route was dragging unrelated images into pure
+    # text queries.
+    hybrid_weight_text: float = 0.80
+    hybrid_weight_text_to_image: float = 0.20
+    # Image-to-image route weight. The fusion is now rank-based RRF
+    # (see ``retrieval.merge_hits``), so this is a per-route multiplier
+    # applied to ``1/(RRF_K + rank)``. A positive default lets
+    # ``hybrid_search`` actually consult the CLIP vector space when an
+    # ``image_path`` is supplied (previously 0.0 silently disabled the
+    # route). Set to ``0.0`` to skip the route entirely.
+    hybrid_weight_image_to_image: float = 0.15
+    # ─── Per-intent RRF weights ───────────────────────────────────────────
+    # ``hybrid_intent_routing_enabled`` is the master switch: when ON,
+    # ``hybrid_search`` picks its weights via ``classify_intent(query)``
+    # + ``weights_for_intent(intent, settings)`` from
+    # ``mm_asset_rag.query_intent`` instead of using the global
+    # ``hybrid_weight_*`` triple above. The per-intent defaults live in
+    # ``query_intent.DEFAULT_INTENT_WEIGHTS``; the four ``hybrid_intent_weights_*``
+    # fields below let a deployer override any intent's triple as either
+    # a JSON object ``{"text":0.7,"text_to_image":0.2,"image_to_image":0.15}``
+    # or a CSV triple ``0.7,0.2,0.15`` (CSV is friendlier in a flat
+    # .env). Invalid JSON / CSV logs a warning and falls back to the
+    # default — a typo in ``.env`` shouldn't break search. Default OFF
+    # so a deployment that hasn't tuned per-intent weights keeps the
+    # historical global-weight behaviour; flip on after you've checked
+    # the four ``weights_for_intent`` triples in ``/eval``.
+    hybrid_intent_routing_enabled: bool = False
+    hybrid_intent_weights_precise_keyword: str | None = None
+    hybrid_intent_weights_descriptive: str | None = None
+    hybrid_intent_weights_entity_lookup: str | None = None
+    hybrid_intent_weights_chinese: str | None = None
+    # Per-asset chunk cap applied during ``build_qdrant_text_index``.
+    # Without a cap, dense embeddings skew toward the largest PDFs
+    # (clip / flamingo / gpt3 contribute 48 / 54 / 75 chunks each on the
+    # bundled set) and crowd smaller, more relevant assets out of the
+    # top-k. ``None`` keeps the current behaviour.
+    max_chunks_per_pdf: int | None = None
+    # Cosine similarity floor for the image search routes. CLIP scores
+    # live in roughly 0.15-0.40; off-topic natural-language queries
+    # (e.g. "Schrödinger equation" against a photo collection) tend to
+    # land below 0.24 even for the closest image, while on-topic
+    # queries like "Linux logo" sit at 0.30+. Filtering below this
+    # threshold gives the image routes a relevance floor so negative
+    # queries return an empty list instead of ten random Picsum photos.
+    # Set to ``0.0`` to disable the floor. Note: this is a *partial*
+    # fix — when a Picsum photo is genuinely a close CLIP match
+    # (e.g. real mountain photos in response to "Mount Everest"), the
+    # threshold cannot tell apart "true negative" from "relevant but
+    # unlabeled"; a sparse / keyword pre-filter is the next upgrade.
+    image_relevance_threshold: float = 0.24
+    # Soft floor for the merged hybrid result. As of the RRF refactor
+    # ``merge_hits`` fuses routes by rank (``1/(RRF_K + rank)``) rather
+    # than by normalised score, so a hard score cut-off would mis-cut
+    # relevant-but-non-top assets whose RRF score is on a different
+    # scale. This value now acts as an optional low-end guard: hits
+    # whose final RRF score falls below it are dropped after fusion.
+    # The default ``0.0`` disables the guard — keep all RRF top-k. Set a
+    # small positive value (e.g. ``0.001``) only to trim tiny-tail
+    # noise on very large candidate pools.
+    min_score: float = 0.0
+
+    # ─── Two-stage remote reranker ─────────────────────────────────────────
+    reranker_enabled: bool = False
+    reranker_top_n: int = 30
+    reranker_top_k: int | None = None
+    reranker_hybrid_blend: float = 0.6
+    reranker_provider: Literal["siliconflow", "dashscope"] = "siliconflow"
+    # Rerank API base URL (HTTP providers). Resolved in ``embedders.reranker``
+    # so this stays None → provider default.
+    # SiliconFlow: https://api.siliconflow.cn/v1/rerank (flat form).
+    # 百炼 (dashscope): https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
+    #   (DashScope-native nested form, universal host — no workspaceId needed).
+    reranker_api_base: str | None = None
+    # Rerank API model (HTTP providers). Provider-appropriate default if None.
+    # SiliconFlow: BAAI/bge-reranker-v2-m3 ; 百炼: qwen3-rerank
+    # (百炼 gte-rerank-v2 / qwen3-vl-rerank also work at the native endpoint.)
+    reranker_api_model: str | None = None
+    # Rerank API key (HTTP providers). Bearer auth. Falls back to
+    # the shared OpenAI-compatible key when unset.
+    reranker_api_key: str | None = None
+    # HTTP timeout (seconds) for the rerank API call. 30s is generous for a
+    # single batched request of ~30 candidates.
+    reranker_api_timeout: float = 30.0
+
+    # ─── Chinese BM25 ─────────────────────────────────────────────────────
+    # Companion sparse vector produced by the Qdrant adapter's ``bm25_zh`` module.
+    # (jieba tokenisation + Okapi BM25). Stored alongside the existing
+    # English fastembed BM25 in the same Qdrant collection, then fused
+    # via RRF at query time. The hybrid-text query prefetches both
+    # sparse vectors so token recall for Chinese is no longer reliant
+    # on the dense channel alone.
+    bm25_zh_enabled: bool = True
+    bm25_zh_k1: float = 1.5
+    bm25_zh_b: float = 0.75
+    bm25_zh_vector_name: str = "bm25_zh"
+
+    # ─── Chunk enrichment ─────────────────────────────────────────────────
+    # When ``ENRICH_CHUNK_WITH_KEYWORDS`` is true (default), the PDF /
+    # image parser appends a "关键词: ..." line to each chunk's text
+    # before indexing. The keywords come from
+    # ``mm_asset_rag.query.text_keywords.extract_keywords_zh`` (jieba
+    # TextRank) which gives the BM25 channel explicit tokens to match
+    # short user queries like "联宝 ESG" against a long PDF body
+    # where the tokens would otherwise be diluted. Disable for
+    # non-Chinese corpora or when jieba is unavailable.
+    enrich_chunk_with_keywords: bool = True
+    enrich_chunk_keyword_top_k: int = 8
+    # Language hint passed to ``extract_keywords``. The parser uses
+    # this to pick the right extractor. ``auto`` runs jieba first
+    # (Chinese) and falls back to the stopword-frequency extractor
+    # (English) when jieba returns nothing — recommended for mixed
+    # corpora.
+    enrich_chunk_language: Literal["zh", "en", "auto"] = "auto"
+
+    # ─── Recursive chunking ─────────────────────────────────────────────
+    # PDF text is first split by heading (``split_by_heading``), then each
+    # section's body is recursively split to a target token budget with
+    # overlap. Long sections no longer produce oversized chunks that
+    # dilute BM25, get truncated by the dense embedder, and mislead the
+    # cross-encoder reranker with long-body token frequency. Benchmark
+    # guidance (Vecta 7-strategy + arXiv 8-method surveys): recursive
+    # ~500-token chunks win on accuracy; >800 starts to dilute.
+    #
+    # Token counts default to a *character approximation*
+    # (``token ≈ chars / 3.5``, a mixed zh/en compromise) so the splitter
+    # works with any embedder and no tokenizer dependency. Set
+    # ``CHUNK_TOKENIZER`` to a HuggingFace tokenizer id (e.g.
+    # ``bert-base-chinese``) for exact counts; if it fails to import the
+    # splitter falls back to the char approximation. Corpus- and
+    # model-agnostic.
+    chunk_target_tokens: int = 500
+    chunk_max_tokens: int = 800
+    chunk_overlap_tokens: int = 60
+    chunk_tokenizer: str | None = None
+
+    # ─── Table parsing budgets ───────────────────────────────────────────
+    table_max_rows: int = 100_000
+    table_max_columns: int = 256
+    table_max_cell_chars: int = 32_768
+    table_max_total_chars: int = 20_000_000
+
+    # ─── PDF embedded-image extraction (tier-1 multimodal) ───────────────
+    # PyMuPDF parses text only by default; embedded figures are dropped.
+    # When ``pdf_extract_images`` is on, ``pdf_images.extract_page_images``
+    # pulls every image a page references into ``parsed/<id>/images/`` and
+    # ``associate_images`` attaches the figures a chunk references (or sits
+    # next to) to ``ParsedChunk.metadata["images"]`` — surfaced to the
+    # LLM (as a 关联图片 hint) and the web UI (as a thumbnail). Images are
+    # NOT embedded into the vector index (that is tier 2); they ride in the
+    # text hit's payload. ``pdf_image_min_dim`` filters logos/icons.
+    pdf_extract_images: bool = True
+    pdf_image_min_dim: int = 80
+
+    # ─── Scanned-PDF fallback (auto parser) ─────────────────────────────
+    # The ``auto`` PDF parser runs fast local PyMuPDF first, then falls
+    # back to an OCR backend when the result looks like a scan (image-only,
+    # near-zero text). ``pdf_scan_text_threshold`` is the avg non-empty
+    # chars/page below which a document is treated as scanned — corpus-
+    # agnostic (pure char density, no domain words). ``pdf_scan_fallback_parser``
+    # picks the OCR backend:
+    #   * ``auto`` (default) — route by token: ``paddleocr_vl`` (online API)
+    #     when ``PADDLEOCR_VL_API_TOKEN`` is set, else ``ppocr`` (local,
+    #     zero-network). This is the zero-config default — a bare install
+    #     with the [ocr] extra parses scans offline; a deployment that set
+    #     the online token keeps using it.
+    #   * ``paddleocr_vl`` — force the online API (needs the token).
+    #   * ``docling`` — force the local layout-aware parser ([docling] extra).
+    #   * ``ppocr`` — force the local PP-OCRv6 page-by-page OCR ([ocr] extra).
+    # Disable with ``pdf_scan_fallback_enabled=false`` to always stay on
+    # PyMuPDF (the pre-IR ``auto`` behaviour).
+    pdf_scan_fallback_enabled: bool = True
+    pdf_scan_text_threshold: int = 10
+    pdf_scan_fallback_parser: Literal["auto", "paddleocr_vl", "docling", "ppocr"] = "auto"
+
+    # ─── Tier-3 multimodal answer (opt-in) ───────────────────────────────
+    # When on, ``answer.llm_answer`` / ``stream_answer_chunks`` inject the
+    # hit's associated images (base64 data URLs) into the chat request as
+    # ``image_url`` content parts alongside the text evidence, so a
+    # multimodal LLM can *see* figure pixels and answer "图里 2025 年的
+    # 数字是多少" questions that the text alone cannot satisfy. Requires a
+    # vision-capable chat model (e.g. MiniMax-M3, or ollama gemma3 / llama3.2
+    # -vision). If the configured model rejects images, the call is retried
+    # text-only so the feature is safe to toggle without breaking /answer.
+    # ``answer_image_max_per_hit`` caps images per hit to bound token cost.
+    answer_with_images: bool = False
+    answer_image_max_per_hit: int = 2
+
+    # ─── Query preprocessing ──────────────────────────────────────────────
+    # The hybrid text search runs each query through three normalisations
+    # before routing to dense vs BM25 channels. See
+    # ``mm_asset_rag.query.query_preprocess.preprocess`` for the per-stage
+    # contract. Defaults are conservative — only the typo corrector is
+    # safe to leave on for all corpora.
+    query_lowercase: bool = True
+    query_fuzzy: bool = True
+    query_expansion: bool = False
+    query_expansion_pairs: str | None = None  # path to a JSON file
+
+    # ─── Query rewrite (LLM-driven) ──────────────────────────────────────
+    # ``query_rewrite_enabled`` is the master switch. OFF = the query is
+    # sent to ``hybrid_search`` untouched (legacy ``query_expansion`` /
+    # ``query_expansion_pairs`` still apply in
+    # ``query_preprocess.preprocess``). ON = each text / hybrid search
+    # first calls ``query_rewrite.rewrite_query`` to ask the LLM for N
+    # variants of the user's query, then runs ``hybrid_search`` on each
+    # in parallel and fuses the per-route hits with RRF
+    # (``query_rewrite.multi_query_search``). The image routes
+    # (text-to-image / image-to-image) are unaffected — the LLM-generated
+    # variants only enter the dense + BM25 channels. Anthropic's multi-
+    # query RAG cookbook reports ~15% hit-rate lift on long-tail queries;
+    # on the bundled sample the lift is small (≈0.6 pts MRR) because the
+    # baseline already fuses dense + BM25 + BM25-zh.
+    query_rewrite_enabled: bool = False
+    # Number of rewrite variants the LLM generates, including the
+    # original. Clamped to ``[1, 5]`` at call time. 3 is the sweet spot
+    # per Anthropic's multi-query RAG cookbook — more variants dilute
+    # each variant's contribution under rank-based RRF (each contributes
+    # ``1 / (RRF_K + rank)`` per asset per variant), and the marginal
+    # variant past 3 rarely surfaces new assets.
+    query_rewrite_n_variants: int = 3
+    # Per-call timeout for the rewrite LLM POST. Tighter than
+    # ``llm_timeout=120s`` because a failed rewrite falls back to the
+    # original query anyway, so a hanging request is pure waste — the
+    # user has already submitted the search.
+    query_rewrite_timeout: float = 30.0
+    # Max parallel ``hybrid_search`` invocations during multi-query
+    # fusion. ``hybrid_search`` is a blocking Qdrant round-trip; we
+    # fan out via ``ThreadPoolExecutor``. 4 matches the reranker default
+    # concurrency; lower it if Qdrant ``429``s under burst load, raise it
+    # if you have the Qdrant headroom and a corpus that benefits from
+    # more variant coverage.
+    query_rewrite_concurrency: int = 4
+
+    # ─── Per-channel RRF weights ──────────────────────────────────────────
+    # Inside ``_hybrid_text_query`` the three prefetches (dense / BM25-en /
+    # BM25-zh) are fused by Qdrant's ``RrfQuery(rrf=Rrf(weights=[...]))``
+    # (qdrant-client 1.18+, server 1.17+). The three weights below
+    # let the deployer bias the fusion positionally: ``[dense, bm25,
+    # bm25_zh]``. Raising ``rrf_weight_bm25_zh`` improves Chinese-only
+    # token recall; lowering it makes the dense channel dominant for
+    # cross-language queries. The default 1.0/1.0/1.0 matches Qdrant's
+    # uniform-fusion default (``FusionQuery(fusion=Fusion.RRF)``).
+    rrf_weight_dense: float = 1.0
+    rrf_weight_bm25: float = 1.0
+    rrf_weight_bm25_zh: float = 1.0
+
+    # ─── PaddleOCR-VL ────────────────────────────────────────────────────
+    paddleocr_vl_api_token: str | None = None
+    paddleocr_vl_job_url: str = "https://paddleocr.aistudio-app.com/api/v2/ocr/jobs"
+    paddleocr_vl_model: str = "PaddleOCR-VL-1.6"
+    paddleocr_vl_timeout: float = 900.0
+    paddleocr_vl_poll_interval: float = 5.0
+    paddleocr_vl_poll_retry: int = 5
+    paddleocr_vl_use_doc_orientation_classify: bool = False
+    paddleocr_vl_use_doc_unwarping: bool = False
+    paddleocr_vl_use_chart_recognition: bool = False
+    # Comma-separated extra hosts allowed for OCR image downloads (SSRF
+    # allow-list extension). By default only the host of ``paddleocr_vl_job_url``
+    # is allowed; set this to permit its result-CDN hosts. Private/loopback/
+    # link-local IPs are always refused.
+    paddleocr_vl_image_hosts: str = ""
+
+    # ─── Parser defaults (drives /upload; UI can override per request) ───
+    pdf_parser: Literal["auto", "pymupdf", "paddleocr_vl", "docling", "ppocr"] = "auto"
+    # document backend: markitdown (default, core dep, no ML stack) or
+    # docling (optional [docling] extra, heavy torch/transformers stack).
+    document_parser: Literal["markitdown", "docling"] = "markitdown"
+    enable_ocr: bool = False
+    enable_vlm: bool = False
+    image_provider: Literal["clip", "cn_clip"] = "clip"
+    auto_index: bool = True
+
+    # ─── Upload preview safety limits ─────────────────────────────────────
+    upload_max_file_bytes: int = 50 * 1024 * 1024
+    upload_max_batch_bytes: int = 200 * 1024 * 1024
+    # Max number of files in one /upload/preview batch. Bounds VLM auto-meta
+    # spend (one call per file) and keeps the preview response manageable.
+    upload_max_files: int = 50
+    upload_max_pdf_pages: int = 500
+    upload_max_image_pixels: int = 50_000_000
+    upload_slug_max_len: int = 80
+    preview_cache_ttl_seconds: int = 24 * 60 * 60
+
+    # ─── OCR / VLM HTTP backends (optional) ──────────────────────────────
+    # Image OCR backend. ``local`` (default) runs PP-OCRv6 in-process via the
+    # ``rapidocr`` package bundled in the [ocr] extra (pure ONNX, no HTTP
+    # server, models ship with the wheel). ``http`` keeps the legacy
+    # external-OCR-server contract — set ``OCR_HTTP_URL`` to your /ocr endpoint.
+    # Flip to ``http`` only when OCR runs as a separate service.
+    ocr_backend: Literal["local", "http"] = "local"
+    ocr_http_url: str | None = None
+    ocr_http_timeout: float = 60.0
+
+    vlm_base_url: str | None = None
+    vlm_api_key: str | None = None
+    vlm_model: str | None = None
+    vlm_temperature: float = 0.1
+    vlm_max_tokens: int = 2000
+    vlm_timeout: float = 120.0
+
+    # ─── Auto-extracted metadata (VLM-driven) ────────────────────────────
+    # When enabled, the upload pipeline calls the VLM during the preview
+    # phase to extract title / description / tags / dominant_objects in one
+    # round trip. Disable on deployments where VLM cost is a concern or when
+    # the model is unreliable for the corpus.
+    auto_meta_enabled: bool = True
+    auto_meta_timeout: float = 30.0
+    auto_meta_max_tokens: int = 800
+    auto_meta_max_concurrency: int = 3
+    auto_meta_image_prompt: str | None = None
+    auto_meta_pdf_prompt: str | None = None
+    auto_meta_pdf_max_pages: int = 100
+    auto_meta_pdf_render_dpi: int = 120
+    auto_meta_pdf_max_render_pixels: int = 8_000_000
+
+    # ─── Contextual Retrieval ─────────────────────────────────────────────
+    # Anthropic-style chunk context (2024, -49% retrieval failure rate):
+    # each chunk gets a short LLM-generated preamble situating it within its
+    # document, prepended to the embedding/BM25 input so dense + sparse
+    # channels can disambiguate generic terms ("diffusion" → DDPM vs Stable
+    # Diffusion). Enabled by default — the latency/precision trade-off favors
+    # precision; set ``CONTEXTUAL_ENABLED=false`` to opt out. It costs ~1 LLM
+    # call per chunk (4158 PDF chunks on the bundled corpus ≈ 9.4M tokens).
+    contextual_model: str | None = None
+    contextual_concurrency: int = 4
+    contextual_chunk_max_chars: int = 8000
+    contextual_timeout: float = 60.0
+
+    # ─── Image caption for embedded figures ──────────────────────────────
+    # Document-embedded figures (docx/pptx via markitdown/docling, PDF via
+    # PyMuPDF) are saved to disk and associated with chunks but their *content*
+    # is otherwise invisible to the text index — a slide whose only payload is
+    # a diagram is unsearchable. When enabled, each embedded figure with no
+    # existing caption gets a VLM-generated Chinese description appended to its
+    # chunk's text so the figure's semantics enter the dense + BM25 channels.
+    # This is the text-route path only: figures never enter the CLIP image
+    # index (that stays reserved for standalone ``images/`` uploads). Works
+    # with any OpenAI-compatible VLM via ``VLM_*``. Off by default — it costs
+    # ~1 VLM call per embedded figure. Cached under ``captions/<asset_id>.jsonl``
+    # keyed by image path so ``mmrag reindex`` and force re-parse reuse it
+    # without re-calling the VLM (figure bytes are stable). When ``VLM_*`` is
+    # unconfigured the step degrades to a no-op — safe to leave on.
+    image_caption_enabled: bool = False
+    image_caption_concurrency: int = 4
+
+    # ─── Evaluation cases ─────────────────────────────────────────────────
+    # ``mmrag eval`` scores grouped query cases against exact document qrels.
+    # Cases have ``query_id`` + ``query`` entries and one top-level
+    # ``qrels: {query_id: {document_id: relevance}}`` mapping. The default
+    # (None) loads the small qrels sample shipped at
+    # ``mm_asset_rag/eval_data/<version>_cases.json``. Point this at a custom
+    # qrels file to score another corpus; ``--cases`` overrides it for one run.
+    eval_cases_path: str | None = None
+
+    # ─── Evaluation answer-quality (LLM judge) ────────────────────────────
+    # Used by ``mmrag eval --answer-quality`` (see ``answer_evaluation.py``).
+    # Three settings decouple the judge from the answer-generation LLM so a
+    # deployment can route judgement to a cheaper model and a tighter
+    # timeout without changing /answer behavior. None for any of these
+    # means "reuse the answer-generation default".
+    # - ``eval_judge_timeout``: judge is single-shot per case, cheaper to
+    #   bound tight than the answer's 120s ``llm_timeout``. 30s is enough
+    #   for a focused JSON response.
+    # - ``eval_judge_model``: None → reuse ``LLM_MODEL``. Override with e.g.
+    #   ``gpt-4o-mini`` to save tokens.
+    # - ``eval_judge_max_cases``: cap the number of cases that hit the
+    #   judge per run. CI sets this to keep token spend bounded; prod
+    #   leaves it None for full coverage. Cases over the cap get
+    #   ``faithfulness_skipped=True, faithfulness_error="max cases reached"``.
+    eval_judge_timeout: float = 30.0
+    eval_judge_model: str | None = None
+    eval_judge_max_cases: int | None = None
+
+    # ─── Derived properties ───────────────────────────────────────────────
+
+    @property
+    def data_dir(self) -> Path:
+        """Resolve ``$MM_ASSET_RAG_HOME`` or fall back to ``~/.mm_asset_rag``."""
+        if self.mm_asset_rag_home:
+            return Path(self.mm_asset_rag_home).expanduser()
+        return Path.home() / ".mm_asset_rag"
+
+    @property
+    def has_llm(self) -> bool:
+        """Whether the optional LLM has a model plus a resolved connection."""
+        base, key, model = self.llm_creds
+        return bool(base and key and model)
+
+    @property
+    def llm_creds(self) -> tuple[str | None, str | None, str | None]:
+        """Return ``(base_url, api_key, model)`` for the chat LLM channel.
+
+        The LLM model is optional; no VLM or legacy configuration fallback is
+        used when it is absent.
+        """
+        if not self.llm_model:
+            return None, None, None
+        return (
+            self.llm_base_url or self.model_base_url,
+            self.llm_api_key or self.model_api_key,
+            self.llm_model,
+        )
+
+    @property
+    def vlm_creds(self) -> tuple[str | None, str | None, str | None]:
+        """Return ``(base_url, api_key, model)`` for the VLM channel.
+
+        VLM remains optional and resolves only its own model plus the common
+        connection or its explicit override.
+        """
+        if not self.vlm_model:
+            return None, None, None
+        return (
+            self.vlm_base_url or self.model_base_url,
+            self.vlm_api_key or self.model_api_key,
+            self.vlm_model,
+        )
+
+    @property
+    def text_embedding_creds(self) -> tuple[str | None, str | None, str | None]:
+        """Return the explicit embedding model with its resolved remote connection."""
+        return (
+            self.embedding_api_key or self.model_api_key,
+            self.embedding_base_url or self.model_base_url,
+            self.embedding_model,
+        )
+
+
+@lru_cache(maxsize=1)
+def get_settings() -> Settings:
+    """Return the process-wide Settings singleton.
+
+    ``lru_cache`` is used so repeated calls are cheap and a single
+    ``Settings()`` is constructed per process. Tests that need to
+    override environment should call ``get_settings.cache_clear()``
+    and then ``Settings()`` again (or use ``monkeypatch.setenv`` and a
+    fresh ``get_settings()``).
+    """
+    return Settings()

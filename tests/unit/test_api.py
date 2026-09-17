@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from mm_asset_rag import __version__
-from mm_asset_rag.api import app
+from mm_asset_rag.api.api import app
 
 
 @pytest.fixture
@@ -66,7 +66,7 @@ def test_health_endpoint_reports_status(client: TestClient) -> None:
 
 
 def test_health_uses_active_backend_capabilities(client: TestClient, monkeypatch) -> None:
-    from mm_asset_rag import api
+    from mm_asset_rag.api import api
 
     backend = SimpleNamespace(name="milvus", index_exists=lambda kind: kind == "text")
     monkeypatch.setattr(api, "get_active_backend", lambda: backend)
@@ -103,11 +103,11 @@ def test_health_deep_reports_false_when_unconfigured(client: TestClient, monkeyp
     # pydantic BaseSettings and an env-var monkeypatch cannot override it.
     with (
         patch(
-            "mm_asset_rag.settings.Settings.llm_creds",
+            "mm_asset_rag.core.settings.Settings.llm_creds",
             new_callable=lambda: property(lambda self: (None, None, None)),
         ),
         patch(
-            "mm_asset_rag.settings.Settings.text_embedding_creds",
+            "mm_asset_rag.core.settings.Settings.text_embedding_creds",
             new_callable=lambda: property(lambda self: (None, None, None)),
         ),
     ):
@@ -120,7 +120,7 @@ def test_health_deep_reports_false_when_unconfigured(client: TestClient, monkeyp
 
 def test_backend_index_exists_is_false_when_backend_raises(monkeypatch):
     """Health stays available even when the selected backend cannot be reached."""
-    from mm_asset_rag import api
+    from mm_asset_rag.api import api
 
     monkeypatch.setattr(
         api,
@@ -199,7 +199,7 @@ def test_root_keeps_long_markdown_answers_in_a_scrollable_panel(client: TestClie
 
 
 def test_search_endpoint_text_mode(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.dispatch_search", return_value=[]):
+    with patch("mm_asset_rag.api.api.dispatch_search", return_value=[]):
         response = client.post(
             "/search",
             json={
@@ -256,7 +256,7 @@ def test_search_endpoint_rejects_parent_traversal(client: TestClient) -> None:
 
 def test_answer_endpoint_returns_fallback(client: TestClient) -> None:
     with patch(
-        "mm_asset_rag.api.answer_question",
+        "mm_asset_rag.api.api.answer_question",
         return_value={"question": "q", "answer": "no LLM configured", "sources": []},
     ):
         response = client.post(
@@ -276,9 +276,9 @@ def test_answer_endpoint_returns_fallback(client: TestClient) -> None:
 def test_answer_endpoint_supplies_the_search_service(client: TestClient) -> None:
     service = object()
     with (
-        patch("mm_asset_rag.api.get_search_service", return_value=service),
+        patch("mm_asset_rag.api.api.get_search_service", return_value=service),
         patch(
-            "mm_asset_rag.api.answer_question",
+            "mm_asset_rag.api.api.answer_question",
             return_value={"question": "q", "answer": "ok", "sources": []},
         ) as answer_question,
     ):
@@ -308,7 +308,7 @@ def test_search_requires_collection_and_principal_access_context(client: TestCli
 def test_search_response_exposes_document_chunk_without_asset_id(
     client: TestClient,
 ) -> None:
-    from mm_asset_rag.schema import SearchHit
+    from mm_asset_rag.core.schema import SearchHit
 
     hit = SearchHit(
         route="text",
@@ -324,7 +324,7 @@ def test_search_response_exposes_document_chunk_without_asset_id(
             "page": 2,
         },
     )
-    with patch("mm_asset_rag.api.dispatch_search", return_value=[hit]):
+    with patch("mm_asset_rag.api.api.dispatch_search", return_value=[hit]):
         response = client.post(
             "/search",
             json={"query": "design", "collection": "team", "principal": "alice"},
@@ -340,7 +340,7 @@ def test_search_response_exposes_document_chunk_without_asset_id(
 def test_eval_endpoint_runs_cases(client: TestClient) -> None:
     service = MagicMock()
     service.execute.return_value = {"kind": "retrieval", "version": "v1", "results": []}
-    with patch("mm_asset_rag.api.get_evaluation_service", return_value=service):
+    with patch("mm_asset_rag.api.api.get_evaluation_service", return_value=service):
         response = client.post("/eval", json={"collection": "team", "principal": "alice"})
     assert response.status_code == 200
     assert response.json() == {"kind": "retrieval", "version": "v1", "results": []}
@@ -350,7 +350,7 @@ def test_eval_endpoint_requires_and_forwards_access_context(client: TestClient) 
     assert client.post("/eval", json={}).status_code == 422
     service = MagicMock()
     service.execute.return_value = {"kind": "retrieval", "version": "v1", "results": []}
-    with patch("mm_asset_rag.api.get_evaluation_service", return_value=service):
+    with patch("mm_asset_rag.api.api.get_evaluation_service", return_value=service):
         response = client.post(
             "/eval",
             json={
@@ -368,7 +368,7 @@ def test_eval_endpoint_requires_and_forwards_access_context(client: TestClient) 
 
 
 def test_chat_refusal_has_no_outer_sources(client: TestClient) -> None:
-    from mm_asset_rag.schema import SearchHit
+    from mm_asset_rag.core.schema import SearchHit
 
     hit = SearchHit(
         route="text",
@@ -382,7 +382,7 @@ def test_chat_refusal_has_no_outer_sources(client: TestClient) -> None:
             "chunk_id": "weak:0",
         },
     )
-    with patch("mm_asset_rag.api.dispatch_search", return_value=[hit]):
+    with patch("mm_asset_rag.api.api.dispatch_search", return_value=[hit]):
         response = client.post(
             "/chat",
             json={
@@ -418,14 +418,14 @@ def test_eval_endpoint_rejects_non_json_cases_path(client: TestClient) -> None:
 def test_eval_endpoint_resolves_cases_in_eval_cases_dir(client: TestClient) -> None:
     """A user-supplied case file in eval_cases/ resolves and is forwarded
     to run_eval. Pins the shared resolver's existence check on the API path."""
-    from mm_asset_rag.paths import get_eval_cases_dir
+    from mm_asset_rag.core.paths import get_eval_cases_dir
 
     case_file = get_eval_cases_dir() / "user_case.json"
     case_file.write_text('{"version":"v1","groups":{}}', encoding="utf-8")
 
     service = MagicMock()
     service.execute.return_value = {"kind": "retrieval", "version": "v1", "results": []}
-    with patch("mm_asset_rag.api.get_evaluation_service", return_value=service):
+    with patch("mm_asset_rag.api.api.get_evaluation_service", return_value=service):
         response = client.post(
             "/eval",
             json={
@@ -459,7 +459,7 @@ def test_upload_preview_rejects_oversized_file(
     png_bytes: bytes,
 ) -> None:
     monkeypatch.setenv("UPLOAD_MAX_FILE_BYTES", "8")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     response = client.post(
@@ -470,7 +470,7 @@ def test_upload_preview_rejects_oversized_file(
 
 
 def test_upload_preview_accepts_png(client: TestClient, png_bytes: bytes) -> None:
-    with patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None):
+    with patch("mm_asset_rag.ingest.auto_meta.auto_meta_image", return_value=None):
         response = client.post(
             "/upload/preview",
             files=[("files", ("scene.png", png_bytes, "image/png"))],
@@ -485,7 +485,7 @@ def test_upload_preview_accepts_png(client: TestClient, png_bytes: bytes) -> Non
 
 
 def test_upload_preview_accepts_pdf(client: TestClient, pdf_bytes: bytes) -> None:
-    with patch("mm_asset_rag.auto_meta.auto_meta_pdf_first_page", return_value=None):
+    with patch("mm_asset_rag.ingest.auto_meta.auto_meta_pdf_first_page", return_value=None):
         response = client.post(
             "/upload/preview",
             files=[("files", ("paper.pdf", pdf_bytes, "application/pdf"))],
@@ -504,7 +504,7 @@ def test_upload_preview_runs_sync_preview_off_event_loop(
     inlining the call back."""
     import inspect
 
-    from mm_asset_rag.api import upload_preview
+    from mm_asset_rag.api.api import upload_preview
 
     # The route must be a coroutine function (so the handler runs on the
     # event loop and can await to_thread).
@@ -514,9 +514,9 @@ def test_upload_preview_runs_sync_preview_off_event_loop(
     # patching asyncio.to_thread and confirming the pipeline runs inside it.
     with (
         patch(
-            "mm_asset_rag.api.asyncio.to_thread", side_effect=lambda f, *a, **kw: f(*a)
+            "mm_asset_rag.api.api.asyncio.to_thread", side_effect=lambda f, *a, **kw: f(*a)
         ) as to_thread,
-        patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None),
+        patch("mm_asset_rag.ingest.auto_meta.auto_meta_image", return_value=None),
     ):
         response = client.post(
             "/upload/preview",
@@ -536,7 +536,7 @@ def test_blocking_routes_are_async_and_use_to_thread() -> None:
     """
     import inspect
 
-    import mm_asset_rag.api as api_mod
+    import mm_asset_rag.api.api as api_mod
 
     for name in ("search", "answer", "eval_endpoint", "chat", "upload_preview"):
         fn = getattr(api_mod, name, None)
@@ -552,10 +552,10 @@ def test_blocking_route_dispatches_via_to_thread(client: TestClient) -> None:
     Patches ``asyncio.to_thread`` and confirms dispatch_search runs inside it."""
     with (
         patch(
-            "mm_asset_rag.api.asyncio.to_thread",
+            "mm_asset_rag.api.api.asyncio.to_thread",
             side_effect=lambda f, *a, **kw: f(*a),
         ) as to_thread,
-        patch("mm_asset_rag.api.dispatch_search", return_value=[]),
+        patch("mm_asset_rag.api.api.dispatch_search", return_value=[]),
     ):
         response = client.post(
             "/search",
@@ -575,7 +575,7 @@ def test_upload_confirm_spawns_ingest_task(
     client: TestClient,
     png_bytes: bytes,
 ) -> None:
-    with patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None):
+    with patch("mm_asset_rag.ingest.auto_meta.auto_meta_image", return_value=None):
         preview_response = client.post(
             "/upload/preview",
             files=[("files", ("scene.png", png_bytes, "image/png"))],
@@ -583,7 +583,7 @@ def test_upload_confirm_spawns_ingest_task(
     body = preview_response.json()
     preview_id = body["previews"][0]["preview_id"]
 
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         from mm_asset_rag.service import TaskRecord
 
         fake_service = mock_get_service.return_value
@@ -619,10 +619,10 @@ def test_web_smoke_upload_auto_image_sources_and_refusal(
     client: TestClient, png_bytes: bytes
 ) -> None:
     """Exercise the browser's upload, auto-search, evidence-image, and refusal path."""
-    from mm_asset_rag.schema import SearchHit
+    from mm_asset_rag.core.schema import SearchHit
     from mm_asset_rag.service import TaskRecord
 
-    with patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None):
+    with patch("mm_asset_rag.ingest.auto_meta.auto_meta_image", return_value=None):
         preview = client.post(
             "/upload/preview",
             files=[("files", ("poster.png", png_bytes, "image/png"))],
@@ -630,7 +630,7 @@ def test_web_smoke_upload_auto_image_sources_and_refusal(
     assert preview.status_code == 200
     preview_body = preview.json()
 
-    with patch("mm_asset_rag.api.get_service") as get_service:
+    with patch("mm_asset_rag.api.api.get_service") as get_service:
         get_service.return_value.ingest_assets.return_value = TaskRecord(
             task_id="smoke123", kind="ingest"
         )
@@ -663,7 +663,7 @@ def test_web_smoke_upload_auto_image_sources_and_refusal(
         },
         images=[{"path": "images/poster.png", "caption": "活动海报"}],
     )
-    with patch("mm_asset_rag.api.dispatch_search", return_value=[hit]) as search:
+    with patch("mm_asset_rag.api.api.dispatch_search", return_value=[hit]) as search:
         response = client.post(
             "/search",
             json={"query": "活动图片", "mode": "auto", "collection": "team", "principal": "alice"},
@@ -675,7 +675,7 @@ def test_web_smoke_upload_auto_image_sources_and_refusal(
     ]
 
     with patch(
-        "mm_asset_rag.api.answer_question",
+        "mm_asset_rag.api.api.answer_question",
         return_value={"question": "不存在的资料", "answer": "证据不足，无法回答。", "sources": []},
     ):
         refusal = client.post(
@@ -707,14 +707,14 @@ def test_retry_task_endpoint_returns_new_task(
     client: TestClient,
     png_bytes: bytes,
 ) -> None:
-    with patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None):
+    with patch("mm_asset_rag.ingest.auto_meta.auto_meta_image", return_value=None):
         preview = client.post(
             "/upload/preview",
             files=[("files", ("scene.png", png_bytes, "image/png"))],
         )
     body = preview.json()
 
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         from mm_asset_rag.service import TaskRecord
 
         fake_service = mock_get_service.return_value
@@ -736,7 +736,7 @@ def test_retry_task_endpoint_returns_new_task(
 
 
 def test_retry_task_endpoint_404(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         fake_service = mock_get_service.return_value
         fake_service.retry_task.side_effect = KeyError("unknown task missing")
         response = client.post("/tasks/missing/retry")
@@ -745,7 +745,7 @@ def test_retry_task_endpoint_404(client: TestClient) -> None:
 
 
 def test_retry_task_endpoint_400_for_unretryable(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         fake_service = mock_get_service.return_value
         fake_service.retry_task.side_effect = ValueError("task x cannot be retried")
         response = client.post("/tasks/abc/retry")
@@ -757,7 +757,7 @@ def test_retry_task_endpoint_accepts_force_and_failed_only(client: TestClient) -
     """``--force`` and ``--failed-only`` compose: the new task re-parses
     only the previously failed assets and clears only their cache.
     """
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         from mm_asset_rag.service import TaskRecord
 
         fake_service = mock_get_service.return_value
@@ -784,7 +784,7 @@ def test_retry_task_endpoint_accepts_force_and_failed_only(client: TestClient) -
 def test_cancel_task_endpoint_routes_to_service(client: TestClient) -> None:
     """POST /tasks/{id}/cancel calls IngestService.cancel_task and returns the
     task's status (terminal after cancel). 404 for unknown id."""
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         from mm_asset_rag.service import TaskRecord
 
         fake_service = mock_get_service.return_value
@@ -799,7 +799,7 @@ def test_cancel_task_endpoint_routes_to_service(client: TestClient) -> None:
 
 
 def test_cancel_task_404_for_unknown(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         mock_get_service.return_value.cancel_task.side_effect = KeyError("nope")
         response = client.post("/tasks/unknown/cancel")
     assert response.status_code == 404
@@ -807,8 +807,8 @@ def test_cancel_task_404_for_unknown(client: TestClient) -> None:
 
 def test_chat_stream_endpoint_emits_sources_and_done(client: TestClient) -> None:
     with (
-        patch("mm_asset_rag.api.dispatch_search", return_value=[]),
-        patch("mm_asset_rag.api.stream_answer_chunks", return_value=iter(["hello ", "world"])),
+        patch("mm_asset_rag.api.api.dispatch_search", return_value=[]),
+        patch("mm_asset_rag.api.api.stream_answer_chunks", return_value=iter(["hello ", "world"])),
     ):
         response = client.post(
             "/chat/stream",
@@ -865,8 +865,8 @@ def test_chat_stream_runs_through_to_thread(client: TestClient) -> None:
             yield w
 
     with (
-        patch("mm_asset_rag.api.dispatch_search", return_value=[]),
-        patch("mm_asset_rag.api.stream_answer_chunks", side_effect=slow_chunks),
+        patch("mm_asset_rag.api.api.dispatch_search", return_value=[]),
+        patch("mm_asset_rag.api.api.stream_answer_chunks", side_effect=slow_chunks),
     ):
         response = client.post(
             "/chat/stream",
@@ -900,7 +900,7 @@ def test_iter_sync_in_thread_streams_incrementally() -> None:
     import asyncio
     import threading
 
-    from mm_asset_rag.api import _iter_sync_in_thread
+    from mm_asset_rag.api.api import _iter_sync_in_thread
 
     emitted_after_first = threading.Event()
 
@@ -923,7 +923,7 @@ def test_iter_sync_in_thread_streams_incrementally() -> None:
         items = []
         while True:
             item = await asyncio.to_thread(bridge.get)
-            from mm_asset_rag.api import _STREAM_DONE
+            from mm_asset_rag.api.api import _STREAM_DONE
 
             if item is _STREAM_DONE:
                 break
@@ -937,7 +937,7 @@ def test_iter_sync_in_thread_streams_incrementally() -> None:
 def test_stream_bridge_is_bounded() -> None:
     import asyncio
 
-    from mm_asset_rag.api_streaming import _iter_sync_in_thread
+    from mm_asset_rag.api.api_streaming import _iter_sync_in_thread
 
     bridge = asyncio.run(_iter_sync_in_thread(lambda: iter(["a"])))
     assert bridge.maxsize == 64
@@ -948,7 +948,7 @@ def test_stream_bridge_delivers_done_after_full_queue_drains() -> None:
     import asyncio
     import threading
 
-    from mm_asset_rag.api_streaming import _STREAM_DONE, _iter_sync_in_thread
+    from mm_asset_rag.api.api_streaming import _STREAM_DONE, _iter_sync_in_thread
 
     producer_exhausted = threading.Event()
 
@@ -978,7 +978,7 @@ def test_stream_bridge_delivers_error_and_done_after_full_queue_drains() -> None
     """An exception and completion remain ordered and observable after queue saturation."""
     import asyncio
 
-    from mm_asset_rag.api_streaming import _STREAM_DONE, _iter_sync_in_thread
+    from mm_asset_rag.api.api_streaming import _STREAM_DONE, _iter_sync_in_thread
 
     def producer():
         yield from range(65)
@@ -1020,7 +1020,7 @@ def test_iter_sync_in_thread_stop_signals_producer() -> None:
     import threading
     import time
 
-    from mm_asset_rag.api import _STREAM_DONE, _iter_sync_in_thread
+    from mm_asset_rag.api.api import _STREAM_DONE, _iter_sync_in_thread
 
     past_first = threading.Event()
     producer_exited = threading.Event()
@@ -1068,8 +1068,8 @@ def test_iter_sync_in_thread_stop_signals_producer() -> None:
 def test_document_lifecycle_requires_and_enforces_access_context(
     client: TestClient, tmp_home
 ) -> None:
-    from mm_asset_rag.asset_index import DocumentRecord
-    from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, Source
+    from mm_asset_rag.core.knowledge_models import AccessPolicy, Asset, Document, Source
+    from mm_asset_rag.ingest.asset_index import DocumentRecord
 
     document = Document(
         document_id="alpha",
@@ -1095,7 +1095,7 @@ def test_document_lifecycle_requires_and_enforces_access_context(
         document=other_document,
         asset=Asset(content_hash="b" * 64, source_type="image", relative_path="images/private.png"),
     )
-    from mm_asset_rag.paths import get_parsed_dir, physical_cache_id
+    from mm_asset_rag.core.paths import get_parsed_dir, physical_cache_id
 
     image_path = (
         get_parsed_dir() / physical_cache_id(record.asset.relative_path) / "images" / "figure.png"
@@ -1103,7 +1103,9 @@ def test_document_lifecycle_requires_and_enforces_access_context(
     image_path.parent.mkdir(parents=True)
     image_path.write_bytes(b"image-bytes")
 
-    with patch("mm_asset_rag.api.asset_index.load_records", return_value=[record, other_record]):
+    with patch(
+        "mm_asset_rag.api.api.asset_index.load_records", return_value=[record, other_record]
+    ):
         response = client.get("/documents")
         assert response.status_code == 422
 
@@ -1164,7 +1166,7 @@ def test_asset_routes_are_not_public_lifecycle_endpoints(client: TestClient) -> 
 
 
 def test_task_stream_endpoint_emits_initial_and_done(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         fake_service = mock_get_service.return_value
 
         def fake_stream(task_id: str, **kw):
@@ -1183,7 +1185,7 @@ def test_task_stream_endpoint_emits_initial_and_done(client: TestClient) -> None
 
 
 def test_task_stream_endpoint_emits_nocache_headers(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         fake_service = mock_get_service.return_value
 
         def fake_stream(task_id: str, **kw):
@@ -1198,7 +1200,7 @@ def test_task_stream_endpoint_emits_nocache_headers(client: TestClient) -> None:
 
 
 def test_task_stream_endpoint_unknown_yields_error(client: TestClient) -> None:
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         fake_service = mock_get_service.return_value
 
         def fake_stream(task_id: str, **kw):
@@ -1222,7 +1224,7 @@ def _with_token_env(monkeypatch, token: str | None) -> None:
     """Set/unset ``MMRAG_API_TOKEN`` and clear the settings cache so the
     next ``get_settings()`` sees it (the dependency reads settings per
     request, not at import)."""
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     if token is None:
         monkeypatch.delenv("MMRAG_API_TOKEN", raising=False)
@@ -1234,7 +1236,7 @@ def _with_token_env(monkeypatch, token: str | None) -> None:
 def test_auth_disabled_by_default_no_token_required(client: TestClient, monkeypatch) -> None:
     """Zero-config default: no MMRAG_API_TOKEN → guarded endpoints are open."""
     _with_token_env(monkeypatch, None)
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         # /tasks/{id}/retry hits require_token; with no token configured it
         # must pass the guard (then 404 on the unknown task id).
         mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
@@ -1267,7 +1269,7 @@ def test_auth_rejects_wrong_token(client: TestClient, monkeypatch) -> None:
 
 def test_auth_accepts_x_api_key_header(client: TestClient, monkeypatch) -> None:
     _with_token_env(monkeypatch, "secret")
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
         response = client.post("/tasks/abc/retry", headers={"X-API-Key": "secret"})
     # Guard passed → 404 from the route body, not 401.
@@ -1276,7 +1278,7 @@ def test_auth_accepts_x_api_key_header(client: TestClient, monkeypatch) -> None:
 
 def test_auth_accepts_bearer_header(client: TestClient, monkeypatch) -> None:
     _with_token_env(monkeypatch, "secret")
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
         response = client.post("/tasks/abc/retry", headers={"Authorization": "Bearer secret"})
     assert response.status_code == 404
@@ -1287,7 +1289,7 @@ def test_auth_read_endpoints_stay_open_when_token_set(client: TestClient, monkey
     token configured — the bundled web UI's same-origin fetches carry no
     Authorization header."""
     _with_token_env(monkeypatch, "secret")
-    with patch("mm_asset_rag.api.asset_index.load_records", return_value=[]):
+    with patch("mm_asset_rag.api.api.asset_index.load_records", return_value=[]):
         response = client.get("/documents", params={"collection": "team", "principal": "alice"})
     assert response.status_code == 200
 
@@ -1301,15 +1303,15 @@ def test_auth_eval_endpoint_guarded(client: TestClient, monkeypatch) -> None:
 def test_auth_token_is_case_insensitive_scheme(client: TestClient, monkeypatch) -> None:
     """``Authorization: bearer <t>`` (lowercase scheme) is accepted too."""
     _with_token_env(monkeypatch, "secret")
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
         response = client.post("/tasks/abc/retry", headers={"Authorization": "bearer secret"})
     assert response.status_code == 404
 
 
 def test_resolve_trusted_hosts_defaults_to_loopback(monkeypatch) -> None:
-    from mm_asset_rag.api import _resolve_trusted_hosts
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.api.api import _resolve_trusted_hosts
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.delenv("MMRAG_TRUSTED_HOSTS", raising=False)
     get_settings.cache_clear()
@@ -1319,8 +1321,8 @@ def test_resolve_trusted_hosts_defaults_to_loopback(monkeypatch) -> None:
 
 
 def test_resolve_trusted_hosts_configurable(monkeypatch) -> None:
-    from mm_asset_rag.api import _resolve_trusted_hosts
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.api.api import _resolve_trusted_hosts
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setenv("MMRAG_TRUSTED_HOSTS", "rag.example.com, api.example.com")
     get_settings.cache_clear()
@@ -1341,7 +1343,7 @@ def test_upload_preview_rejects_too_many_files(
     file count is a quota-burn vector the byte caps alone don't bound.
     """
     monkeypatch.setenv("UPLOAD_MAX_FILES", "2")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     files = [("files", (f"img{i}.png", png_bytes, "image/png")) for i in range(3)]
@@ -1362,7 +1364,7 @@ def test_upload_preview_body_size_limit_rejects_oversized_batch(
     the middleware reject a modestly-sized body.
     """
     monkeypatch.setenv("UPLOAD_MAX_BATCH_BYTES", "1024")  # 1 KiB
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     # A 4 KiB body — well over the 1 KiB cap, under the default file cap.
@@ -1381,10 +1383,10 @@ def test_upload_preview_body_size_limit_allows_normal_batch(
 ) -> None:
     """A normal-sized upload clears the body-size limit (no false positive)."""
     monkeypatch.setenv("UPLOAD_MAX_BATCH_BYTES", str(50 * 1024 * 1024))
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
-    with patch("mm_asset_rag.auto_meta.auto_meta_image", return_value=None):
+    with patch("mm_asset_rag.ingest.auto_meta.auto_meta_image", return_value=None):
         response = client.post(
             "/upload/preview",
             files=[("files", ("scene.png", png_bytes, "image/png"))],
@@ -1395,7 +1397,7 @@ def test_upload_preview_body_size_limit_allows_normal_batch(
 def test_safe_stream_error_strips_urls_and_caps_length(monkeypatch) -> None:
     """``_safe_stream_error`` strips URLs (provider hosts, inlined userinfo)
     and caps the message so a streamed error event leaks no topology."""
-    from mm_asset_rag.api import _STREAM_ERR_MAX_CHARS, _safe_stream_error
+    from mm_asset_rag.api.api import _STREAM_ERR_MAX_CHARS, _safe_stream_error
 
     # A requests-style error with the full URL — and a userinfo-form URL.
     exc = Exception(
@@ -1426,7 +1428,7 @@ def test_safe_stream_error_strips_urls_and_caps_length(monkeypatch) -> None:
     # host (or an in-house VLM domain) leaks to the streamed error event.
     # The bare ``Connection to <host> timed out`` form is scrubbed by
     # matching the configured provider host exactly, so set one here.
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setenv("MODEL_BASE_URL", "https://api.openai.com/v1")
     get_settings.cache_clear()
@@ -1448,11 +1450,11 @@ def test_require_token_treats_empty_string_as_unset(client: TestClient, monkeypa
     "enabled with empty token" — ``compare_digest("", "")`` would let any
     request through. So we fall back to no-op the same way unset does.
     """
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setenv("MMRAG_API_TOKEN", "   ")
     get_settings.cache_clear()
-    with patch("mm_asset_rag.api.get_service") as mock_get_service:
+    with patch("mm_asset_rag.api.api.get_service") as mock_get_service:
         mock_get_service.return_value.retry_task.side_effect = KeyError("nope")
         response = client.post("/tasks/abc/retry")
     # 404 from the route body, not 401 from the guard — proves the guard passed.
@@ -1462,7 +1464,7 @@ def test_require_token_treats_empty_string_as_unset(client: TestClient, monkeypa
 def test_answer_chat_endpoints_require_token_when_set(client: TestClient, monkeypatch) -> None:
     """/answer and /chat spend LLM quota, so they are guarded like /eval once
     a token is configured (mirrors the destructive endpoints' guard)."""
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setenv("MMRAG_API_TOKEN", "secret")
     get_settings.cache_clear()
@@ -1471,7 +1473,7 @@ def test_answer_chat_endpoints_require_token_when_set(client: TestClient, monkey
     # /chat/stream is an LLM-quota endpoint too — guarded the same way.
     assert client.post("/chat/stream", json={"question": "q"}).status_code == 401
     # Non-streaming read endpoint stays open.
-    with patch("mm_asset_rag.api.asset_index.load_records", return_value=[]):
+    with patch("mm_asset_rag.api.api.asset_index.load_records", return_value=[]):
         assert (
             client.get(
                 "/documents", params={"collection": "team", "principal": "alice"}

@@ -20,8 +20,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from mm_asset_rag.image_caption import enrich_docs_with_image_captions
-from mm_asset_rag.schema import ParsedChunk
+from mm_asset_rag.core.schema import ParsedChunk
+from mm_asset_rag.ingest.image_caption import enrich_docs_with_image_captions
 
 
 def _doc(text: str, images: list[dict] | None = None) -> ParsedChunk:
@@ -39,7 +39,7 @@ def _enable(monkeypatch, *, enabled: bool = True, creds=("http://vlm/v1", "sk", 
     property). The flag is a plain field too. The unconfigured branch also
     clears the shared model connection so the test is independent of .env.
     """
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     s = get_settings()
     monkeypatch.setattr(s, "image_caption_enabled", enabled)
@@ -73,7 +73,7 @@ def test_caption_appended_to_text_and_metadata(tmp_home, monkeypatch):
     cache = tmp_home / ".mm_asset_rag" / "captions" / "a1.jsonl"
 
     with patch(
-        "mm_asset_rag.image_caption._caption_one",
+        "mm_asset_rag.ingest.image_caption._caption_one",
         return_value="一张双碳目标路线图",
     ):
         _enable(monkeypatch)
@@ -104,7 +104,7 @@ def test_cache_reused_no_second_vlm_call(tmp_home, monkeypatch):
         calls["n"] += 1
         return "should-not-be-used"
 
-    with patch("mm_asset_rag.image_caption._caption_one", side_effect=_fake_caption):
+    with patch("mm_asset_rag.ingest.image_caption._caption_one", side_effect=_fake_caption):
         _enable(monkeypatch)
         enrich_docs_with_image_captions(docs, asset_id="a1", cache_path=cache)
 
@@ -118,7 +118,7 @@ def test_noop_when_disabled(tmp_home, monkeypatch):
     _seed_image(tmp_home, "a1", "images/fig1.png")
     docs = [_doc("正文", images=[{"path": "images/fig1.png", "caption": ""}])]
 
-    with patch("mm_asset_rag.image_caption._caption_one") as m:
+    with patch("mm_asset_rag.ingest.image_caption._caption_one") as m:
         _enable(monkeypatch, enabled=False)
         enrich_docs_with_image_captions(docs, asset_id="a1", cache_path=tmp_home / "c.jsonl")
         m.assert_not_called()
@@ -131,7 +131,7 @@ def test_noop_when_vlm_unconfigured(tmp_home, monkeypatch):
     _seed_image(tmp_home, "a1", "images/fig1.png")
     docs = [_doc("正文", images=[{"path": "images/fig1.png", "caption": ""}])]
 
-    with patch("mm_asset_rag.image_caption._caption_one") as m:
+    with patch("mm_asset_rag.ingest.image_caption._caption_one") as m:
         _enable(monkeypatch, creds=(None, None, None))
         enrich_docs_with_image_captions(docs, asset_id="a1", cache_path=tmp_home / "c.jsonl")
         m.assert_not_called()
@@ -143,7 +143,7 @@ def test_vlm_failure_leaves_chunk_untouched(tmp_home, monkeypatch):
     _seed_image(tmp_home, "a1", "images/fig1.png")
     docs = [_doc("正文", images=[{"path": "images/fig1.png", "caption": ""}])]
 
-    with patch("mm_asset_rag.image_caption._caption_one", return_value=""):
+    with patch("mm_asset_rag.ingest.image_caption._caption_one", return_value=""):
         _enable(monkeypatch)
         enrich_docs_with_image_captions(docs, asset_id="a1", cache_path=tmp_home / "c.jsonl")
     assert "图片描述" not in docs[0].text
@@ -156,7 +156,7 @@ def test_existing_caption_preserved_and_reused(tmp_home, monkeypatch):
     _seed_image(tmp_home, "a1", "images/fig1.png")
     docs = [_doc("正文", images=[{"path": "images/fig1.png", "caption": "图1: 架构图"}])]
 
-    with patch("mm_asset_rag.image_caption._caption_one") as m:
+    with patch("mm_asset_rag.ingest.image_caption._caption_one") as m:
         _enable(monkeypatch)
         enrich_docs_with_image_captions(docs, asset_id="a1", cache_path=tmp_home / "c.jsonl")
         m.assert_not_called()  # existing caption → no VLM call
@@ -182,7 +182,7 @@ def test_multiple_figures_in_one_chunk_deduped(tmp_home, monkeypatch):
     def _fake(asset_id, path):
         return captions[path]
 
-    with patch("mm_asset_rag.image_caption._caption_one", side_effect=_fake):
+    with patch("mm_asset_rag.ingest.image_caption._caption_one", side_effect=_fake):
         _enable(monkeypatch)
         enrich_docs_with_image_captions(docs, asset_id="a1", cache_path=tmp_home / "c.jsonl")
     assert "路线图" in docs[0].text
@@ -194,8 +194,8 @@ def test_image_abs_path_rejects_traversal(tmp_home) -> None:
     """``_image_abs_path`` confines the resolved path to ``parsed/<asset_id>/`` —
     absolute paths, ``..`` traversal, and symlinks pointing outside are all
     refused (returns None) even though the path may technically exist."""
-    from mm_asset_rag.image_caption import _image_abs_path
-    from mm_asset_rag.paths import get_parsed_dir
+    from mm_asset_rag.core.paths import get_parsed_dir
+    from mm_asset_rag.ingest.image_caption import _image_abs_path
 
     # Write a legitimate image at the real parsed dir (get_parsed_dir resolves
     # MM_ASSET_RAG_HOME, which tmp_home points at a fresh tmp dir).

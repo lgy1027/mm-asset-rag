@@ -142,8 +142,8 @@ def fake_cn_clip_embedder(monkeypatch):
 
 def test_constructor_uses_settings_clip_model(monkeypatch) -> None:
     """``CnClipImageEmbedder()`` 默认读 ``Settings.clip_model``。"""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.embedders.cn_clip_embedder import CnClipImageEmbedder
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setattr(CnClipImageEmbedder, "is_available", staticmethod(lambda: True))
     settings = get_settings()
@@ -178,7 +178,7 @@ def test_dim_returns_cached_value(fake_cn_clip_embedder) -> None:
 
 def test_dim_settings_override_skips_probe(fake_cn_clip_embedder, monkeypatch) -> None:
     """``Settings.image_embedding_dim`` 覆盖 probe,跳过模型调用。"""
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "image_embedding_dim", 768)
     fake_cn_clip_embedder._dim = None
@@ -190,7 +190,7 @@ def test_dim_settings_override_skips_probe(fake_cn_clip_embedder, monkeypatch) -
 
 
 def test_dim_settings_override_beats_cached_value(fake_cn_clip_embedder, monkeypatch) -> None:
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "image_embedding_dim", 1024)
     fake_cn_clip_embedder._dim = 768
@@ -198,7 +198,7 @@ def test_dim_settings_override_beats_cached_value(fake_cn_clip_embedder, monkeyp
 
 
 def test_dim_falls_back_to_probe_when_settings_unset(fake_cn_clip_embedder, monkeypatch) -> None:
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "image_embedding_dim", None)
     fake_cn_clip_embedder._dim = None
@@ -409,9 +409,9 @@ def test_load_calls_eval_on_model(monkeypatch) -> None:
 
 def test_build_default_image_embedder_returns_cn_clip_for_cn_clip_provider(monkeypatch) -> None:
     """``image_provider == "cn_clip"`` 时工厂返回 ``CnClipImageEmbedder``。"""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.embedders import build_default_image_embedder
     from mm_asset_rag.embedders.cn_clip_embedder import CnClipImageEmbedder
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setattr(CnClipImageEmbedder, "is_available", staticmethod(lambda: True))
     monkeypatch.setattr(get_settings(), "image_provider", "cn_clip")
@@ -421,9 +421,9 @@ def test_build_default_image_embedder_returns_cn_clip_for_cn_clip_provider(monke
 
 
 def test_build_default_image_embedder_returns_clip_by_default(monkeypatch) -> None:
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.embedders import build_default_image_embedder
     from mm_asset_rag.embedders.image_embedder import ImageEmbedder
-    from mm_asset_rag.settings import get_settings
 
     # 隔离 ImageEmbedder 构造时的 [clip] 检查 — 我们只测 dispatch,不动 model
     monkeypatch.setattr(ImageEmbedder, "_check_available", staticmethod(lambda: None))

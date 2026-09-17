@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mm_asset_rag.assets import IngestAsset
+from mm_asset_rag.ingest.assets import IngestAsset
 from mm_asset_rag.parsers.docling_parser import build_ir_docling
 
 

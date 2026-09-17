@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mm_asset_rag.assets import IngestAsset
+from mm_asset_rag.ingest.assets import IngestAsset
 from mm_asset_rag.parsers.document_ir import (
     Block,
     DocumentIR,

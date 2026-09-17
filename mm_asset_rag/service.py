@@ -19,13 +19,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from . import asset_index
 from . import parsers as _parsers  # noqa: F401  # register built-in parsers
-from .assets import IngestAsset, from_sniffed
-from .config import load_env
-from .document_store import documents_jsonl_lock
-from .ingest_workflow import IngestWorkflow
-from .paths import (
+from .core.config import load_env
+from .core.paths import (
     get_asset_index_path,
     get_assets_dir,
     get_captions_dir,
@@ -34,13 +30,17 @@ from .paths import (
     get_parsed_dir,
     physical_cache_id,
 )
-from .protocols import KnowledgeBackend
-from .query_preprocess import invalidate_vocab_cache
-from .registry import get_backend
-from .registry import get_parser as get_parser
-from .settings import Settings, get_settings
-from .sniff import sniff
-from .task_store import TaskRecord, TaskStore
+from .core.protocols import KnowledgeBackend
+from .core.registry import get_backend
+from .core.registry import get_parser as get_parser
+from .core.settings import Settings, get_settings
+from .ingest import asset_index
+from .ingest.assets import IngestAsset, from_sniffed
+from .ingest.document_store import documents_jsonl_lock
+from .ingest.ingest_workflow import IngestWorkflow
+from .ingest.sniff import sniff
+from .ingest.task_store import TaskRecord, TaskStore
+from .query.query_preprocess import invalidate_vocab_cache
 
 # ─── Helpers shared by api.py and cli.py ──────────────────────────────────
 

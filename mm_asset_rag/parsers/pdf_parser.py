@@ -23,10 +23,10 @@ from pathlib import Path
 import fitz
 import requests
 
-from ..assets import IngestAsset
-from ..paths import get_parsed_dir
-from ..schema import ParsedChunk
-from ..settings import get_settings
+from ..core.paths import get_parsed_dir
+from ..core.schema import ParsedChunk
+from ..core.settings import get_settings
+from ..ingest.assets import IngestAsset
 from .document_ir import Block, DocumentIR, ImageRef, PageHint
 
 # ─── PyMuPDF ──────────────────────────────────────────────────────────────

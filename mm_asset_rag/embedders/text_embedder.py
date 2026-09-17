@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ..openai_adapters import OpenAIEmbeddingAdapter
-from ..openai_compatible import require_connection
+from ..core.openai_adapters import OpenAIEmbeddingAdapter
+from ..core.openai_compatible import require_connection
 
 
 class EmbeddingConfigError(RuntimeError):
@@ -19,7 +19,7 @@ class TextEmbedder:
     def __init__(
         self, *, api_key=None, base_url=None, model=None, settings=None, **overrides
     ) -> None:
-        from ..settings import get_settings
+        from ..core.settings import get_settings
 
         s = settings or get_settings()
         key, url, configured_model = s.text_embedding_creds
@@ -49,7 +49,7 @@ class TextEmbedder:
         return self.model
 
     def dim(self) -> int:
-        from ..settings import get_settings
+        from ..core.settings import get_settings
 
         configured = get_settings().embedding_dim
         if configured is not None:
@@ -75,6 +75,6 @@ class TextEmbedder:
 
 
 def build_default_text_embedder() -> TextEmbedder:
-    from ..settings import get_settings
+    from ..core.settings import get_settings
 
     return TextEmbedder(settings=get_settings())

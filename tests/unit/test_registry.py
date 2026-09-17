@@ -7,8 +7,8 @@ import sys
 
 import pytest
 
-from mm_asset_rag.protocols import Embedder, Parser
-from mm_asset_rag.registry import (
+from mm_asset_rag.core.protocols import Embedder, Parser
+from mm_asset_rag.core.registry import (
     Registry,
     backends,
     embedders,
@@ -136,9 +136,9 @@ def _run_fresh_python(script: str) -> subprocess.CompletedProcess[str]:
 def test_search_service_default_bootstraps_backend_in_fresh_interpreter() -> None:
     result = _run_fresh_python(
         """
-from mm_asset_rag import registry
-from mm_asset_rag.protocols import SearchBackend
-from mm_asset_rag.search_service import SearchService
+from mm_asset_rag.core import registry
+from mm_asset_rag.core.protocols import SearchBackend
+from mm_asset_rag.query.search_service import SearchService
 
 assert registry.backends.keys() == []
 service = SearchService()
@@ -153,7 +153,8 @@ assert isinstance(service._backend, SearchBackend)
 def test_hybrid_search_default_bootstraps_backend_in_fresh_interpreter() -> None:
     result = _run_fresh_python(
         """
-from mm_asset_rag import registry, retrieval
+from mm_asset_rag.core import registry
+from mm_asset_rag.query import retrieval
 
 assert registry.backends.keys() == []
 original_get = registry.backends.get
@@ -238,7 +239,8 @@ def test_get_active_backend_uses_configured_backend_name(monkeypatch):
     """Application services select a backend through Settings, not a Qdrant literal."""
     register_backend(StubBackend())
     monkeypatch.setattr(
-        "mm_asset_rag.registry.get_settings", lambda: type("S", (), {"vector_backend": "stub"})()
+        "mm_asset_rag.core.registry.get_settings",
+        lambda: type("S", (), {"vector_backend": "stub"})(),
     )
 
     assert get_active_backend().name == "stub"
@@ -254,11 +256,11 @@ def test_get_default_text_embedder_is_lazy(tmp_path) -> None:
     ``EmbeddingConfigError``; with config it returns the cached
     instance and a second call returns the same object.
     """
+    from mm_asset_rag.core.registry import embedders
     from mm_asset_rag.embedders import (
         EmbeddingConfigError,
         get_default_text_embedder,
     )
-    from mm_asset_rag.registry import embedders
 
     # Reset the registry to a known state.
     embedders._items.pop(("text", "default"), None)
@@ -277,8 +279,8 @@ def test_get_default_text_embedder_caches(tmp_path) -> None:
     """Once successfully constructed, the same embedder is returned
     on subsequent calls.
     """
+    from mm_asset_rag.core.registry import embedders, register_embedder
     from mm_asset_rag.embedders import get_default_text_embedder
-    from mm_asset_rag.registry import embedders, register_embedder
 
     # Register a deterministic stub so we can compare identities. The stub
     # occupies the ``("text", "default")`` slot — which is what
@@ -324,8 +326,8 @@ def test_get_default_text_embedder_retries_on_transient_race(monkeypatch, tmp_pa
     once, and a second ``build_default`` that succeeds yields the embedder.
     """
     from mm_asset_rag import embedders as emb_mod
+    from mm_asset_rag.core.registry import embedders
     from mm_asset_rag.embedders import get_default_text_embedder
-    from mm_asset_rag.registry import embedders
 
     embedders._items.pop(("text", "default"), None)
 
@@ -366,8 +368,8 @@ def test_get_default_text_embedder_raises_config_error_when_creds_missing(
     preserving the pre-fix contract that callers see ``EmbeddingConfigError``,
     not an opaque ``KeyError: ... available: []``."""
     from mm_asset_rag import embedders as emb_mod
+    from mm_asset_rag.core.registry import embedders
     from mm_asset_rag.embedders import get_default_text_embedder
-    from mm_asset_rag.registry import embedders
 
     embedders._items.pop(("text", "default"), None)
 
@@ -386,7 +388,7 @@ def test_ensure_text_registered_logs_on_config_error(monkeypatch, capsys, tmp_pa
     ``EmbeddingConfigError`` — it logs the reason so the failure is
     legible, while still leaving the registry empty (non-fatal import)."""
     from mm_asset_rag import embedders as emb_mod
-    from mm_asset_rag.registry import embedders
+    from mm_asset_rag.core.registry import embedders
 
     embedders._items.pop(("text", "default"), None)
 

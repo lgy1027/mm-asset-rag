@@ -6,7 +6,7 @@ import re
 
 from qdrant_client import QdrantClient, models
 
-from ...settings import get_settings
+from ...core.settings import get_settings
 
 TEXT_COLLECTION_BASE = get_settings().qdrant_text_collection
 IMAGE_COLLECTION_BASE = get_settings().qdrant_image_collection

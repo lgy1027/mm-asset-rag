@@ -16,13 +16,13 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
+from mm_asset_rag.core.schema import SearchHit
 from mm_asset_rag.embedders.reranker import (
     HttpRerankApiReranker,
     Reranker,
     get_default_reranker,
     reset_reranker,
 )
-from mm_asset_rag.schema import SearchHit
 
 
 def _hit(asset_id: str, evidence: str, score: float = 0.5) -> SearchHit:
@@ -136,7 +136,7 @@ def test_get_default_reranker_disabled_when_configured(tmp_home, monkeypatch):
     reset_reranker()
     # Explicitly disable.
     monkeypatch.setenv("RERANKER_ENABLED", "false")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     assert get_default_reranker() is None
@@ -153,7 +153,7 @@ def test_get_default_reranker_is_sticky_when_remote_config_is_missing(tmp_home, 
     reset_reranker()
     assert get_default_reranker() is None
     monkeypatch.setenv("RERANKER_API_KEY", "sk-test")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     assert get_default_reranker() is None
@@ -183,12 +183,12 @@ def test_get_default_reranker_construction_failure_is_sticky(tmp_home, monkeypat
 
 def test_hybrid_search_skips_rerank_when_disabled(tmp_home, monkeypatch):
     """reranker off → hybrid_search behaves as before (no rerank call)."""
-    from mm_asset_rag.retrieval import hybrid_search
+    from mm_asset_rag.query.retrieval import hybrid_search
 
     # The default is now enabled; explicitly disable for this test.
     monkeypatch.setenv("RERANKER_ENABLED", "false")
     reset_reranker()
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
 
@@ -209,7 +209,7 @@ def test_hybrid_search_skips_rerank_when_disabled(tmp_home, monkeypatch):
 
 def test_hybrid_search_reranks_when_enabled(tmp_home, monkeypatch):
     """reranker on → fetch reranker_top_n candidates, rerank, return top_k."""
-    from mm_asset_rag.retrieval import hybrid_search
+    from mm_asset_rag.query.retrieval import hybrid_search
 
     monkeypatch.setenv("RERANKER_ENABLED", "true")
     monkeypatch.setenv("RERANKER_TOP_N", "20")
@@ -427,7 +427,7 @@ def _fake_nested_response(rows):
 
 
 def test_reranker_uses_shared_provider_security(monkeypatch):
-    from mm_asset_rag import provider_security
+    from mm_asset_rag.core import provider_security
 
     warn = Mock()
     monkeypatch.setattr(provider_security, "warn_insecure_base_url", warn)
@@ -530,7 +530,7 @@ def test_http_rerank_dashscope_sends_nested_body_and_reads_output(tmp_home, monk
     # Intentionally leave base/model at provider defaults.
     monkeypatch.setenv("RERANKER_API_KEY", "sk-test")
     reset_reranker()
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()  # pick up the env overrides above
 
@@ -761,7 +761,7 @@ def test_get_default_reranker_picks_http_provider(tmp_home, monkeypatch):
     # + default model, so only the key is required to be configured.
     monkeypatch.setenv("RERANKER_PROVIDER", "dashscope")
     monkeypatch.setenv("RERANKER_API_KEY", "sk-test")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     r = get_default_reranker()
@@ -779,7 +779,7 @@ def test_http_reranker_unconfigured_returns_none(tmp_home, monkeypatch):
     monkeypatch.setenv("RERANKER_PROVIDER", "siliconflow")
     # No explicit or shared key → unconfigured (base+model have defaults).
     reset_reranker()
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     assert get_default_reranker() is None
@@ -814,7 +814,7 @@ def test_http_reranker_soft_sticky_recovers_after_ttl(tmp_home, monkeypatch):
     import requests
 
     import mm_asset_rag.embedders.reranker as mod
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     fake_time = [0.0]
@@ -927,12 +927,12 @@ def test_http_reranker_warns_insecure_base_url(tmp_home, monkeypatch, caplog):
     monkeypatch.setenv("RERANKER_API_BASE", "http://insecure.example.test/v1/rerank")
     monkeypatch.setenv("RERANKER_API_KEY", "sk-test")
     reset_reranker()
-    from mm_asset_rag.provider_security import _warned_insecure_base_urls
+    from mm_asset_rag.core.provider_security import _warned_insecure_base_urls
 
     _warned_insecure_base_urls.clear()  # warn fresh this run (set is process-global)
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mm_asset_rag.provider_security")
+    caplog.set_level(logging.WARNING, logger="mm_asset_rag.core.provider_security")
     reranker = HttpRerankApiReranker()
     with patch(
         "requests.post", return_value=_fake_response([{"index": 0, "relevance_score": 0.5}])
@@ -950,12 +950,12 @@ def test_http_reranker_loopback_base_not_warned(tmp_home, monkeypatch, caplog):
     monkeypatch.setenv("RERANKER_API_BASE", "http://localhost:8080/v1/rerank")
     monkeypatch.setenv("RERANKER_API_KEY", "sk-test")
     reset_reranker()
-    from mm_asset_rag.provider_security import _warned_insecure_base_urls
+    from mm_asset_rag.core.provider_security import _warned_insecure_base_urls
 
     _warned_insecure_base_urls.clear()
     import logging
 
-    caplog.set_level(logging.WARNING, logger="mm_asset_rag.provider_security")
+    caplog.set_level(logging.WARNING, logger="mm_asset_rag.core.provider_security")
     reranker = HttpRerankApiReranker()
     with patch(
         "requests.post", return_value=_fake_response([{"index": 0, "relevance_score": 0.5}])

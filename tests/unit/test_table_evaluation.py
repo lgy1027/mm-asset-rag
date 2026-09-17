@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 
 from mm_asset_rag.cli import build_parser
-from mm_asset_rag.evaluation_v2 import run_eval_v2, write_eval_report_v2
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.table_evaluation import build_csv_cases
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.eval.evaluation_v2 import run_eval_v2, write_eval_report_v2
+from mm_asset_rag.eval.table_evaluation import build_csv_cases
 
 
 def _hit(*, evidence: str) -> SearchHit:
@@ -146,7 +146,7 @@ def test_cli_make_table_cases_writes_an_eval_cases_file(
 
 def test_cli_v2_writes_table_results_under_their_own_group(tmp_path: Path, monkeypatch) -> None:
     import mm_asset_rag.cli as cli_mod
-    import mm_asset_rag.evaluation_v2 as evaluation_v2
+    import mm_asset_rag.eval.evaluation_v2 as evaluation_v2
 
     result = run_eval_v2(
         cases_path=_write_table_cases(tmp_path / "table.json"),

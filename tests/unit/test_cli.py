@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from mm_asset_rag.cli import _collect_upload_files, build_parser
-from mm_asset_rag.schema import SearchHit
+from mm_asset_rag.core.schema import SearchHit
 
 
 def test_cli_help_lists_all_subcommands(capsys) -> None:
@@ -126,8 +126,8 @@ def test_cli_search_translates_invalid_image_path_to_system_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The CLI renders search validation failures without a Python traceback."""
-    import mm_asset_rag.search_service as search_service_mod
-    from mm_asset_rag.search_service import SearchService
+    import mm_asset_rag.query.search_service as search_service_mod
+    from mm_asset_rag.query.search_service import SearchService
 
     class _Backend:
         pass
@@ -303,7 +303,7 @@ def test_cli_eval_v1_passes_cases_path(monkeypatch: pytest.MonkeyPatch, tmp_path
     import mm_asset_rag.cli as cli_mod
 
     # Drop a case file in the allowed eval_cases/ dir so resolution succeeds.
-    from mm_asset_rag.paths import get_eval_cases_dir
+    from mm_asset_rag.core.paths import get_eval_cases_dir
 
     case_file = get_eval_cases_dir() / "my_cases.json"
     case_file.parent.mkdir(parents=True, exist_ok=True)
@@ -517,7 +517,7 @@ def test_cli_eval_default_uses_bundled_qrels(
     from types import SimpleNamespace
 
     import mm_asset_rag.cli as cli_mod
-    import mm_asset_rag.evaluation as evaluation_mod
+    import mm_asset_rag.eval.evaluation as evaluation_mod
 
     monkeypatch.setattr(cli_mod, "load_env", lambda: None)
     monkeypatch.setattr(
@@ -576,7 +576,7 @@ def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> Non
     # runner has no .env; it is a no-op when no .env exists, but patching
     # keeps the test hermetic.
     monkeypatch.setattr(cli_mod, "load_env", lambda: None)
-    import mm_asset_rag.evaluation_v2 as ev2
+    import mm_asset_rag.eval.evaluation_v2 as ev2
 
     monkeypatch.setattr(ev2, "run_eval_v2", fake_run_eval_v2)
     monkeypatch.setattr(ev2, "write_eval_report_v2", fake_write_v2)
@@ -614,7 +614,7 @@ def test_cli_eval_image_runs_auto_image_qrels(monkeypatch: pytest.MonkeyPatch) -
     from dataclasses import dataclass, field
 
     import mm_asset_rag.cli as cli_mod
-    import mm_asset_rag.evaluation_v2 as ev2
+    import mm_asset_rag.eval.evaluation_v2 as ev2
 
     @dataclass
     class _Result:
@@ -667,7 +667,7 @@ def test_cli_eval_image_disables_optional_retrieval_enhancements(
     from types import SimpleNamespace
 
     import mm_asset_rag.cli as cli_mod
-    import mm_asset_rag.evaluation_v2 as ev2
+    import mm_asset_rag.eval.evaluation_v2 as ev2
 
     settings = SimpleNamespace(query_rewrite_enabled=True, reranker_enabled=True)
     observed: dict[str, bool] = {}
@@ -745,8 +745,8 @@ def test_cli_documents_enforces_acl_and_hides_policy(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     import mm_asset_rag.cli as cli_mod
-    from mm_asset_rag.asset_index import DocumentRecord
-    from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, Source
+    from mm_asset_rag.core.knowledge_models import AccessPolicy, Asset, Document, Source
+    from mm_asset_rag.ingest.asset_index import DocumentRecord
 
     def record(document_id: str, principal: str) -> DocumentRecord:
         document = Document(
@@ -765,7 +765,7 @@ def test_cli_documents_enforces_acl_and_hides_policy(
         )
 
     monkeypatch.setattr(
-        "mm_asset_rag.asset_index.load_records",
+        "mm_asset_rag.ingest.asset_index.load_records",
         lambda: [record("visible", "a"), record("hidden", "b")],
     )
     args = build_parser().parse_args(

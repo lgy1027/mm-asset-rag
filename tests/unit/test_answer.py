@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 
-from mm_asset_rag.answer import (
+from mm_asset_rag.answer.answer import (
     answer_question,
     fallback_answer,
     format_sources,
@@ -12,8 +12,8 @@ from mm_asset_rag.answer import (
     stream_answer_chunks,
     validate_answer_citations,
 )
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.search_service import SearchCommand, SearchMode
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.query.search_service import SearchCommand, SearchMode
 
 
 def _hit(asset_id: str, evidence: str = "some text", *, score: float = 0.9) -> SearchHit:
@@ -85,7 +85,7 @@ def test_answer_question_uses_search_service_when_hits_are_missing() -> None:
 
 def test_answer_question_refuses_low_confidence_without_calling_llm(monkeypatch) -> None:
     monkeypatch.setattr(
-        "mm_asset_rag.answer.llm_answer", Mock(side_effect=AssertionError("LLM called"))
+        "mm_asset_rag.answer.answer.llm_answer", Mock(side_effect=AssertionError("LLM called"))
     )
     result = answer_question("question", hits=[_hit("a", score=0.2)], min_confidence=0.5)
     assert result["sources"] == []
@@ -94,7 +94,7 @@ def test_answer_question_refuses_low_confidence_without_calling_llm(monkeypatch)
 
 def test_answer_question_refuses_conflicting_structured_evidence(monkeypatch) -> None:
     monkeypatch.setattr(
-        "mm_asset_rag.answer.llm_answer", Mock(side_effect=AssertionError("LLM called"))
+        "mm_asset_rag.answer.answer.llm_answer", Mock(side_effect=AssertionError("LLM called"))
     )
     current = _hit("current", evidence="policy status active")
     current.metadata["claims"] = {"policy_status": "active"}
@@ -109,7 +109,7 @@ def test_answer_question_refuses_conflicting_structured_evidence(monkeypatch) ->
 
 def test_stream_answer_records_evidence_refusal(monkeypatch) -> None:
     metrics = Mock()
-    monkeypatch.setattr("mm_asset_rag.answer.runtime_metrics", metrics)
+    monkeypatch.setattr("mm_asset_rag.answer.answer.runtime_metrics", metrics)
 
     assert list(stream_answer_chunks("question", [_hit("a", score=0.2)])) == [
         "证据不足，无法基于当前知识库可靠回答。"
@@ -140,8 +140,10 @@ def test_stream_answer_ignores_empty_choices_keepalive_event(monkeypatch) -> Non
         answer_min_rerank_score = 0.0
         answer_min_lexical_coverage = 0.2
 
-    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _Settings())
-    monkeypatch.setattr("mm_asset_rag.answer._post_chat", lambda *args, **kwargs: _Response())
+    monkeypatch.setattr("mm_asset_rag.answer.answer.get_settings", lambda: _Settings())
+    monkeypatch.setattr(
+        "mm_asset_rag.answer.answer._post_chat", lambda *args, **kwargs: _Response()
+    )
 
     assert list(stream_answer_chunks("text", [_hit("a")])) == ["answer"]
 
@@ -150,10 +152,10 @@ def test_answer_json_returns_valid_json(monkeypatch) -> None:
     import json
     from types import SimpleNamespace
 
-    from mm_asset_rag.answer import answer_json
+    from mm_asset_rag.answer.answer import answer_json
 
     monkeypatch.setattr(
-        "mm_asset_rag.answer.get_search_service",
+        "mm_asset_rag.answer.answer.get_search_service",
         lambda: SimpleNamespace(
             execute=lambda command: [
                 SearchHit(
@@ -178,13 +180,13 @@ def test_warn_insecure_base_url_warns_on_non_loopback_http(caplog) -> None:
     """A plain-HTTP base_url to a non-loopback host warns once."""
     import logging
 
-    from mm_asset_rag.provider_security import (
+    from mm_asset_rag.core.provider_security import (
         _warned_insecure_base_urls,
         warn_insecure_base_url,
     )
 
     _warned_insecure_base_urls.clear()
-    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.provider_security"):
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.core.provider_security"):
         warn_insecure_base_url("http://10.0.0.5/v1")
     assert any("10.0.0.5" in r.message for r in caplog.records)
     assert any("HTTP" in r.message for r in caplog.records)
@@ -194,13 +196,13 @@ def test_warn_insecure_base_url_silent_on_loopback(caplog) -> None:
     """http:// to loopback hosts (local ollama) must not warn."""
     import logging
 
-    from mm_asset_rag.provider_security import (
+    from mm_asset_rag.core.provider_security import (
         _warned_insecure_base_urls,
         warn_insecure_base_url,
     )
 
     _warned_insecure_base_urls.clear()
-    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.provider_security"):
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.core.provider_security"):
         warn_insecure_base_url("http://127.0.0.1:11434/v1")
         warn_insecure_base_url("http://localhost:11434/v1")
         warn_insecure_base_url("http://[::1]:11434/v1")
@@ -211,13 +213,13 @@ def test_warn_insecure_base_url_dedups(caplog) -> None:
     """Same non-loopback http:// base_url warns only once per process."""
     import logging
 
-    from mm_asset_rag.provider_security import (
+    from mm_asset_rag.core.provider_security import (
         _warned_insecure_base_urls,
         warn_insecure_base_url,
     )
 
     _warned_insecure_base_urls.clear()
-    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.provider_security"):
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.core.provider_security"):
         warn_insecure_base_url("http://10.0.0.5/v1")
         warn_insecure_base_url("http://10.0.0.5/v1")
     matching = [r for r in caplog.records if "10.0.0.5" in r.message]
@@ -228,13 +230,13 @@ def test_warn_insecure_base_url_silent_on_https(caplog) -> None:
     """HTTPS base_urls never warn, regardless of host."""
     import logging
 
-    from mm_asset_rag.provider_security import (
+    from mm_asset_rag.core.provider_security import (
         _warned_insecure_base_urls,
         warn_insecure_base_url,
     )
 
     _warned_insecure_base_urls.clear()
-    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.provider_security"):
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.core.provider_security"):
         warn_insecure_base_url("https://10.0.0.5/v1")
     assert not any("HTTP" in r.message for r in caplog.records)
 
@@ -269,6 +271,8 @@ def test_llm_answer_repairs_invalid_citations_once(monkeypatch) -> None:
             return {"choices": [{"message": {"content": self.content}}]}
 
     responses = [_Response("未标注的结论"), _Response("修复后的结论。[1]")]
-    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _Settings())
-    monkeypatch.setattr("mm_asset_rag.answer._post_chat", lambda *args, **kwargs: responses.pop(0))
+    monkeypatch.setattr("mm_asset_rag.answer.answer.get_settings", lambda: _Settings())
+    monkeypatch.setattr(
+        "mm_asset_rag.answer.answer._post_chat", lambda *args, **kwargs: responses.pop(0)
+    )
     assert llm_answer("问题", [_hit("a")])["answer"] == "修复后的结论。[1]"

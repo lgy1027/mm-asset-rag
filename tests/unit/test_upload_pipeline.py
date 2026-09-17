@@ -14,8 +14,8 @@ from typing import Any
 
 import pytest
 
-from mm_asset_rag import auto_meta
-from mm_asset_rag.upload_pipeline import (
+from mm_asset_rag.ingest import auto_meta
+from mm_asset_rag.ingest.upload_pipeline import (
     UploadManifestError,
     UploadPipeline,
     UserEdits,
@@ -60,7 +60,7 @@ def home(tmp_path: Path) -> Path:
 
 @pytest.fixture()
 def pipeline(home: Path, monkeypatch: pytest.MonkeyPatch) -> UploadPipeline:
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
     get_settings.cache_clear()
@@ -350,7 +350,7 @@ def test_confirm_asset_id_pinned_to_filename_not_auto_title(
     # via content-hash dedup — that path returns the *old* id and would
     # mask whether the new-id derivation is filename-based.
     monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     _stub_vlm_image(monkeypatch, {"title": "Auto Title From LLM"})
@@ -363,7 +363,7 @@ def test_confirm_asset_id_pinned_to_filename_not_auto_title(
     preview_id = next(iter(manifest))
     assets = pipeline.confirm(cache_id, [_confirmed_edit(preview_id)])
     a = assets[0]
-    from mm_asset_rag.paths import physical_cache_id
+    from mm_asset_rag.core.paths import physical_cache_id
 
     assert a.asset_id == physical_cache_id(a.relative_path)
     # The LLM title still reaches the human-facing title field.
@@ -497,7 +497,7 @@ def test_cleanup_removes_expired_caches(
     pipeline: UploadPipeline, home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PREVIEW_CACHE_TTL_SECONDS", "60")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
 
@@ -596,7 +596,7 @@ def test_cleanup_skips_unversioned_cache(
     import json as _json
 
     monkeypatch.setenv("PREVIEW_CACHE_TTL_SECONDS", "60")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
 
@@ -621,13 +621,13 @@ def test_preview_returns_sha256_and_existing_document_id(
     home: Path,
     png_file: Path,
 ) -> None:
-    from mm_asset_rag.asset_index import DocumentRecord, upsert_record
-    from mm_asset_rag.knowledge_models import AccessPolicy, Document, Source
-    from mm_asset_rag.knowledge_models import Asset as PersistedAsset
+    from mm_asset_rag.core.knowledge_models import AccessPolicy, Document, Source
+    from mm_asset_rag.core.knowledge_models import Asset as PersistedAsset
+    from mm_asset_rag.ingest.asset_index import DocumentRecord, upsert_record
 
     _stub_vlm_image(monkeypatch, {"title": "X"})
     # Compute the real hash using the same helper.
-    from mm_asset_rag.upload_pipeline import UploadPipeline as _UP
+    from mm_asset_rag.ingest.upload_pipeline import UploadPipeline as _UP
 
     digest = _UP._sha256_file(pipeline, png_file)
     source = Source(source_id="upload:prior")
@@ -656,7 +656,7 @@ def test_cleanup_uses_created_at_not_mtime(
     png_file: Path,
 ) -> None:
     monkeypatch.setenv("PREVIEW_CACHE_TTL_SECONDS", "60")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     pipeline.preview([(png_file.name, png_file)])
@@ -674,7 +674,7 @@ def test_cleanup_disabled_when_ttl_zero(
     pipeline: UploadPipeline, home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PREVIEW_CACHE_TTL_SECONDS", "0")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
 
@@ -707,8 +707,8 @@ def test_fill_auto_meta_respects_concurrency_limit(
     pipeline: UploadPipeline,
     home: Path,
 ) -> None:
-    from mm_asset_rag import auto_meta, upload_pipeline
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
+    from mm_asset_rag.ingest import auto_meta, upload_pipeline
 
     monkeypatch.setenv("AUTO_META_MAX_CONCURRENCY", "2")
     get_settings.cache_clear()
@@ -743,8 +743,8 @@ def test_fill_auto_meta_keeps_order_and_skips_rejected(
     pipeline: UploadPipeline,
     home: Path,
 ) -> None:
-    from mm_asset_rag import auto_meta, upload_pipeline
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
+    from mm_asset_rag.ingest import auto_meta, upload_pipeline
 
     monkeypatch.setenv("AUTO_META_MAX_CONCURRENCY", "4")
     get_settings.cache_clear()
@@ -774,8 +774,8 @@ def test_fill_auto_meta_swallows_single_failure(
     pipeline: UploadPipeline,
     home: Path,
 ) -> None:
-    from mm_asset_rag import upload_pipeline
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
+    from mm_asset_rag.ingest import upload_pipeline
 
     monkeypatch.setenv("AUTO_META_MAX_CONCURRENCY", "2")
     get_settings.cache_clear()
@@ -901,8 +901,8 @@ def test_confirm_persists_current_document_with_explicit_policy(
     png_file: Path,
 ) -> None:
     """Confirm records logical identity and never writes an asset-only row."""
-    from mm_asset_rag.asset_index import load_records
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
+    from mm_asset_rag.ingest.asset_index import load_records
 
     monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
     get_settings.cache_clear()
@@ -945,7 +945,7 @@ def test_confirm_same_document_and_content_reuses_persisted_relative_path(
     home: Path,
     png_file: Path,
 ) -> None:
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
     get_settings.cache_clear()
@@ -1002,9 +1002,9 @@ def test_confirm_persistence_failure_can_retry_without_losing_file(
     home: Path,
     png_file: Path,
 ) -> None:
-    from mm_asset_rag import asset_index
-    from mm_asset_rag.settings import get_settings
-    from mm_asset_rag.upload_pipeline import UploadCommitError
+    from mm_asset_rag.core.settings import get_settings
+    from mm_asset_rag.ingest import asset_index
+    from mm_asset_rag.ingest.upload_pipeline import UploadCommitError
 
     monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
     get_settings.cache_clear()
@@ -1035,9 +1035,9 @@ def test_confirm_rolls_back_files_when_document_persistence_fails(
     home: Path,
     png_file: Path,
 ) -> None:
-    from mm_asset_rag import asset_index
-    from mm_asset_rag.settings import get_settings
-    from mm_asset_rag.upload_pipeline import UploadCommitError
+    from mm_asset_rag.core.settings import get_settings
+    from mm_asset_rag.ingest import asset_index
+    from mm_asset_rag.ingest.upload_pipeline import UploadCommitError
 
     monkeypatch.setenv("MM_ASSET_RAG_HOME", str(home))
     get_settings.cache_clear()

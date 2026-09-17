@@ -1,4 +1,4 @@
-"""Tests for mm_asset_rag.retrieval.
+"""Tests for mm_asset_rag.query.retrieval.
 
 The Qdrant client is replaced with a MagicMock that returns deterministic
 hits so the merge / RRF fusion logic can be exercised offline.
@@ -10,8 +10,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from mm_asset_rag import retrieval
-from mm_asset_rag.schema import SearchHit
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.query import retrieval
 
 RRF_K = retrieval.RRF_K
 
@@ -331,7 +331,7 @@ def test_hybrid_search_uses_settings_weights(monkeypatch, fixed_vector) -> None:
         captured["weights"] = list(weights)
         return real_merge(groups, weights, top_k, **kwargs)
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.merge_hits", _fake_merge)
+    monkeypatch.setattr("mm_asset_rag.query.retrieval.merge_hits", _fake_merge)
 
     # Tighten text-to-image so a different score from the default is observable.
     monkeypatch.setattr(settings, "hybrid_weight_text", 0.70)

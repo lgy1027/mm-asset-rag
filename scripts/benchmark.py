@@ -136,8 +136,8 @@ def phase1_latency(n_runs: int, top_k: int) -> dict:
 def phase2_throughput(batch_size: int = 16) -> dict:
     """Per-channel embedding throughput against the live ``documents.jsonl``."""
     from mm_asset_rag.bm25_zh import build_bm25_zh_index
-
     from mm_asset_rag.document_store import read_documents
+
     from mm_asset_rag.embedders.text_embedder import build_default_text_embedder
 
     docs = read_documents()

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from mm_asset_rag.sniff import _default_title, sniff
+from mm_asset_rag.ingest.sniff import _default_title, sniff
 
 # ─── fixtures ───────────────────────────────────────────────────────────
 

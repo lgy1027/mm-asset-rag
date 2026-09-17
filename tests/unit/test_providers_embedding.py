@@ -11,14 +11,14 @@ from __future__ import annotations
 import pytest
 import responses
 
+from mm_asset_rag.core.settings import Settings
 from mm_asset_rag.embedders.text_embedder import EmbeddingConfigError, TextEmbedder
-from mm_asset_rag.settings import Settings
 
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
     """Each test gets a fresh Settings singleton (no stale .env values)."""
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     yield

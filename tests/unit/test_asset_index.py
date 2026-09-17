@@ -6,8 +6,13 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from mm_asset_rag.asset_index import DocumentRecord, find_document, load_records, upsert_record
-from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Document, Source
+from mm_asset_rag.core.knowledge_models import AccessPolicy, Asset, Document, Source
+from mm_asset_rag.ingest.asset_index import (
+    DocumentRecord,
+    find_document,
+    load_records,
+    upsert_record,
+)
 
 
 def _record(*, content_hash: str = "a" * 64, title: str = "Handbook") -> DocumentRecord:

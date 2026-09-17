@@ -6,9 +6,9 @@ import csv
 from collections.abc import Iterator
 from pathlib import Path
 
-from ..assets import IngestAsset
-from ..schema import ParsedChunk
-from ..settings import get_settings
+from ..core.schema import ParsedChunk
+from ..core.settings import get_settings
+from ..ingest.assets import IngestAsset
 
 
 def parse_table(asset: IngestAsset) -> list[ParsedChunk]:

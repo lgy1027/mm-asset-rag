@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from ..registry import backends as backend_registry
-from ..registry import register_backend
+from ..core.registry import backends as backend_registry
+from ..core.registry import register_backend
 from .qdrant import QdrantBackend
 
 
