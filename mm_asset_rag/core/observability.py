@@ -111,8 +111,20 @@ class SpanContext(Protocol):
 class Tracer(Protocol):
     """Factory for root observations. Implementations must be thread-safe."""
 
-    def start_span(self, name: str, *, attributes: dict[str, object] | None = None) -> SpanContext:
-        """Return a context manager yielding a ``Span``."""
+    def start_span(
+        self,
+        name: str,
+        *,
+        attributes: dict[str, object] | None = None,
+        input: object | None = None,
+    ) -> SpanContext:
+        """Return a context manager yielding a ``Span``.
+
+        ``input`` lands on the observation's Input field, which trace list
+        views render as their Input column; ``attributes`` only appear in
+        the detail metadata panel. Pass the user-facing payload (query,
+        question) as ``input`` so lists are scannable.
+        """
         ...
 
     def start_generation(
@@ -155,7 +167,13 @@ class NoOpTracer:
     """Default tracer: context managers yield a shared do-nothing span."""
 
     @contextmanager
-    def start_span(self, name: str, *, attributes: dict[str, object] | None = None):
+    def start_span(
+        self,
+        name: str,
+        *,
+        attributes: dict[str, object] | None = None,
+        input: object | None = None,
+    ):
         yield _NO_OP_SPAN
 
     @contextmanager

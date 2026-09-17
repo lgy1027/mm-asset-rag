@@ -334,7 +334,8 @@ def answer_question(
 
     with get_tracer().start_span(
         "answer.generate",
-        attributes={"question": question, "top_k": top_k, "hits_provided": hits is not None},
+        attributes={"top_k": top_k, "hits_provided": hits is not None},
+        input=question,
     ) as span:
         result = _answer_question_impl(
             question,

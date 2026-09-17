@@ -250,7 +250,8 @@ def qdrant_text_search(
 
     with get_tracer().start_span(
         "qdrant.text_search",
-        attributes={"query": query, "top_k": top_k},
+        attributes={"top_k": top_k},
+        input=query,
     ) as span:
         hits = _qdrant_text_search_impl(
             query,

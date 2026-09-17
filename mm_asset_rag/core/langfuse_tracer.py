@@ -128,11 +128,17 @@ class LangfuseTracer:
         self._client = client
 
     def start_span(
-        self, name: str, *, attributes: dict[str, object] | None = None
+        self,
+        name: str,
+        *,
+        attributes: dict[str, object] | None = None,
+        input: object | None = None,
     ) -> _TimedContext:
         kwargs: dict[str, Any] = {}
         if attributes:
             kwargs["metadata"] = dict(attributes)
+        if input is not None:
+            kwargs["input"] = input
         return _TimedContext(self._client, "span", name, kwargs)
 
     def start_generation(

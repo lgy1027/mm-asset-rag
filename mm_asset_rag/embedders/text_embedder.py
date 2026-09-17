@@ -74,6 +74,8 @@ class TextEmbedder:
                 "chars": sum(len(t) for t in texts),
                 "batch_size": self.batch_size,
             },
+            # Truncated preview — full texts can be batch-scale at ingest.
+            input={"preview": texts[0][:200], "items": len(texts)},
         ) as span:
             vectors: list[list[float]] = []
             for start in range(0, len(texts), self.batch_size):

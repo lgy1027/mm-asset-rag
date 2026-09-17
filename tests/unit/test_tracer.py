@@ -45,9 +45,11 @@ class RecordingTracer:
         self.flushed = False
 
     @contextmanager
-    def start_span(self, name, *, attributes=None):
+    def start_span(self, name, *, attributes=None, input=None):
         span = RecordingSpan(self.spans, name)
         span.attributes.update(attributes or {})
+        if input is not None:
+            span.attributes["input"] = input
         self.spans.append(span)
         yield span
 
@@ -356,7 +358,7 @@ def test_dispatch_search_emits_span(monkeypatch):
     assert [h.asset_id for h in hits] == ["d1"]
     assert [s.name for s in tracer.spans] == ["search.dispatch"]
     span = tracer.spans[0]
-    assert span.attributes["query"] == "q"
+    assert span.attributes["input"] == "q"
     assert span.attributes["top_k"] == 3
     assert span.terminal["output"]["returned"] == 1
     assert span.terminal["output"]["route"] == "text-to-image"

@@ -177,11 +177,11 @@ class SearchService:
         with get_tracer().start_span(
             "search.dispatch",
             attributes={
-                "query": command.query,
                 "mode": str(command.mode),
                 "top_k": command.top_k,
                 "collection": command.collection or "default",
             },
+            input=command.query,
         ) as span:
             return self._execute(command, span)
 
