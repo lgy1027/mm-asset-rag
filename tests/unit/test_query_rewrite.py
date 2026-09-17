@@ -686,3 +686,39 @@ def test_dispatch_search_rejects_unknown_mode() -> None:
     instead of silently falling through to ``hybrid``."""
     with pytest.raises(ValueError, match="unknown mode"):
         dispatch_search(query="q", mode="typo", image_path=None, top_k=5)
+
+
+# ─── Reasoning-model <think> stripping ────────────────────────────────────
+
+
+def test_strip_think_tags_removes_single_and_multiple_blocks() -> None:
+    """``_strip_think_tags`` feeds the JSON extractor — it must drop every block."""
+    assert (
+        qr._strip_think_tags('<think>reasoning</think>{"variants": ["a"]}') == '{"variants": ["a"]}'
+    )
+    assert qr._strip_think_tags("<think>a</think>x<think>b</think>y") == "xy"
+    assert qr._strip_think_tags("no think here") == "no think here"
+
+
+def test_post_chat_json_strips_think_preamble_before_parsing(monkeypatch) -> None:
+    """A reasoning model that inlines <think> into content must not break JSON parse."""
+
+    class _Resp:
+        @staticmethod
+        def json() -> dict:
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "<think>long reasoning about the query</think>"
+                            '{"variants": ["甲", "乙"]}'
+                        }
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(qr, "post_chat_completion", lambda *args, **kwargs: _Resp())
+
+    parsed = qr._post_chat_json("http://api.example/v1", "key", "model", "prompt", timeout=5)
+
+    assert parsed == {"variants": ["甲", "乙"]}

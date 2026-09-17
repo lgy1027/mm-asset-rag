@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
 
 from mm_asset_rag.answer import (
@@ -116,6 +117,35 @@ def test_stream_answer_records_evidence_refusal(monkeypatch) -> None:
     ]
 
     metrics.record_refusal.assert_called_once_with(reason="weak_lexical_coverage", candidates=1)
+
+
+class _LLMSettings:
+    """Minimal settings stand-in so ``llm_answer`` / streaming skip fallback."""
+
+    llm_creds = ("http://127.0.0.1:8000/v1", "test-key", "test-model")
+    answer_with_images = False
+    llm_timeout = 10.0
+    answer_min_rerank_score = 0.0
+    answer_min_lexical_coverage = 0.2
+
+
+def _sse_response(*contents: str) -> object:
+    """Fake streaming response yielding one SSE ``data:`` line per content."""
+
+    class _Response:
+        encoding = None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int):
+            del chunk_size
+            for content in contents:
+                payload = {"choices": [{"delta": {"content": content}}]}
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n".encode()
+            yield b"data: [DONE]\n"
+
+    return _Response()
 
 
 def test_stream_answer_ignores_empty_choices_keepalive_event(monkeypatch) -> None:
@@ -272,3 +302,78 @@ def test_llm_answer_repairs_invalid_citations_once(monkeypatch) -> None:
     monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _Settings())
     monkeypatch.setattr("mm_asset_rag.answer._post_chat", lambda *args, **kwargs: responses.pop(0))
     assert llm_answer("问题", [_hit("a")])["answer"] == "修复后的结论。[1]"
+
+
+def test_stream_answer_strips_think_block_in_single_chunk(monkeypatch) -> None:
+    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _LLMSettings())
+    monkeypatch.setattr(
+        "mm_asset_rag.answer._post_chat",
+        lambda *args, **kwargs: _sse_response("<think>推理过程</think>最终答案[1]。"),
+    )
+
+    chunks = list(stream_answer_chunks("text", [_hit("a")]))
+    assert "".join(chunks) == "最终答案[1]。"
+    assert all("<think>" not in c and "</think>" not in c for c in chunks)
+
+
+def test_stream_answer_strips_think_block_spanning_chunks(monkeypatch) -> None:
+    """A <think> block split across SSE deltas must not leak partial reasoning."""
+
+    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _LLMSettings())
+    monkeypatch.setattr(
+        "mm_asset_rag.answer._post_chat",
+        lambda *args, **kwargs: _sse_response("<think>推理", "过程</think>答", "案[1]。"),
+    )
+
+    chunks = list(stream_answer_chunks("text", [_hit("a")]))
+    assert "".join(chunks) == "答案[1]。"
+    assert all("<think>" not in c and "</think>" not in c for c in chunks)
+
+
+def test_stream_answer_strips_multiple_think_blocks(monkeypatch) -> None:
+    """Reasoning models may emit several blocks; only post-think text streams."""
+
+    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _LLMSettings())
+    monkeypatch.setattr(
+        "mm_asset_rag.answer._post_chat",
+        lambda *args, **kwargs: _sse_response("<think>a</think>中<think>b</think>后[1]。"),
+    )
+
+    chunks = list(stream_answer_chunks("text", [_hit("a")]))
+    assert "".join(chunks) == "中后[1]。"
+    assert all("<think>" not in c and "</think>" not in c for c in chunks)
+
+
+def test_stream_answer_drops_unterminated_think_block(monkeypatch) -> None:
+    """A never-closed <think> block yields nothing — reasoning stays private."""
+
+    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _LLMSettings())
+    monkeypatch.setattr(
+        "mm_asset_rag.answer._post_chat",
+        lambda *args, **kwargs: _sse_response("<think>只思考未闭合"),
+    )
+
+    assert list(stream_answer_chunks("text", [_hit("a")])) == []
+
+
+def test_llm_answer_strips_think_from_non_streaming_response(monkeypatch) -> None:
+    """The one-shot answer path also drops reasoning before citations validate."""
+
+    class _Response:
+        def raise_for_status(self) -> None:
+            return None
+
+        @staticmethod
+        def json() -> dict:
+            return {
+                "choices": [
+                    {"message": {"content": "<think>推理</think>最终答案[1]。"}},
+                ]
+            }
+
+    monkeypatch.setattr("mm_asset_rag.answer.get_settings", lambda: _LLMSettings())
+    monkeypatch.setattr("mm_asset_rag.answer._post_chat", lambda *args, **kwargs: _Response())
+
+    result = llm_answer("q?", [_hit("a")])
+
+    assert result["answer"] == "最终答案[1]。"

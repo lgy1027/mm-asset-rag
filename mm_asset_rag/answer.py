@@ -407,7 +407,7 @@ def stream_answer_chunks(
 
     # Buffer across chunks so we can strip <think>...</think> that spans boundaries.
     buffer = ""
-    think_done = False
+    in_think = False
     # ollama and other OpenAI-compat servers may not send an explicit charset;
     # requests' decode_unicode=True then falls back to latin-1 and shreds CJK
     # bytes. Force utf-8 by reading raw bytes and decoding ourselves.
@@ -436,15 +436,31 @@ def stream_answer_chunks(
             if not delta:
                 continue
             buffer += delta
-            if not think_done:
-                end = buffer.find("</think>")
-                if end != -1:
+            # Strip <think>...</think> blocks. Reasoning models may emit
+            # more than one block, and a single block can span chunks —
+            # ``in_think`` remembers we are inside an unterminated block
+            # whose tail may arrive in a later delta.
+            while True:
+                if in_think:
+                    end = buffer.find("</think>")
+                    if end == -1:
+                        buffer = ""
+                        break
                     buffer = buffer[end + len("</think>") :]
-                    think_done = True
-                elif "<think>" in buffer:
-                    # Still inside a <think> block; keep buffering until </think>.
+                    in_think = False
                     continue
-                # else: no think tags at all — fall through and yield.
+                start = buffer.find("<think>")
+                if start == -1:
+                    break
+                end = buffer.find("</think>", start)
+                if end != -1:
+                    buffer = buffer[:start] + buffer[end + len("</think>") :]
+                    continue
+                # Opening tag without a close: keep the text before it,
+                # hold the rest until the block closes.
+                buffer = buffer[:start]
+                in_think = True
+                break
             if buffer:
                 yield buffer
                 buffer = ""
