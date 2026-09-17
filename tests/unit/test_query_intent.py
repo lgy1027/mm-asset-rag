@@ -11,8 +11,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from mm_asset_rag import retrieval
-from mm_asset_rag.query_intent import (
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.query import retrieval
+from mm_asset_rag.query.query_intent import (
     DEFAULT_INTENT_WEIGHTS,
     IntentWeights,
     QueryIntent,
@@ -20,7 +21,6 @@ from mm_asset_rag.query_intent import (
     classify_intent,
     weights_for_intent,
 )
-from mm_asset_rag.schema import SearchHit
 
 
 def _make_hit(asset_id: str, route: str, score: float) -> SearchHit:
@@ -131,7 +131,7 @@ def test_parse_intent_weights_rejects_negative(caplog) -> None:
     search."""
     import logging
 
-    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.query_intent"):
+    with caplog.at_level(logging.WARNING, logger="mm_asset_rag.query.query_intent"):
         # CSV shape
         assert _parse_intent_weights_json("-0.5,0.2,0.15") is None
         # JSON shape
@@ -229,7 +229,7 @@ def _stub_qdrant(monkeypatch):
         search_text_to_image=lambda *, query, top_k: [_make_hit("b", "qdrant_text_to_image", 1.0)],
         search_image=lambda *, image_path, top_k: [_make_hit("c", "qdrant_image_to_image", 1.0)],
     )
-    monkeypatch.setattr("mm_asset_rag.registry.get_backend", lambda name: backend)
+    monkeypatch.setattr("mm_asset_rag.core.registry.get_backend", lambda name: backend)
 
 
 def test_hybrid_search_picks_weights_per_intent(monkeypatch, fixed_vector, _stub_qdrant) -> None:
@@ -246,7 +246,7 @@ def test_hybrid_search_picks_weights_per_intent(monkeypatch, fixed_vector, _stub
         captured["weights"] = list(weights)
         return real_merge(groups, weights, top_k, **kwargs)
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.merge_hits", _fake_merge)
+    monkeypatch.setattr("mm_asset_rag.query.retrieval.merge_hits", _fake_merge)
 
     # A descriptive Chinese sentence (CJK-heavy + long) → CHINESE intent.
     # CHINESE weights: 0.70 / 0.20 / 0.15 — all three > 0 so all routes fetched.
@@ -277,7 +277,7 @@ def test_hybrid_search_weights_override_bypasses_classify(
         captured["weights"] = list(weights)
         return real_merge(groups, weights, top_k, **kwargs)
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.merge_hits", _fake_merge)
+    monkeypatch.setattr("mm_asset_rag.query.retrieval.merge_hits", _fake_merge)
 
     # If classify_intent ran, "联宝 ESG" → PRECISE_KEYWORD (0.60/0.20/0.15).
     # The override forces a different triple; that triple should be captured.
@@ -338,7 +338,7 @@ def test_hybrid_search_default_routing_off(monkeypatch, fixed_vector, _stub_qdra
         captured["weights"] = list(weights)
         return real_merge(groups, weights, top_k, **kwargs)
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.merge_hits", _fake_merge)
+    monkeypatch.setattr("mm_asset_rag.query.retrieval.merge_hits", _fake_merge)
 
     from pathlib import Path
 
@@ -361,7 +361,7 @@ def test_hybrid_search_routing_off_with_override(monkeypatch, fixed_vector, _stu
         captured["weights"] = list(weights)
         return real_merge(groups, weights, top_k, **kwargs)
 
-    monkeypatch.setattr("mm_asset_rag.retrieval.merge_hits", _fake_merge)
+    monkeypatch.setattr("mm_asset_rag.query.retrieval.merge_hits", _fake_merge)
 
     # Override with non-default triple; routing is OFF so global weights are
     # irrelevant. No image_path → 2 weights.

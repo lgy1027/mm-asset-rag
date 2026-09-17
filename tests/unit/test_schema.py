@@ -1,10 +1,10 @@
-"""Tests for mm_asset_rag.schema."""
+"""Tests for mm_asset_rag.core.schema."""
 
 from __future__ import annotations
 
 import json
 
-from mm_asset_rag.schema import ParsedChunk, SearchHit
+from mm_asset_rag.core.schema import ParsedChunk, SearchHit
 
 
 def test_parsed_document_to_json_roundtrip() -> None:

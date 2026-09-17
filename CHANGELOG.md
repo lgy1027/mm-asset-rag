@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 ### Changed
+- **包结构按职责重组**:`mm_asset_rag/` 由平铺的顶层模块重组为浅层子包 —— `core/`(契约 + 基础设施:settings, schema, protocols, registry, paths, llm_transport 等)、`ingest/`(上传 → 解析入库)、`query/`(检索)、`answer/`(回答生成)、`eval/`(评测 + eval_data)、`api/`(HTTP 层 + web UI);`service.py`、`cli.py` 留根部,`parsers/`、`embedders/`、`backends/` 不动。破坏性变更:所有 `mm_asset_rag.<module>` 深层 import 路径变更(如 `mm_asset_rag.answer` → `mm_asset_rag.answer.answer`,`mm_asset_rag.evaluation_v2` → `mm_asset_rag.eval.evaluation_v2`),不提供兼容 shim。
 - **Qdrant 升级到 1.19.x**:Docker server `v1.16.3 → v1.19.1`,`qdrant-client` pin 由 `==1.16.2` 放宽为 `>=1.17,<1.20`(锁定 1.19.1)。解锁 per-channel 加权 RRF —— `rrf_weight_dense` / `rrf_weight_bm25` / `rrf_weight_bm25_zh` 设置在此前版本是死代码(client 1.16 无 `Rrf.weights`),现在真正生效;`tests/unit/test_channel_limit.py` 中 3 个 skip 的 RRF 权重测试恢复运行。
 ### Removed
 ### Fixed

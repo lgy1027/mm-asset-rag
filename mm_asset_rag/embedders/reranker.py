@@ -7,9 +7,9 @@ import logging
 import time
 from threading import Lock
 
-from .. import provider_security
-from ..schema import SearchHit
-from ..settings import get_settings
+from ..core import provider_security
+from ..core.schema import SearchHit
+from ..core.settings import get_settings
 
 _LOGGER = logging.getLogger(__name__)
 # HTTP errors that are *transient* (server-side / network) get a short retry

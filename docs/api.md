@@ -369,7 +369,7 @@ Runs the retrieval regression set. Each case reports whether an exact positively
 | `collection` | required | Access-policy collection to evaluate |
 | `principal` | required | Principal used to apply the access policy |
 | `v2` | `false` | Run the v2 (multi-dimensional, Chinese-primary) set instead of v1 |
-| `cases_path` | `null` | Optional path to a case JSON overriding the default (`EVAL_CASES_PATH` → the bundled `mm_asset_rag/eval_data/<version>_cases.json`). Same schema as `mmrag eval --cases`. |
+| `cases_path` | `null` | Optional path to a case JSON overriding the default (`EVAL_CASES_PATH` → the bundled `mm_asset_rag/eval/eval_data/<version>_cases.json`). Same schema as `mmrag eval --cases`. |
 
 ```json
 {

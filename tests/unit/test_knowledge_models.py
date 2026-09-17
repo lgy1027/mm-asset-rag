@@ -2,7 +2,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Chunk, Document, Source
+from mm_asset_rag.core.knowledge_models import AccessPolicy, Asset, Chunk, Document, Source
 
 
 def _document() -> Document:

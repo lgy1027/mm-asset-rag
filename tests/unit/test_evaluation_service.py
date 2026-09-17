@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from mm_asset_rag.evaluation_service import EvaluationCommand, EvaluationService
+from mm_asset_rag.eval.evaluation_service import EvaluationCommand, EvaluationService
 
 
 @dataclass

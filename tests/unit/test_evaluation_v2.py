@@ -9,7 +9,8 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from mm_asset_rag.evaluation_v2 import (
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.eval.evaluation_v2 import (
     V2Result,
     load_cases,
     run_auto_image_eval_v2,
@@ -19,8 +20,7 @@ from mm_asset_rag.evaluation_v2 import (
     run_text_to_text_eval_v2,
     write_eval_report_v2,
 )
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.search_service import SearchCommand, SearchMode
+from mm_asset_rag.query.search_service import SearchCommand, SearchMode
 
 
 def _hit(document_id: str, *, asset_id: str = "physical", title: str = "handbook") -> SearchHit:
@@ -75,10 +75,10 @@ def test_bundled_v2_default_runs_with_qrels_only() -> None:
 def test_api_v2_default_uses_bundled_qrels(monkeypatch) -> None:
     from types import SimpleNamespace
 
-    from mm_asset_rag.api import app
+    from mm_asset_rag.api.api import app
 
     monkeypatch.setattr(
-        "mm_asset_rag.evaluation_v2.get_search_service",
+        "mm_asset_rag.eval.evaluation_v2.get_search_service",
         lambda: SimpleNamespace(execute=lambda _command: []),
     )
 
@@ -166,7 +166,7 @@ def test_text_runner_executes_custom_scenarios_with_case_policy_overrides(tmp_pa
 
 
 def test_run_eval_v2_wraps_text_to_text() -> None:
-    with patch("mm_asset_rag.evaluation_v2.run_text_to_text_eval_v2", return_value=[]) as stub:
+    with patch("mm_asset_rag.eval.evaluation_v2.run_text_to_text_eval_v2", return_value=[]) as stub:
         out = run_eval_v2(
             top_k=7,
             cases_path="cases.json",
@@ -307,7 +307,7 @@ class _FakeV2Result:
 
 
 def test_eval_endpoint_v2_returns_document_qrels_shape() -> None:
-    from mm_asset_rag.api import app
+    from mm_asset_rag.api.api import app
 
     fake = [
         _FakeV2Result(
@@ -323,7 +323,7 @@ def test_eval_endpoint_v2_returns_document_qrels_shape() -> None:
             1,
         )
     ]
-    with patch("mm_asset_rag.evaluation_v2.run_eval_v2", return_value=fake):
+    with patch("mm_asset_rag.eval.evaluation_v2.run_eval_v2", return_value=fake):
         response = TestClient(app, base_url="http://127.0.0.1").post(
             "/eval",
             json={

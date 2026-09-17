@@ -16,15 +16,15 @@ from unittest.mock import patch
 
 import pytest
 
-from mm_asset_rag.contextual import (
+from mm_asset_rag.core.knowledge_models import AccessPolicy, Chunk, Document, Source
+from mm_asset_rag.core.knowledge_models import Asset as PersistedAsset
+from mm_asset_rag.core.llm_transport import LlmRateLimiter
+from mm_asset_rag.core.schema import ParsedChunk
+from mm_asset_rag.ingest.contextual import (
     enrich_docs_with_context,
     generate_chunk_context,
     generate_doc_summary,
 )
-from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, Source
-from mm_asset_rag.knowledge_models import Asset as PersistedAsset
-from mm_asset_rag.llm_transport import LlmRateLimiter
-from mm_asset_rag.schema import ParsedChunk
 
 
 def _doc(text: str, *, chunk_index: int | None = 0, section: str = "") -> ParsedChunk:
@@ -64,7 +64,7 @@ def _stored_chunks(texts: list[str], *, context: str) -> list[Chunk]:
 @pytest.fixture(autouse=True)
 def _disable_chat_pacing(monkeypatch):
     monkeypatch.setattr(
-        "mm_asset_rag.llm_transport.get_llm_rate_limiter", lambda: LlmRateLimiter(0)
+        "mm_asset_rag.core.llm_transport.get_llm_rate_limiter", lambda: LlmRateLimiter(0)
     )
 
 
@@ -85,10 +85,10 @@ def test_generate_doc_summary_builds_prompt_and_strips_think(tmp_home, monkeypat
 
     with (
         patch(
-            "mm_asset_rag.contextual._llm_credentials",
+            "mm_asset_rag.ingest.contextual._llm_credentials",
             return_value=("https://example.com/v1", "sk-test", "test-m3"),
         ),
-        patch("mm_asset_rag.contextual.requests.post", side_effect=fake_post),
+        patch("mm_asset_rag.ingest.contextual.requests.post", side_effect=fake_post),
     ):
         out = generate_doc_summary("正文内容" * 10, asset_title="标题")
 
@@ -104,16 +104,16 @@ def test_generate_chunk_context_degrades_on_failure(tmp_home, monkeypatch):
     # resolver directly because Settings loads credentials from the on-disk .env
     # (the real home .env has live MiniMax creds), which would bypass a pure
     # env-var monkeypatch.
-    with patch("mm_asset_rag.contextual._llm_credentials", return_value=(None, None, None)):
+    with patch("mm_asset_rag.ingest.contextual._llm_credentials", return_value=(None, None, None)):
         assert generate_chunk_context("chunk", "summary") == ""
 
     # Credentials set but request raises → still "".
     with (
         patch(
-            "mm_asset_rag.contextual._llm_credentials",
+            "mm_asset_rag.ingest.contextual._llm_credentials",
             return_value=("https://example.com/v1", "sk-test", "test-m3"),
         ),
-        patch("mm_asset_rag.contextual.requests.post", side_effect=Exception("boom")),
+        patch("mm_asset_rag.ingest.contextual.requests.post", side_effect=Exception("boom")),
     ):
         assert generate_chunk_context("chunk", "summary") == ""
 
@@ -138,10 +138,10 @@ def test_enrich_docs_writes_context_and_caches(tmp_home, monkeypatch):
 
     with (
         patch(
-            "mm_asset_rag.contextual._llm_credentials",
+            "mm_asset_rag.ingest.contextual._llm_credentials",
             return_value=("https://example.com/v1", "sk-test", "test-m3"),
         ),
-        patch("mm_asset_rag.contextual.requests.post", side_effect=fake_post),
+        patch("mm_asset_rag.ingest.contextual.requests.post", side_effect=fake_post),
     ):
         enrich_docs_with_context(docs, asset_title="标题", cache_path=cache_path)
 
@@ -154,10 +154,10 @@ def test_enrich_docs_writes_context_and_caches(tmp_home, monkeypatch):
     docs2 = [_doc("片段一", chunk_index=0), _doc("片段二", chunk_index=1)]
     with (
         patch(
-            "mm_asset_rag.contextual._llm_credentials",
+            "mm_asset_rag.ingest.contextual._llm_credentials",
             return_value=("https://example.com/v1", "sk-test", "test-m3"),
         ),
-        patch("mm_asset_rag.contextual.requests.post", side_effect=fake_post),
+        patch("mm_asset_rag.ingest.contextual.requests.post", side_effect=fake_post),
     ):
         enrich_docs_with_context(docs2, asset_title="标题", cache_path=cache_path)
     assert call_count["n"] == 3  # unchanged
@@ -167,7 +167,7 @@ def test_enrich_docs_writes_context_and_caches(tmp_home, monkeypatch):
 def test_enrich_skips_when_llm_unconfigured(tmp_home, monkeypatch):
     """No credentials → enrich is a no-op; docs keep no context key."""
     docs = [_doc("片段", chunk_index=0)]
-    with patch("mm_asset_rag.contextual._llm_credentials", return_value=(None, None, None)):
+    with patch("mm_asset_rag.ingest.contextual._llm_credentials", return_value=(None, None, None)):
         enrich_docs_with_context(docs, asset_title="t", cache_path=tmp_home / "c.jsonl")
     assert "context" not in docs[0].metadata or not docs[0].metadata["context"]
 
@@ -175,8 +175,8 @@ def test_enrich_skips_when_llm_unconfigured(tmp_home, monkeypatch):
 def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, fixed_vector):
     """The embedding input gets the context prefix; the payload text stays raw."""
     from mm_asset_rag.backends.qdrant.indexing import build_text_index
-    from mm_asset_rag.document_store import write_documents
-    from mm_asset_rag.registry import embedders, register_embedder
+    from mm_asset_rag.core.registry import embedders, register_embedder
+    from mm_asset_rag.ingest.document_store import write_documents
 
     docs = _stored_chunks(["正文内容一", "正文内容二"], context="这是关于DDPM去噪扩散的前缀")
     write_documents(docs)
@@ -239,8 +239,8 @@ def test_build_qdrant_text_index_probe_not_reused_when_doc0_has_context(
     The fix adds a ``not batch[0].metadata.get("context")`` guard so the
     first chunk goes through ``embed_batch`` with its context prefix."""
     from mm_asset_rag.backends.qdrant.indexing import build_text_index
-    from mm_asset_rag.document_store import write_documents
-    from mm_asset_rag.registry import embedders, register_embedder
+    from mm_asset_rag.core.registry import embedders, register_embedder
+    from mm_asset_rag.ingest.document_store import write_documents
 
     # Single doc with a context preamble so offset==0, 0 in to_do, and
     # the reuse path is the one the guard must block.
@@ -295,7 +295,7 @@ def test_enrich_noop_without_credentials_writes_no_cache(tmp_home, monkeypatch) 
     docs = [_doc("片段一", chunk_index=0), _doc("片段二", chunk_index=1)]
     cache_path = tmp_home / "parsed" / "a1" / "context.jsonl"
 
-    with patch("mm_asset_rag.contextual._llm_credentials", return_value=(None, None, None)):
+    with patch("mm_asset_rag.ingest.contextual._llm_credentials", return_value=(None, None, None)):
         enrich_docs_with_context(docs, asset_title="t", cache_path=cache_path)
 
     assert not cache_path.exists()
@@ -311,10 +311,10 @@ def test_enrich_degrades_silently_on_request_failure(tmp_home, monkeypatch) -> N
 
     with (
         patch(
-            "mm_asset_rag.contextual._llm_credentials",
+            "mm_asset_rag.ingest.contextual._llm_credentials",
             return_value=("https://example.com/v1", "sk-test", "test-m3"),
         ),
-        patch("mm_asset_rag.contextual.requests.post", side_effect=Exception("boom")),
+        patch("mm_asset_rag.ingest.contextual.requests.post", side_effect=Exception("boom")),
     ):
         enrich_docs_with_context(docs, asset_title="t", cache_path=cache_path)
 

@@ -11,7 +11,7 @@ import pytest
 from qdrant_client import models
 
 from mm_asset_rag.backends.qdrant import bm25_zh
-from mm_asset_rag.schema import ParsedChunk
+from mm_asset_rag.core.schema import ParsedChunk
 
 # ─── tokenize_zh ─────────────────────────────────────────────────────────
 

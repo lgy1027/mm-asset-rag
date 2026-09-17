@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mm_asset_rag.text_keywords import (
+from mm_asset_rag.query.text_keywords import (
     enrich_chunk_text,
     extract_keywords,
     extract_keywords_zh,
@@ -65,7 +65,7 @@ def test_extract_keywords_unsupported_language() -> None:
 
 
 def test_extract_keywords_en_skips_stopwords() -> None:
-    from mm_asset_rag.text_keywords import extract_keywords_en
+    from mm_asset_rag.query.text_keywords import extract_keywords_en
 
     kws = extract_keywords_en("the cat and the dog", top_k=3)
     assert "the" not in kws
@@ -87,7 +87,7 @@ def test_extract_keywords_dispatch_auto_falls_back_to_english() -> None:
 
 
 def test_strip_markdown_images_removes_relative_ref() -> None:
-    from mm_asset_rag.text_keywords import _strip_markdown_images
+    from mm_asset_rag.query.text_keywords import _strip_markdown_images
 
     out = _strip_markdown_images("![](images/markitdown_abc123.png)")
     assert out.strip() == ""
@@ -96,14 +96,14 @@ def test_strip_markdown_images_removes_relative_ref() -> None:
 
 
 def test_strip_markdown_images_removes_ref_with_alt() -> None:
-    from mm_asset_rag.text_keywords import _strip_markdown_images
+    from mm_asset_rag.query.text_keywords import _strip_markdown_images
 
     out = _strip_markdown_images("![示意图](images/p0_i0.jpeg)")
     assert out.strip() == ""
 
 
 def test_strip_markdown_images_preserves_surrounding_prose() -> None:
-    from mm_asset_rag.text_keywords import _strip_markdown_images
+    from mm_asset_rag.query.text_keywords import _strip_markdown_images
 
     out = _strip_markdown_images("正文如图所示。![](images/p0_i0.png) 这是后续说明。")
     assert "images" not in out
@@ -112,7 +112,7 @@ def test_strip_markdown_images_preserves_surrounding_prose() -> None:
 
 
 def test_strip_markdown_images_noop_on_plain_text() -> None:
-    from mm_asset_rag.text_keywords import _strip_markdown_images
+    from mm_asset_rag.query.text_keywords import _strip_markdown_images
 
     body = "联宝科技 安徽 绿色工厂 智能制造"
     assert _strip_markdown_images(body) == body
@@ -123,7 +123,7 @@ def test_extract_keywords_zh_ignores_image_ref_tokens() -> None:
 
     Pre-fix this returned ``images`` / ``markitdown`` / ``png`` from the
     bigram fallback, which then got injected as a noise "关键词:" footer."""
-    from mm_asset_rag.text_keywords import extract_keywords_zh
+    from mm_asset_rag.query.text_keywords import extract_keywords_zh
 
     kws = extract_keywords_zh("![](images/markitdown_abc123.png)", top_k=5)
     assert kws == []
@@ -131,7 +131,7 @@ def test_extract_keywords_zh_ignores_image_ref_tokens() -> None:
 
 def test_extract_keywords_zh_extracts_prose_not_path_when_mixed() -> None:
     """Prose + an image ref: keywords come from the prose, not the path."""
-    from mm_asset_rag.text_keywords import extract_keywords_zh
+    from mm_asset_rag.query.text_keywords import extract_keywords_zh
 
     text = "联宝科技灯塔工厂智能制造" * 3 + " ![](images/markitdown_abc.png)"
     kws = extract_keywords_zh(text, top_k=6)

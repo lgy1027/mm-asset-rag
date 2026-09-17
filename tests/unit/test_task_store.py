@@ -4,7 +4,7 @@ import sqlite3
 
 import pytest
 
-from mm_asset_rag.task_store import TaskStore
+from mm_asset_rag.ingest.task_store import TaskStore
 
 
 def test_load_initializes_empty_database_schema(tmp_path) -> None:

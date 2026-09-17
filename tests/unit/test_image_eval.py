@@ -1,11 +1,11 @@
-from mm_asset_rag.image_eval import build_tag_cases, build_tag_qrels
-from mm_asset_rag.knowledge_models import (
+from mm_asset_rag.core.knowledge_models import (
     AccessPolicy,
     Asset,
     Chunk,
     Document,
     Source,
 )
+from mm_asset_rag.eval.image_eval import build_tag_cases, build_tag_qrels
 
 
 def test_build_tag_qrels_uses_image_document_ids() -> None:

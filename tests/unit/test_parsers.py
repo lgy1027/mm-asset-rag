@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 import responses
 
-from mm_asset_rag.assets import IngestAsset
+from mm_asset_rag.ingest.assets import IngestAsset
 from mm_asset_rag.parsers.image_parser import parse_image
 from mm_asset_rag.parsers.pdf_parser import parse_pdf
 from mm_asset_rag.parsers.table_parser import parse_table
@@ -320,9 +320,9 @@ def test_parse_pdf_auto_falls_back_to_paddle_on_scan(
     the result looks scanned (near-zero text). The fallback needs the
     PADDLEOCR_VL_API_TOKEN — same token dependency as before, but gated on
     text density rather than always-on."""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
     from mm_asset_rag.parsers.document_ir import DocumentIR
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
     get_settings.cache_clear()
@@ -356,8 +356,8 @@ def test_parse_pdf_auto_stays_on_pymupdf_for_text_pdf(
 ) -> None:
     """A text-rich PDF stays on PyMuPDF even when a PaddleOCR token is
     configured — the old auto behaviour OCR'd every PDF unnecessarily."""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
     get_settings.cache_clear()
@@ -385,8 +385,8 @@ def test_parse_pdf_auto_falls_back_to_local_ppocr_without_token(
 ) -> None:
     """Zero-config default: a scanned PDF with no online token routes to the
     local PP-OCRv6 page-OCR path, never touching the network."""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.delenv("PADDLEOCR_VL_API_TOKEN", raising=False)
     get_settings.cache_clear()
@@ -415,8 +415,8 @@ def test_parse_pdf_auto_uses_online_when_token_configured(
 ) -> None:
     """A deployer who set PADDLEOCR_VL_API_TOKEN keeps using the online API
     for scans — the default ``auto`` routing respects the explicit opt-in."""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
     get_settings.cache_clear()
@@ -442,8 +442,8 @@ def test_parse_pdf_explicit_ppocr_skips_online(
 ) -> None:
     """``--pdf-parser ppocr`` force-routes to local page-OCR even when an
     online token is configured — the explicit override wins."""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
     get_settings.cache_clear()
@@ -499,9 +499,9 @@ def test_build_ir_from_page_ocr_renders_and_builds_blocks(
 def test_submit_paddleocr_vl_job_uses_settings(
     pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
     from mm_asset_rag.parsers.pdf_parser import submit_paddleocr_vl_job
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
     monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example/jobs")
@@ -535,9 +535,9 @@ def test_submit_paddleocr_vl_job_uses_settings(
 def test_submit_paddleocr_vl_job_does_not_log_upstream_error_body(
     pdf_asset: IngestAsset, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
     from mm_asset_rag.parsers.pdf_parser import submit_paddleocr_vl_job
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_API_TOKEN", "token")
     get_settings.cache_clear()
@@ -561,8 +561,8 @@ def test_ocr_image_url_allowed_blocks_ssrf(monkeypatch) -> None:
     A crafted PDF can make the OCR service echo back an internal URL; the
     fetcher must refuse it instead of becoming an SSRF proxy.
     """
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example.com/api/v2/ocr/jobs")
     monkeypatch.delenv("PADDLEOCR_VL_IMAGE_HOSTS", raising=False)
@@ -583,8 +583,8 @@ def test_ocr_image_url_allowed_blocks_ssrf(monkeypatch) -> None:
 
 def test_ocr_image_url_allowed_extra_hosts(monkeypatch) -> None:
     """PADDLEOCR_VL_IMAGE_HOSTS lets a deployer allow an extra CDN host."""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example.com/jobs")
     monkeypatch.setenv("PADDLEOCR_VL_IMAGE_HOSTS", "cdn.example.com, cdn2.example.com")
@@ -597,8 +597,8 @@ def test_ocr_image_url_allowed_extra_hosts(monkeypatch) -> None:
 def test_ocr_image_url_allowed_blocks_ipv6_private(monkeypatch) -> None:
     """IPv6 private/loopback/link-local forms are refused too (the allow-list
     check uses ipaddress which handles IPv6, not just IPv4 dotted quads)."""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.parsers import pdf_parser
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setenv("PADDLEOCR_VL_JOB_URL", "https://ocr.example.com/jobs")
     monkeypatch.delenv("PADDLEOCR_VL_IMAGE_HOSTS", raising=False)

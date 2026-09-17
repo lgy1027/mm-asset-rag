@@ -7,16 +7,16 @@ from pathlib import Path
 from qdrant_client import QdrantClient, models
 from qdrant_client.http.exceptions import UnexpectedResponse
 
+from ...core.protocols import SearchFilter
+from ...core.schema import SearchHit
+from ...core.settings import get_settings
 from ...embedders import (
     CnClipImageUnavailable,
     ImageEmbeddingUnavailable,
     get_default_image_embedder,
     get_default_text_embedder,
 )
-from ...protocols import SearchFilter
-from ...retrieval import RRF_K
-from ...schema import SearchHit
-from ...settings import get_settings
+from ...query.retrieval import RRF_K
 from .client import get_qdrant_client
 from .collections import (
     DENSE_VECTOR_NAME,
@@ -246,7 +246,7 @@ def qdrant_text_search(
     expanded) while the dense channel keeps the original query intact —
     multilingual embeddings are case-aware.
     """
-    from ...query_preprocess import preprocess
+    from ...query.query_preprocess import preprocess
 
     pre = preprocess(query)
     embedder = get_default_text_embedder()

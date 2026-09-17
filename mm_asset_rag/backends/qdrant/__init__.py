@@ -6,7 +6,7 @@ from pathlib import Path
 
 from qdrant_client import models
 
-from ...settings import get_settings
+from ...core.settings import get_settings
 from . import client, collections, indexing, search
 
 

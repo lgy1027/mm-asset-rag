@@ -14,9 +14,9 @@ import pytest
 
 def test_build_default_image_embedder_picks_cn_clip(monkeypatch) -> None:
     """``IMAGE_PROVIDER=cn_clip`` → ``CnClipImageEmbedder`` instance。"""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.embedders import build_default_image_embedder
     from mm_asset_rag.embedders.cn_clip_embedder import CnClipImageEmbedder
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setattr(CnClipImageEmbedder, "is_available", staticmethod(lambda: True))
     monkeypatch.setattr(get_settings(), "image_provider", "cn_clip")
@@ -26,9 +26,9 @@ def test_build_default_image_embedder_picks_cn_clip(monkeypatch) -> None:
 
 
 def test_build_default_image_embedder_picks_image_embedder_by_default(monkeypatch) -> None:
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.embedders import build_default_image_embedder
     from mm_asset_rag.embedders.image_embedder import ImageEmbedder
-    from mm_asset_rag.settings import get_settings
 
     # [clip] 检查注入绕过
     monkeypatch.setattr(ImageEmbedder, "_check_available", staticmethod(lambda: None))
@@ -40,9 +40,9 @@ def test_build_default_image_embedder_picks_image_embedder_by_default(monkeypatc
 
 def test_build_default_image_embedder_missing_cn_clip_deps_raises(monkeypatch) -> None:
     """cn_clip 缺 ``transformers`` 时构造抛 ``CnClipImageUnavailable`` — 不静默吞。"""
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.embedders import build_default_image_embedder
     from mm_asset_rag.embedders.cn_clip_embedder import CnClipImageEmbedder
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setattr(CnClipImageEmbedder, "is_available", staticmethod(lambda: False))
     monkeypatch.setattr(get_settings(), "image_provider", "cn_clip")
@@ -60,10 +60,10 @@ def test_ensure_image_registered_swallows_unavailable(monkeypatch, capsys) -> No
     直接 ``patch.object`` ``build_default_image_embedder`` 让其抛
     ``ImageEmbeddingUnavailable``,绕开 ``_load()`` 触发的实际 model 加载。
     """
+    from mm_asset_rag.core.registry import embedders as _embedders
+    from mm_asset_rag.core.settings import get_settings
     from mm_asset_rag.embedders import _ensure_image_registered
     from mm_asset_rag.embedders.image_embedder import ImageEmbeddingUnavailable
-    from mm_asset_rag.registry import embedders as _embedders
-    from mm_asset_rag.settings import get_settings
 
     monkeypatch.setattr(get_settings(), "image_provider", "clip")
 

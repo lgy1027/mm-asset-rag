@@ -15,8 +15,8 @@ import os
 import threading
 from pathlib import Path
 
-from mm_asset_rag.document_store import documents_jsonl_lock
-from mm_asset_rag.paths import get_documents_jsonl
+from mm_asset_rag.core.paths import get_documents_jsonl
+from mm_asset_rag.ingest.document_store import documents_jsonl_lock
 
 
 def _append_row(path: Path, asset_id: str) -> None:

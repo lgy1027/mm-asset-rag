@@ -53,7 +53,7 @@ class CnClipImageEmbedder:
     modality = "image"
 
     def __init__(self, model_name: str | None = None) -> None:
-        from ..settings import get_settings
+        from ..core.settings import get_settings
 
         s = get_settings()
         self.model_name = model_name or s.clip_model
@@ -94,7 +94,7 @@ class CnClipImageEmbedder:
         优先取 :attr:`Settings.image_embedding_dim`(已配置则跳过 probe,
         省一次模型调用),否则首次调用通过 ``embed_text("probe")`` 探测。
         """
-        from ..settings import get_settings
+        from ..core.settings import get_settings
 
         configured = get_settings().image_embedding_dim
         if configured is not None:

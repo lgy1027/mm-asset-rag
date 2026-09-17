@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from mm_asset_rag import asset_index
-from mm_asset_rag.asset_index import DocumentRecord, load_records, upsert_record
-from mm_asset_rag.document_store import read_documents, write_documents
-from mm_asset_rag.knowledge_models import AccessPolicy, Asset, Chunk, Document, Source
+from mm_asset_rag.core.knowledge_models import AccessPolicy, Asset, Chunk, Document, Source
+from mm_asset_rag.ingest import asset_index
+from mm_asset_rag.ingest.asset_index import DocumentRecord, load_records, upsert_record
+from mm_asset_rag.ingest.document_store import read_documents, write_documents
 from mm_asset_rag.service import IngestService, _remove_document_rows_from_documents_jsonl
 
 

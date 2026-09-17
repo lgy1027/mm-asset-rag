@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mm_asset_rag.metrics import (
+from mm_asset_rag.core.metrics import (
     aggregate_metrics,
     average_precision,
     dcg_at_k,

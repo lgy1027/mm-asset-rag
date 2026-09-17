@@ -62,7 +62,7 @@ A small, self-contained Python package for **multimodal retrieval** over user-up
 - **Parsing**: PyMuPDF (local, default) or PaddleOCR-VL (API, better for scanned PDFs) or docling (local, layout-aware) for PDFs; MarkItDown (default) or docling for Office docs (docx/pptx/xlsx/html); OCR + VLM captioning for images.
 - **Indexing**: Qdrant is the built-in backend (local file or server). Select another registered backend with `VECTOR_BACKEND`; Qdrant text points carry dense + BM25 + BM25-zh vectors, and image points carry CLIP vectors.
 - **Optional generation**: OpenAI-compatible chat completion with strict evidence grounding and NDJSON streaming. When no LLM is configured, `/answer` and `/chat` return an evidence summary instead of failing — retrieval still works.
-- **Web UI**: a bundled single-page HTML (`mm_asset_rag/web/index.html`) served by FastAPI for upload preview, task status, and chat.
+- **Web UI**: a bundled single-page HTML (`mm_asset_rag/api/web/index.html`) served by FastAPI for upload preview, task status, and chat.
 
 VLM-based auto-tagging is also optional; upload still works with sniff-only metadata.
 
@@ -191,7 +191,7 @@ Profiles fill advanced defaults only when that variable is absent, so existing e
 
 ## Evaluation
 
-`mmrag eval` scores grouped query cases against exact logical document IDs and reports document-level Recall, MRR, MAP, and graded NDCG. Each case has a `query_id` and `query`; one top-level `qrels` object maps every query ID to `{document_id: relevance}`. The **default** is a small qrels sample shipped in `mm_asset_rag/eval_data/`. Matching documents must already be ingested under those exact, case-sensitive document IDs; otherwise the cases are reported as misses.
+`mmrag eval` scores grouped query cases against exact logical document IDs and reports document-level Recall, MRR, MAP, and graded NDCG. Each case has a `query_id` and `query`; one top-level `qrels` object maps every query ID to `{document_id: relevance}`. The **default** is a small qrels sample shipped in `mm_asset_rag/eval/eval_data/`. Matching documents must already be ingested under those exact, case-sensitive document IDs; otherwise the cases are reported as misses.
 
 ```json
 {
@@ -230,23 +230,18 @@ The benchmark hits the public `hybrid_search` path — no private helpers — so
 
 ```
 mm-asset-rag/
-├── mm_asset_rag/         # single Python package (flat layout + sub-packages)
-│   ├── api.py            # FastAPI app: thin route layer, delegates to service.py
+├── mm_asset_rag/         # single Python package, organised by responsibility
 │   ├── cli.py            # `mmrag` / `mmrag-api` console scripts
-│   ├── service.py        # IngestService: parse / index / task-history
-│   ├── upload_pipeline.py# preview → confirm upload flow
-│   ├── sniff.py          # file magic + local metadata detection
-│   ├── auto_meta.py      # VLM JSON-mode metadata extraction
-│   ├── settings.py       # pydantic-settings: every env var in one place
-│   ├── protocols.py      # Parser / Embedder / VectorBackend Protocol definitions
-│   ├── registry.py       # Module-level parsers / embedders / backends registries
-│   ├── paths.py          # on-disk layout under $MM_ASSET_RAG_HOME
-│   ├── assets.py         # Asset dataclass
-│   ├── schema.py         # public retrieval schemas
-│   ├── document_store.py # parsed chunk JSONL store
-│   ├── answer.py         # grounded answer generation (streaming + sync)
-│   ├── evaluation.py     # mini regression suite
-│   ├── retrieval.py      # hybrid merge + normalize
+│   ├── service.py        # IngestService facade: parse / index / task-history
+│   ├── core/             # contracts + infra: settings, schema, protocols,
+│   │                     #   registry, paths, llm_transport, observability
+│   ├── ingest/           # upload → parse: upload_pipeline, sniff, auto_meta,
+│   │                     #   document_store, ingest_workflow, task_store
+│   ├── query/            # retrieval: search_service, retrieval, query_rewrite,
+│   │                     #   query_intent, query_preprocess, evidence_policy
+│   ├── answer/           # grounded answer generation + answer evaluation
+│   ├── eval/             # eval harnesses + bundled eval_data/
+│   ├── api/              # FastAPI thin route layer + bundled web UI
 │   ├── parsers/          # PDF/image parser implementations
 │   ├── embedders/        # text/image embedder implementations
 │   └── backends/         # backend adapters (Qdrant built in)

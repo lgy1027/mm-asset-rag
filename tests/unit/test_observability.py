@@ -1,4 +1,4 @@
-from mm_asset_rag.observability import RuntimeMetrics
+from mm_asset_rag.core.observability import RuntimeMetrics
 
 
 def test_runtime_metrics_aggregates_retrieval_and_refusal_events() -> None:
@@ -25,8 +25,8 @@ def test_runtime_metrics_aggregates_retrieval_and_refusal_events() -> None:
 def test_metrics_endpoint_returns_runtime_snapshot(monkeypatch) -> None:
     from fastapi.testclient import TestClient
 
-    import mm_asset_rag.api as api_mod
-    from mm_asset_rag.api import app
+    import mm_asset_rag.api.api as api_mod
+    from mm_asset_rag.api.api import app
 
     metrics = RuntimeMetrics()
     metrics.record_refusal(reason="no_candidates", candidates=0)

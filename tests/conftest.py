@@ -50,7 +50,7 @@ def _isolate_env_file(monkeypatch):
     / ``PDF_EXTRACT_IMAGES`` / ``CONTEXTUAL_ENABLED``) and turns tests that
     assert those defaults red:
 
-    1. :func:`mm_asset_rag.config.load_env` calls ``python-dotenv``'s
+    1. :func:`mm_asset_rag.core.config.load_env` calls ``python-dotenv``'s
        ``load_dotenv()``, which *populates* ``os.environ`` from ``.env``.
        ``get_service()`` calls ``load_env()`` on first use, so any test
        that touches the ingest service leaks the ``.env`` values into the
@@ -65,8 +65,8 @@ def _isolate_env_file(monkeypatch):
     ``.env``-tainted settings). Tests that genuinely want a setting
     override set the env var explicitly via ``monkeypatch.setenv``.
     """
-    from mm_asset_rag import config
-    from mm_asset_rag.settings import Settings, get_settings
+    from mm_asset_rag.core import config
+    from mm_asset_rag.core.settings import Settings, get_settings
 
     # Patch the underlying load_dotenv on the config module so every
     # ``load_env()`` caller — including ``service.get_service()`` which
@@ -99,7 +99,7 @@ def _clear_settings_cache():
     the cache around each test means the next ``get_settings()`` call
     rebuilds from the current env, including monkeypatch overrides.
     """
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     yield

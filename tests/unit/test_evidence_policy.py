@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from mm_asset_rag.evidence_policy import assess_answer_evidence
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.settings import Settings
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.core.settings import Settings
+from mm_asset_rag.query.evidence_policy import assess_answer_evidence
 
 
 def _hit(*, evidence: str, score: float = 1.0, metadata: dict | None = None) -> SearchHit:

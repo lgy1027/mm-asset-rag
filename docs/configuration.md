@@ -1,6 +1,6 @@
 # Configuration
 
-`mm-asset-rag` reads configuration from environment variables through `mm_asset_rag.settings.Settings`. A `.env` file in the current working directory is loaded automatically.
+`mm-asset-rag` reads configuration from environment variables through `mm_asset_rag.core.settings.Settings`. A `.env` file in the current working directory is loaded automatically.
 
 ## Runtime layout
 
@@ -181,7 +181,7 @@ Changing `MAX_CHUNKS_PER_PDF` requires `mmrag reindex` to rebuild existing colle
 
 ## Per-intent RRF weights
 
-`hybrid_search` picks its three-route RRF weight triple based on a fast local classifier on the query (`mm_asset_rag.query_intent.classify_intent`). The four intents — `PRECISE_KEYWORD` / `DESCRIPTIVE` / `ENTITY_LOOKUP` / `CHINESE` — map to weight triples tuned for each query shape:
+`hybrid_search` picks its three-route RRF weight triple based on a fast local classifier on the query (`mm_asset_rag.query.query_intent.classify_intent`). The four intents — `PRECISE_KEYWORD` / `DESCRIPTIVE` / `ENTITY_LOOKUP` / `CHINESE` — map to weight triples tuned for each query shape:
 
 | Intent | Default (text / t2i / i2i) | When |
 | --- | --- | --- |
@@ -207,7 +207,7 @@ Layers on top of `QUERY_LOWERCASE` / `QUERY_FUZZY` / `QUERY_EXPANSION` flags (wh
 | `QUERY_REWRITE_TIMEOUT` | `30` | Per-call LLM timeout (seconds). Tighter than `LLM_TIMEOUT=120` because failure → original-query fallback |
 | `QUERY_REWRITE_CONCURRENCY` | `4` | Max parallel `hybrid_search` invocations during multi-query fusion (Qdrant-blocking; thread pool). Lower on Qdrant 429s, raise with headroom |
 
-Failure modes are silent fallbacks, not errors: missing creds → `[query]` (single-query search); LLM timeout / HTTP 5xx → `[query]`; bad JSON → `[query]`. Every search request goes through, just without the rewrite lift. See `mm_asset_rag/query_rewrite.py` for the rewrite prompt + JSON-tolerance strategy.
+Failure modes are silent fallbacks, not errors: missing creds → `[query]` (single-query search); LLM timeout / HTTP 5xx → `[query]`; bad JSON → `[query]`. Every search request goes through, just without the rewrite lift. See `mm_asset_rag/query/query_rewrite.py` for the rewrite prompt + JSON-tolerance strategy.
 
 ## Chunk keyword enrichment
 
@@ -341,7 +341,7 @@ RERANKER_API_KEY=sk-xxx           # DASHSCOPE_API_KEY value
 | --- | --- | --- |
 | `EVAL_CASES_PATH` | unset | Path to a case JSON overriding the bundled default |
 
-The default (unset) loads the small qrels sample shipped with the package (`mm_asset_rag/eval_data/<version>_cases.json`) — a **text→text-only** template over well-known arxiv papers. It runs once those papers are ingested with the exact document IDs named by the qrels. The CLI `--cases` flag overrides `EVAL_CASES_PATH` for one run; `--cases` and `POST /eval {cases_path}` take the same path.
+The default (unset) loads the small qrels sample shipped with the package (`mm_asset_rag/eval/eval_data/<version>_cases.json`) — a **text→text-only** template over well-known arxiv papers. It runs once those papers are ingested with the exact document IDs named by the qrels. The CLI `--cases` flag overrides `EVAL_CASES_PATH` for one run; `--cases` and `POST /eval {cases_path}` take the same path.
 
 The file's `version` field is checked (`v1` vs `v2`): loading a v2 file under `mmrag eval` (or vice versa) raises an error instead of silently scoring 0 cases.
 

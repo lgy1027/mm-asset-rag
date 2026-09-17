@@ -15,15 +15,15 @@ from pathlib import Path
 from fastembed import SparseTextEmbedding
 from qdrant_client import models
 
-from ...document_store import read_documents
+from ...core.paths import get_assets_dir, get_indexes_dir, physical_cache_id
+from ...core.settings import get_settings
 from ...embedders import (
     CnClipImageUnavailable,
     ImageEmbeddingUnavailable,
     get_default_image_embedder,
     get_default_text_embedder,
 )
-from ...paths import get_assets_dir, get_indexes_dir, physical_cache_id
-from ...settings import get_settings
+from ...ingest.document_store import read_documents
 from .client import get_qdrant_client
 from .collections import (
     DENSE_VECTOR_NAME,

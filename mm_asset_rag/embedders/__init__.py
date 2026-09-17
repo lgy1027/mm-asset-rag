@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from threading import Lock
 
-from ..registry import get_embedder, register_embedder
+from ..core.registry import get_embedder, register_embedder
 from .cn_clip_embedder import CnClipImageEmbedder, CnClipImageUnavailable
 from .image_embedder import ImageEmbedder, ImageEmbeddingUnavailable
 from .reranker import Reranker, get_default_reranker, reset_reranker
@@ -47,7 +47,7 @@ _REGISTER_LOCK = Lock()
 
 
 def _ensure_text_registered() -> None:
-    from ..registry import embedders as _embedders
+    from ..core.registry import embedders as _embedders
 
     with _REGISTER_LOCK:
         if _DEFAULT_TEXT_KEY in _embedders:
@@ -75,7 +75,7 @@ def _ensure_text_registered() -> None:
 
 
 def _ensure_image_registered() -> None:
-    from ..registry import embedders as _embedders
+    from ..core.registry import embedders as _embedders
 
     with _REGISTER_LOCK:
         if _DEFAULT_IMAGE_KEY in _embedders:
@@ -92,7 +92,7 @@ def _ensure_image_registered() -> None:
 
 def build_default_image_embedder():
     """Build the configured CLIP image embedder."""
-    from ..settings import get_settings
+    from ..core.settings import get_settings
 
     s = get_settings()
     if s.image_provider == "cn_clip":

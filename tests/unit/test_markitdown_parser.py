@@ -22,7 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mm_asset_rag.assets import IngestAsset
+from mm_asset_rag.ingest.assets import IngestAsset
 from mm_asset_rag.parsers.markitdown_parser import build_ir_markitdown
 
 # A 1x1 transparent PNG used as the data-URL payload in several tests so

@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from mm_asset_rag.evaluation import (
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.eval.evaluation import (
     EvalResult,
     aggregate_retrieval_scenarios,
     load_cases,
@@ -15,8 +16,7 @@ from mm_asset_rag.evaluation import (
     run_eval,
     write_eval_report,
 )
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.search_service import SearchCommand, SearchMode
+from mm_asset_rag.query.search_service import SearchCommand, SearchMode
 
 
 def _write_cases(path: Path, *, qrels: dict[str, dict[str, int]]) -> Path:
@@ -125,10 +125,10 @@ def test_api_v1_default_uses_bundled_qrels(monkeypatch: pytest.MonkeyPatch) -> N
 
     from fastapi.testclient import TestClient
 
-    from mm_asset_rag.api import app
+    from mm_asset_rag.api.api import app
 
     monkeypatch.setattr(
-        "mm_asset_rag.evaluation.get_search_service",
+        "mm_asset_rag.eval.evaluation.get_search_service",
         lambda: SimpleNamespace(execute=lambda _command: []),
     )
 

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import requests
 
-from mm_asset_rag.llm_transport import LlmRateLimiter
-from mm_asset_rag.openai_compatible import OpenAICompatibleConnection
+from mm_asset_rag.core.llm_transport import LlmRateLimiter
+from mm_asset_rag.core.openai_compatible import OpenAICompatibleConnection
 
 
 class _Response:
@@ -25,7 +25,7 @@ class _Response:
 
 
 def test_chat_adapter_sends_chat_completion_to_its_capability_endpoint() -> None:
-    from mm_asset_rag.openai_adapters import OpenAIChatAdapter
+    from mm_asset_rag.core.openai_adapters import OpenAIChatAdapter
 
     calls: list[tuple[str, dict]] = []
 
@@ -68,7 +68,7 @@ def test_chat_adapter_sends_chat_completion_to_its_capability_endpoint() -> None
 
 
 def test_embedding_adapter_sends_inputs_to_embeddings_endpoint_in_response_order() -> None:
-    from mm_asset_rag.openai_adapters import OpenAIEmbeddingAdapter
+    from mm_asset_rag.core.openai_adapters import OpenAIEmbeddingAdapter
 
     calls: list[tuple[str, dict]] = []
 

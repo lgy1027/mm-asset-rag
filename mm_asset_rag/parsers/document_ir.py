@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..assets import IngestAsset
+    from ..ingest.assets import IngestAsset
 
 
 # BBox in page space as (x0, y0, x1, y1). None when the adapter has no
@@ -225,8 +225,8 @@ def ir_to_documents(ir: DocumentIR) -> list:
     """
     # Local imports to keep document_ir.py free of parser-internal deps
     # at import time (chunk_splitter pulls in transformers lazily).
-    from ..schema import ParsedChunk
-    from ..settings import get_settings
+    from ..core.schema import ParsedChunk
+    from ..core.settings import get_settings
     from .chunk_splitter import _make_token_counter, recursive_split, split_with_recursion
     from .pdf_images import (
         PageImage,
@@ -402,8 +402,8 @@ def _maybe_enrich_with_keywords(text: str) -> str:
     The chunk's own ``text`` keeps the ref so image↔chunk association (which
     reads the body) is unaffected. Corpus- and parser-agnostic.
     """
-    from ..settings import get_settings
-    from ..text_keywords import _strip_markdown_images, enrich_chunk_text, extract_keywords
+    from ..core.settings import get_settings
+    from ..query.text_keywords import _strip_markdown_images, enrich_chunk_text, extract_keywords
 
     s = get_settings()
     if not s.enrich_chunk_with_keywords:

@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from mm_asset_rag.evaluation_v2 import run_text_to_text_eval_v2, write_eval_report_v2
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.search_service import SearchCommand
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.eval.evaluation_v2 import run_text_to_text_eval_v2, write_eval_report_v2
+from mm_asset_rag.query.search_service import SearchCommand
 
 
 def _hit(document_id: str) -> SearchHit:

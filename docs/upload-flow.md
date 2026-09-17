@@ -37,7 +37,7 @@ VLM metadata is useful but not authoritative. The preview card lets users correc
 
 ## Local sniffing
 
-`mm_asset_rag/sniff.py` is pure local inspection:
+`mm_asset_rag/ingest/sniff.py` is pure local inspection:
 
 - never calls a network service;
 - trusts file magic bytes over filename extension;
@@ -62,7 +62,7 @@ Supported types:
 
 ## VLM auto-metadata
 
-`mm_asset_rag/auto_meta.py` calls an OpenAI-compatible VLM endpoint using JSON mode. It reuses the VLM settings:
+`mm_asset_rag/ingest/auto_meta.py` calls an OpenAI-compatible VLM endpoint using JSON mode. It reuses the VLM settings:
 
 - `VLM_BASE_URL` / shared `MODEL_BASE_URL`
 - `VLM_API_KEY` / shared `MODEL_API_KEY`

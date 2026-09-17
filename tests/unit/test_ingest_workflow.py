@@ -7,18 +7,18 @@ from pathlib import Path
 
 import pytest
 
-from mm_asset_rag.asset_index import DocumentRecord, upsert_record
-from mm_asset_rag.assets import IngestAsset
-from mm_asset_rag.document_store import read_documents
-from mm_asset_rag.ingest_workflow import IngestWorkflow
-from mm_asset_rag.knowledge_models import (
+from mm_asset_rag.core.knowledge_models import (
     AccessPolicy,
     Document,
     Source,
 )
-from mm_asset_rag.knowledge_models import (
+from mm_asset_rag.core.knowledge_models import (
     Asset as PersistedAsset,
 )
+from mm_asset_rag.ingest.asset_index import DocumentRecord, upsert_record
+from mm_asset_rag.ingest.assets import IngestAsset
+from mm_asset_rag.ingest.document_store import read_documents
+from mm_asset_rag.ingest.ingest_workflow import IngestWorkflow
 from mm_asset_rag.service import IngestService, ParseOptions, TaskRecord
 
 
@@ -39,7 +39,7 @@ def test_parse_rejects_asset_without_persisted_document(tmp_home: Path) -> None:
 
 
 def test_parse_converts_transient_parser_output_to_v2_chunk(tmp_home: Path, monkeypatch) -> None:
-    from mm_asset_rag import contextual
+    from mm_asset_rag.ingest import contextual
     from mm_asset_rag.parsers import image_parser
 
     image_path = tmp_home / "assets" / "images" / "scene.png"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 import requests
 
-from mm_asset_rag.llm_transport import LlmRateLimiter, LlmTransportError, post_chat_completion
+from mm_asset_rag.core.llm_transport import LlmRateLimiter, LlmTransportError, post_chat_completion
 
 
 class _Response:

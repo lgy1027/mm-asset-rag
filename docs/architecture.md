@@ -91,10 +91,10 @@ Every environment variable the codebase reads is declared in
 `get_settings()` returns an `lru_cache`-wrapped singleton. New code
 should call `get_settings().foo` rather than `os.environ.get("FOO")`.
 
-## Why a flat package + sub-packages
+## Why a flat package of sub-packages
 
-`mm_asset_rag/` itself is flat (top-level modules), but three
-sub-packages hold families of implementations:
+`mm_asset_rag/` is organised into shallow, responsibility-based
+sub-packages. Three of them hold families of pluggable implementations:
 
 - `parsers/` — implementations of the `Parser` Protocol.
 - `embedders/` — implementations of the `Embedder` Protocol.

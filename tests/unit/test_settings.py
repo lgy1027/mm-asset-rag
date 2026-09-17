@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from mm_asset_rag.settings import Settings, get_settings
+from mm_asset_rag.core.settings import Settings, get_settings
 
 
 @pytest.fixture(autouse=True)

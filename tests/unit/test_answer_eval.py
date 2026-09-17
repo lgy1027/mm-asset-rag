@@ -27,8 +27,8 @@ from unittest.mock import Mock
 import pytest
 import requests
 
-from mm_asset_rag import answer_evaluation as ae
-from mm_asset_rag.answer_evaluation import (
+from mm_asset_rag.answer import answer_evaluation as ae
+from mm_asset_rag.answer.answer_evaluation import (
     AnswerEvalResult,
     _citation_metrics,
     _coverage,
@@ -38,8 +38,8 @@ from mm_asset_rag.answer_evaluation import (
     run_answer_eval,
     write_answer_eval_report,
 )
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.search_service import SearchCommand, SearchMode
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.query.search_service import SearchCommand, SearchMode
 
 # ─── Mocks ────────────────────────────────────────────────────────────────
 
@@ -172,11 +172,15 @@ def test_offline_no_llm_runs_gracefully(tmp_home, monkeypatch) -> None:
     Uses the bundled default ``answer_v1_cases.json`` (4 EN + 4 ZH cases).
     """
     cases_path = (
-        Path(__file__).resolve().parents[2] / "mm_asset_rag" / "eval_data" / "answer_v1_cases.json"
+        Path(__file__).resolve().parents[2]
+        / "mm_asset_rag"
+        / "eval"
+        / "eval_data"
+        / "answer_v1_cases.json"
     )
     # Force llm_creds -> (None, None, None) so fallback_answer path triggers.
     monkeypatch.setattr(
-        "mm_asset_rag.answer_evaluation.get_settings",
+        "mm_asset_rag.answer.answer_evaluation.get_settings",
         lambda: _FakeSettings(llm_creds=(None, None, None)),
     )
 
@@ -205,7 +209,7 @@ def test_answer_eval_defaults_to_search_service(monkeypatch: pytest.MonkeyPatch)
     backend.execute.return_value = HITS
     monkeypatch.setattr(ae, "get_search_service", lambda: backend, raising=False)
     monkeypatch.setattr(
-        "mm_asset_rag.retrieval.hybrid_search",
+        "mm_asset_rag.query.retrieval.hybrid_search",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("legacy retrieval ran")),
     )
 
@@ -347,7 +351,7 @@ def test_citation_uses_normalised_ids() -> None:
 def test_faithfulness_skipped_when_no_llm(monkeypatch) -> None:
     """``llm_creds`` empty -> judge raises ``_JudgeUnavailable`` -> row records skip."""
     monkeypatch.setattr(
-        "mm_asset_rag.answer_evaluation.get_settings",
+        "mm_asset_rag.answer.answer_evaluation.get_settings",
         lambda: _FakeSettings(llm_creds=(None, None, None)),
     )
     score, skipped, err = _judge_one("q", HITS, "a", ae.faithfulness_judge, 0, None)
@@ -421,7 +425,11 @@ def test_full_pipeline_with_mocked_full_stack(tmp_home) -> None:
     """search + answer + judge all stubbed -> all scorers populated,
     ``answer_source="llm"``."""
     cases_path = (
-        Path(__file__).resolve().parents[2] / "mm_asset_rag" / "eval_data" / "answer_v1_cases.json"
+        Path(__file__).resolve().parents[2]
+        / "mm_asset_rag"
+        / "eval"
+        / "eval_data"
+        / "answer_v1_cases.json"
     )
 
     def _answer_with_citation(query: str, hits: list[SearchHit]) -> dict:
@@ -454,10 +462,16 @@ def test_back_compat_v1_v2_cases_load_without_new_fields(tmp_home, monkeypatch) 
     """Cases from ``v1_cases.json`` (no ``expected_answer_keywords`` /
     ``expected_answer_assets``) still load - coverage defaults to 0.0,
     citation falls back to ``expected_asset_ids``."""
-    v1_path = Path(__file__).resolve().parents[2] / "mm_asset_rag" / "eval_data" / "v1_cases.json"
+    v1_path = (
+        Path(__file__).resolve().parents[2]
+        / "mm_asset_rag"
+        / "eval"
+        / "eval_data"
+        / "v1_cases.json"
+    )
 
     monkeypatch.setattr(
-        "mm_asset_rag.answer_evaluation.get_settings",
+        "mm_asset_rag.answer.answer_evaluation.get_settings",
         lambda: _FakeSettings(llm_creds=(None, None, None)),
     )
 
@@ -511,7 +525,11 @@ def test_report_writes_to_eval_report_answer_json(tmp_home) -> None:
     """Report lands at ``$MM_ASSET_RAG_HOME/eval_report_answer.json`` with the
     shared evaluation report envelope."""
     cases_path = (
-        Path(__file__).resolve().parents[2] / "mm_asset_rag" / "eval_data" / "answer_v1_cases.json"
+        Path(__file__).resolve().parents[2]
+        / "mm_asset_rag"
+        / "eval"
+        / "eval_data"
+        / "answer_v1_cases.json"
     )
     results = run_answer_eval(
         cases_path=str(cases_path),
@@ -547,16 +565,16 @@ def test_cli_eval_answer_quality_flag(tmp_home, monkeypatch, capsys) -> None:
     from mm_asset_rag.cli import command_eval
 
     monkeypatch.setattr(
-        "mm_asset_rag.answer_evaluation.get_search_service",
+        "mm_asset_rag.answer.answer_evaluation.get_search_service",
         lambda: type("StubSearchService", (), {"execute": staticmethod(_stub_search_fn)})(),
     )
     monkeypatch.setattr(
-        "mm_asset_rag.answer.llm_answer",
+        "mm_asset_rag.answer.answer.llm_answer",
         _stub_fallback_answer_fn,
         raising=False,
     )
     monkeypatch.setattr(
-        "mm_asset_rag.answer_evaluation.get_settings",
+        "mm_asset_rag.answer.answer_evaluation.get_settings",
         lambda: _FakeSettings(llm_creds=(None, None, None)),
     )
 
@@ -579,7 +597,7 @@ def test_api_eval_request_rejects_v2_and_answer_quality_together() -> None:
     """Pydantic mutex validator raises ``ValidationError`` for v2 ∧ answer_quality."""
     from pydantic import ValidationError
 
-    from mm_asset_rag.api import EvalRequest
+    from mm_asset_rag.api.api import EvalRequest
 
     with pytest.raises(ValidationError):
         EvalRequest(

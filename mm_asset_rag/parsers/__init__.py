@@ -6,7 +6,7 @@ modality also needs routing and active-backend support.
 
 from __future__ import annotations
 
-from ..registry import register_parser
+from ..core.registry import register_parser
 from .image_parser import parse_image
 from .pdf_parser import (
     parse_pdf,

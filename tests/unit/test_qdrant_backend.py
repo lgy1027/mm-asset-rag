@@ -24,9 +24,9 @@ from mm_asset_rag.backends.qdrant.indexing import (
     _tokenize_for_bm25,
 )
 from mm_asset_rag.backends.qdrant.search import _filter_by_relevance, _is_collection_missing
-from mm_asset_rag.protocols import IndexBackend, SearchBackend, SearchFilter
-from mm_asset_rag.registry import get_backend
-from mm_asset_rag.schema import ParsedChunk
+from mm_asset_rag.core.protocols import IndexBackend, SearchBackend, SearchFilter
+from mm_asset_rag.core.registry import get_backend
+from mm_asset_rag.core.schema import ParsedChunk
 
 
 def _doc(text: str, asset_id: str, title: str | None = None) -> ParsedChunk:
@@ -80,7 +80,7 @@ def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
     monkeypatch, fake_qdrant_client
 ) -> None:
     """Index rows must not leak parser-era asset IDs into Qdrant payloads."""
-    from mm_asset_rag.knowledge_models import (
+    from mm_asset_rag.core.knowledge_models import (
         AccessPolicy,
         Asset,
         Chunk,
@@ -147,7 +147,7 @@ def test_text_index_payload_is_v2_allowlist_and_creates_native_policy_indexes(
     assert payload["document_id"] == "report"
     assert "version_id" not in payload
     assert payload["chunk_id"] == chunk.chunk_id
-    from mm_asset_rag.paths import physical_cache_id
+    from mm_asset_rag.core.paths import physical_cache_id
 
     assert payload["cache_id"] == physical_cache_id("pdfs/report.pdf")
     assert payload["metadata"] == {"department": "search"}
@@ -185,7 +185,7 @@ def test_qdrant_hit_keeps_physical_cache_id_for_answer_images() -> None:
 def test_qdrant_payload_cache_id_distinguishes_same_stem_paths() -> None:
     from dataclasses import replace
 
-    from mm_asset_rag.knowledge_models import (
+    from mm_asset_rag.core.knowledge_models import (
         AccessPolicy,
         Asset,
         Chunk,
@@ -661,7 +661,7 @@ def test_embedder_sparse_capability_probe_returns_none_is_false(monkeypatch) -> 
 
 def test_embedder_sparse_capability_force_false(monkeypatch) -> None:
     monkeypatch.setenv("EMBEDDING_SPARSE_ENABLED", "false")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     assert _embedder_sparse_capability(_BgeM3StubEmbedder()) is False
@@ -669,7 +669,7 @@ def test_embedder_sparse_capability_force_false(monkeypatch) -> None:
 
 def test_embedder_colbert_capability_force_false(monkeypatch) -> None:
     monkeypatch.setenv("EMBEDDING_COLBERT_ENABLED", "false")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     assert _embedder_colbert_capability(_BgeM3StubEmbedder()) is False
@@ -678,7 +678,7 @@ def test_embedder_colbert_capability_force_false(monkeypatch) -> None:
 def test_embedder_sparse_capability_force_true_on_unsupported_is_false(monkeypatch) -> None:
     """Force-true on an embedder without the method is still False."""
     monkeypatch.setenv("EMBEDDING_SPARSE_ENABLED", "true")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     assert _embedder_sparse_capability(_NoSparseEmbedder()) is False
@@ -921,7 +921,7 @@ def test_get_qdrant_client_closes_local_client_when_switching_to_remote(
 
     # Configure remote mode.
     monkeypatch.setenv("QDRANT_URL", "http://example:6333")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
 
@@ -964,7 +964,7 @@ def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> N
     )
     qdrant_client.reset_qdrant_client_cache()
     monkeypatch.setenv("QDRANT_URL", "http://example:6333")
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
 

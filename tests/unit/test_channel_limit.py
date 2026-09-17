@@ -14,8 +14,8 @@ import pytest
 from qdrant_client import models
 
 from mm_asset_rag.backends.qdrant import search as qdrant_search
-from mm_asset_rag.retrieval import RRF_K
-from mm_asset_rag.settings import Settings
+from mm_asset_rag.core.settings import Settings
+from mm_asset_rag.query.retrieval import RRF_K
 
 # Weighted RRF (``Rrf(weights=[...])``) was added in qdrant-client 1.17.
 # We pin to 1.16.2 for wire-format compatibility with Qdrant server
@@ -40,7 +40,7 @@ class _StubClient:
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache():
-    from mm_asset_rag.settings import get_settings
+    from mm_asset_rag.core.settings import get_settings
 
     get_settings.cache_clear()
     yield

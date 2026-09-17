@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from mm_asset_rag import search_service
-from mm_asset_rag.protocols import SearchFilter
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.search_service import (
+from mm_asset_rag.core.protocols import SearchFilter
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.query import search_service
+from mm_asset_rag.query.search_service import (
     SearchCommand,
     SearchInputError,
     SearchMode,
@@ -19,7 +19,7 @@ from mm_asset_rag.search_service import (
 
 
 def test_search_service_has_no_concrete_qdrant_dependency() -> None:
-    source = Path("mm_asset_rag/search_service.py").read_text(encoding="utf-8")
+    source = Path("mm_asset_rag/query/search_service.py").read_text(encoding="utf-8")
 
     assert "backends.qdrant_backend" not in source
     assert "qdrant_text_search" not in source
@@ -111,7 +111,7 @@ def test_search_service_logs_route_latency_candidates_and_empty_reason(monkeypat
     import logging
 
     monkeypatch.setattr(search_service, "hybrid_search_with_rewrite", lambda *_args, **_kwargs: [])
-    with caplog.at_level(logging.INFO, logger="mm_asset_rag.search_service"):
+    with caplog.at_level(logging.INFO, logger="mm_asset_rag.query.search_service"):
         result = SearchService(backend=SimpleNamespace()).execute(
             SearchCommand(
                 query="不存在", mode=SearchMode.AUTO, collection="team", principal="alice"

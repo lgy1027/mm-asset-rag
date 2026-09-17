@@ -60,7 +60,7 @@
 - **解析** — PDF:PyMuPDF(本地,默认)或 PaddleOCR-VL(API,扫描件更准)或 docling(本地,版面感知);Office 文档:MarkItDown(默认)或 docling;图片:OCR + VLM caption。
 - **索引** — Qdrant 是内置后端（本地文件或 server）。可通过 `VECTOR_BACKEND` 选择其他已注册后端；Qdrant 文本点携带 dense、BM25 和 BM25-zh 向量，图片点携带 CLIP 向量。
 - **可选生成** — OpenAI 兼容 chat completion,严格基于证据,支持 NDJSON 流式;没配 LLM 时 `/answer` / `/chat` 返回 evidence 摘要而不是报错 — 检索本身永远能工作。
-- **Web UI** — 自带单页 HTML(`mm_asset_rag/web/index.html`),FastAPI 直接 serve,做上传预览、任务状态、聊天。
+- **Web UI** — 自带单页 HTML(`mm_asset_rag/api/web/index.html`),FastAPI 直接 serve,做上传预览、任务状态、聊天。
 
 VLM 自动打 tag 也是可选的;不上 VLM 时只用 sniff 出的元数据,上传照样能跑。
 
@@ -195,7 +195,7 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 
 ## 评估
 
-`mmrag eval` 用分组查询和逻辑文档 qrels 对照活索引评测,报告文档级 Recall、MRR、MAP 和分级 NDCG。每个 case 包含 `query_id` 和 `query`;顶层 `qrels` 把每个查询 ID 映射到 `{document_id: relevance}`。**默认** 走包内置的 qrels 小样例(`mm_asset_rag/eval_data/`)。文档必须已用 qrels 中完全一致、区分大小写的 `document_id` ingest,否则正例会记为未命中。
+`mmrag eval` 用分组查询和逻辑文档 qrels 对照活索引评测,报告文档级 Recall、MRR、MAP 和分级 NDCG。每个 case 包含 `query_id` 和 `query`;顶层 `qrels` 把每个查询 ID 映射到 `{document_id: relevance}`。**默认** 走包内置的 qrels 小样例(`mm_asset_rag/eval/eval_data/`)。文档必须已用 qrels 中完全一致、区分大小写的 `document_id` ingest,否则正例会记为未命中。
 
 ```json
 {
@@ -234,23 +234,18 @@ uv run python scripts/benchmark.py --top-k 5 --n-runs 50
 
 ```
 mm-asset-rag/
-├── mm_asset_rag/         # 一个 Python 包(扁平布局 + 三个子包)
-│   ├── api.py            # FastAPI app:薄路由层,委托给 service.py
+├── mm_asset_rag/         # 一个 Python 包,按职责分包
 │   ├── cli.py            # `mmrag` / `mmrag-api` 入口脚本
-│   ├── service.py        # IngestService:parse / index / 任务历史
-│   ├── upload_pipeline.py# preview → confirm 上传流水线
-│   ├── sniff.py          # 文件魔数 + 本地元数据
-│   ├── auto_meta.py      # VLM JSON-mode 元数据抽取
-│   ├── settings.py       # pydantic-settings:env var 集中一处
-│   ├── protocols.py      # Parser / Embedder / VectorBackend 协议
-│   ├── registry.py       # parser / embedder / backend 全局 registry
-│   ├── paths.py          # $MM_ASSET_RAG_HOME 下磁盘布局
-│   ├── assets.py         # Asset dataclass
-│   ├── schema.py         # 对外检索数据结构
-│   ├── document_store.py # 解析 chunk 的 JSONL 存储
-│   ├── answer.py         # 基于证据的回答(流式 + 同步)
-│   ├── evaluation.py     # 小型回归套件
-│   ├── retrieval.py      # hybrid merge + normalize
+│   ├── service.py        # IngestService 门面:parse / index / 任务历史
+│   ├── core/             # 契约 + 基础设施:settings, schema, protocols,
+│   │                     #   registry, paths, llm_transport, observability
+│   ├── ingest/           # 上传 → 解析:upload_pipeline, sniff, auto_meta,
+│   │                     #   document_store, ingest_workflow, task_store
+│   ├── query/            # 检索:search_service, retrieval, query_rewrite,
+│   │                     #   query_intent, query_preprocess, evidence_policy
+│   ├── answer/           # 基于证据的回答生成 + 回答质量评估
+│   ├── eval/             # eval  harness + 内置 eval_data/
+│   ├── api/              # FastAPI 薄路由层 + 自带 web UI
 │   ├── parsers/          # PDF / image 解析实现
 │   ├── embedders/        # text / image embedding 实现
 │   └── backends/         # 后端适配器（内置 Qdrant）

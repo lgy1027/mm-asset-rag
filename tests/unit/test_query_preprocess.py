@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from mm_asset_rag.document_store import write_documents
-from mm_asset_rag.knowledge_models import AccessPolicy, Chunk, Document, Source
-from mm_asset_rag.knowledge_models import Asset as PersistedAsset
-from mm_asset_rag.paths import get_documents_jsonl
-from mm_asset_rag.query_preprocess import invalidate_vocab_cache, preprocess
+from mm_asset_rag.core.knowledge_models import AccessPolicy, Chunk, Document, Source
+from mm_asset_rag.core.knowledge_models import Asset as PersistedAsset
+from mm_asset_rag.core.paths import get_documents_jsonl
+from mm_asset_rag.ingest.document_store import write_documents
+from mm_asset_rag.query.query_preprocess import invalidate_vocab_cache, preprocess
 
 
 @pytest.fixture(autouse=True)

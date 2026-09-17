@@ -21,7 +21,7 @@ class ImageEmbedder:
     modality = "image"
 
     def __init__(self, model_name: str | None = None) -> None:
-        from ..settings import get_settings
+        from ..core.settings import get_settings
 
         s = get_settings()
         self.model_name = model_name or s.clip_model
@@ -52,7 +52,7 @@ class ImageEmbedder:
         # ``Settings.image_embedding_dim`` overrides the probe — useful
         # when the model dim is known (avoids one model encode on cold
         # start, esp. for [clip] where the default 512 is well-known).
-        from ..settings import get_settings
+        from ..core.settings import get_settings
 
         configured = get_settings().image_embedding_dim
         if configured is not None:

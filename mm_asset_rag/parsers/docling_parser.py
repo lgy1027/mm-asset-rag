@@ -21,8 +21,8 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from ..assets import IngestAsset
-from ..paths import get_parsed_dir
+from ..core.paths import get_parsed_dir
+from ..ingest.assets import IngestAsset
 from .document_ir import BBox, Block, DocumentIR, ImageRef
 
 # Heading labels that mark a TextItem as a structural heading rather than

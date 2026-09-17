@@ -14,13 +14,13 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from mm_asset_rag.answer import (
+from mm_asset_rag.answer.answer import (
     _read_image_data_url,
     _user_content,
     llm_answer,
 )
-from mm_asset_rag.schema import SearchHit
-from mm_asset_rag.settings import get_settings
+from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.core.settings import get_settings
 
 
 def _hit_with_images(asset_id: str, images: list) -> SearchHit:
@@ -54,7 +54,7 @@ def test_user_content_parts_when_toggle_on(tmp_home, monkeypatch) -> None:
     settings = get_settings()
     # Patch the image reader to return a fake data URL so no real file is needed.
     with patch(
-        "mm_asset_rag.answer._read_image_data_url",
+        "mm_asset_rag.answer.answer._read_image_data_url",
         return_value="data:image/png;base64,AAAA",
     ):
         content = _user_content(
@@ -88,7 +88,7 @@ def test_user_content_caps_per_hit_and_total(tmp_home, monkeypatch) -> None:
         for i in range(3)
     ]
     with patch(
-        "mm_asset_rag.answer._read_image_data_url",
+        "mm_asset_rag.answer.answer._read_image_data_url",
         side_effect=lambda _aid, p: f"data:image/png;base64,{p}",
     ):
         content = _user_content("Q?", "ctx", hits, settings)
@@ -147,9 +147,10 @@ def test_llm_answer_degrades_to_text_when_image_request_fails(tmp_home, monkeypa
 
     with (
         patch(
-            "mm_asset_rag.answer._read_image_data_url", return_value="data:image/png;base64,AAAA"
+            "mm_asset_rag.answer.answer._read_image_data_url",
+            return_value="data:image/png;base64,AAAA",
         ),
-        patch("mm_asset_rag.answer._post_chat", side_effect=fake_post),
+        patch("mm_asset_rag.answer.answer._post_chat", side_effect=fake_post),
     ):
         result = llm_answer("Q?", [_hit_with_images("a", [{"path": "images/x.png"}])])
     assert calls["n"] == 2  # image attempt + text retry
@@ -170,7 +171,7 @@ def test_llm_answer_no_retry_when_text_only_fails(tmp_home, monkeypatch) -> None
         raise RuntimeError("network down")
 
     with (
-        patch("mm_asset_rag.answer._post_chat", side_effect=fake_post),
+        patch("mm_asset_rag.answer.answer._post_chat", side_effect=fake_post),
     ):
         try:
             llm_answer("Q?", [_hit_with_images("a", [])])
