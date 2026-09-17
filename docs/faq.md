@@ -264,6 +264,8 @@ mmrag-api
 export HF_ENDPOINT=https://hf-mirror.com
 ```
 
+> **`mmrag eval` / `mmrag search` 同样中招**(fastembed ≥0.8 做 BM25 初始化时会探测 HF Hub,与 qdrant-client 版本无关):表现是 eval 跑几条就卡住、进程出现对陌生 IP 的 `SYN_SENT` 长连接(fastembed 走 huggingface_hub,HF 被网络阻断时 DNS 投毒返回垃圾 IP)。同样设 `HF_HUB_OFFLINE=1` 即可,模型已在 `QDRANT_BM25_CACHE_DIR` / `~/.cache/huggingface` 时纯离线可跑。
+
 ### ollama 在 macOS 上跑 `bge-m3` 慢 / OOM
 
 `bge-m3` 是 1.5 GB 模型,M 系列 Mac 上 MPS 后端偶尔抽风。临时切 CPU:

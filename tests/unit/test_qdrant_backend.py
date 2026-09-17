@@ -246,8 +246,8 @@ def test_native_policy_filter_is_applied_to_text_and_image_routes(
         assert native_filter.should is not None
 
 
-def test_native_public_acl_filter_rejects_a_missing_acl_payload() -> None:
-    """Qdrant's explicit empty-list condition must not admit a missing ACL."""
+def test_native_public_acl_filter_treats_explicit_empty_list_as_public() -> None:
+    """The public clause is ``values_count <= 0`` on ``allowed_principals``."""
     client = QdrantClient(":memory:")
     client.create_collection(
         collection_name="acl_shape",
@@ -277,7 +277,18 @@ def test_native_public_acl_filter_rejects_a_missing_acl_payload() -> None:
         limit=10,
     ).points
 
-    assert [point.id for point in results] == [2]
+    ids = {point.id for point in results}
+    assert 2 in ids  # explicit empty list → public
+    assert 3 not in ids  # alice-only doc is hidden from anonymous callers
+    # Current Qdrant (verified on 1.19.1, server *and* local mode; pre-1.17
+    # rejected missing keys) also admits a *missing* ``allowed_principals``
+    # key: ``values_count <= 0`` no longer distinguishes missing from
+    # explicitly empty, and ``IsEmpty`` matches both as well, so the old
+    # "missing ≠ public" property is not expressible in payload conditions. The strict ACL property rests on the writer invariant that
+    # ``indexing.py`` always writes ``allowed_principals`` (possibly empty)
+    # into every payload. Asserted here so any future upstream change is
+    # surfaced instead of silently widening access.
+    assert ids == {1, 2}
 
 
 # ─── _tokenize_for_bm25 ─────────────────────────────────────────────────

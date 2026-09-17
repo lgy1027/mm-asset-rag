@@ -9,8 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 ### Changed
+- **Qdrant 升级到 1.19.x**:Docker server `v1.16.3 → v1.19.1`,`qdrant-client` pin 由 `==1.16.2` 放宽为 `>=1.17,<1.20`(锁定 1.19.1)。解锁 per-channel 加权 RRF —— `rrf_weight_dense` / `rrf_weight_bm25` / `rrf_weight_bm25_zh` 设置在此前版本是死代码(client 1.16 无 `Rrf.weights`),现在真正生效;`tests/unit/test_channel_limit.py` 中 3 个 skip 的 RRF 权重测试恢复运行。
 ### Removed
 ### Fixed
+- **记录 Qdrant 升级后的 ACL 语义变化**(1.19.1 实测,变化发生在 1.16 → 1.19 之间):missing `allowed_principals` payload key 现在满足 `values_count lte=0`(missing == 公开),且 `IsEmpty` 对 missing 与空列表同时成立,"missing ≠ public" 无法再用 payload condition 表达。现有数据零暴露(indexer 恒写入该字段,实测 6297 点无缺失),严格性依赖 writer invariant;`test_native_public_acl_filter_*` 改为固定新语义并注明原因。
 
 ## [0.2.2] - 2026-09-15
 

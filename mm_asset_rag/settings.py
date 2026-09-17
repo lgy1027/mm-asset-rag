@@ -451,7 +451,7 @@ class Settings(BaseSettings):
     # ─── Per-channel RRF weights ──────────────────────────────────────────
     # Inside ``_hybrid_text_query`` the three prefetches (dense / BM25-en /
     # BM25-zh) are fused by Qdrant's ``RrfQuery(rrf=Rrf(weights=[...]))``
-    # (qdrant-client 1.18+, server 1.17+). The three weights below
+    # (qdrant-client 1.17+, server 1.17+). The three weights below
     # let the deployer bias the fusion positionally: ``[dense, bm25,
     # bm25_zh]``. Raising ``rrf_weight_bm25_zh`` improves Chinese-only
     # token recall; lowering it makes the dense channel dominant for

@@ -30,7 +30,7 @@ dependencies = [
     "pillow>=12.3.0,<13.0",
     "requests>=2.31,<3.0",
     "PyMuPDF>=1.23,<2.0",
-    "qdrant-client==1.16.2",  # 1.17+ gRPC wire format 与 qdrant-server 1.18 不兼容, 1.16.2 是分水岭
+    "qdrant-client>=1.17,<1.20",  # Rrf.weights 需要 client>=1.17 且 server>=1.17; client 版本不应高于 server
     "fastembed>=0.5,<1.0",
     "fastapi>=0.110,<1.0",
     "uvicorn>=0.27,<1.0",
