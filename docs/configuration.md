@@ -533,6 +533,18 @@ unchanged. Design and roadmap: [`docs/design-audio-video.md`](design-audio-video
 | `VIDEO_PARSER` | `ffmpeg` | Registered video parser name (`ffmpeg` is the only built-in) |
 | `AUDIO_CHUNK_SECONDS` | `30` | Target length when merging ASR sentences / subtitle cues into indexable chunks |
 | `VIDEO_FRAME_INTERVAL_S` | `10` | Seconds between sampled keyframes for the VLM-caption tier |
+| `ASR_BACKEND` | `local` | `local` (in-process FunASR) or `http` (remote OpenAI-compatible transcription API) |
+| `ASR_HTTP_URL` | unset | Full endpoint for `http` backend, e.g. `http://host:9000/v1/audio/transcriptions` |
+| `ASR_HTTP_TOKEN` | unset | Bearer token for the ASR endpoint (optional) |
+| `ASR_HTTP_MODEL` | `whisper-1` | Model name posted to the endpoint |
+| `ASR_HTTP_TIMEOUT` | `300.0` | Per-request timeout (seconds) |
+
+The ASR backend is provider-pluggable behind one `AsrBackend` contract
+(`parsers/asr_backend.py`), the same local-vs-http split as
+`OCR_BACKEND`. `http` posts the normalised WAV as multipart and asks for
+`response_format=verbose_json` so segments carry timestamps (supported by
+OpenAI whisper, faster-whisper-server, Groq, …); servers without segment
+support degrade to a single text chunk.
 
 Prerequisites, both degrade gracefully (the asset fails with a readable
 reason, the rest of the batch is unaffected):

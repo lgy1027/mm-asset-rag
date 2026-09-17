@@ -187,3 +187,85 @@ def test_media_probe_friendly_error_without_ffmpeg(monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda _tool: None)
     with pytest.raises(media_probe.MediaProbeError, match="ffmpeg"):
         media_probe.probe_media(Path("/tmp/whatever.mp4"))
+
+
+# ── ASR backend abstraction ─────────────────────────────────────────────────
+
+
+def test_asr_backend_default_is_local():
+    from mm_asset_rag.parsers.asr_backend import get_asr_backend
+
+    assert get_asr_backend().name == "funasr-local"
+
+
+def test_asr_backend_switch_to_http(monkeypatch, tmp_path):
+    from mm_asset_rag.core.settings import get_settings
+    from mm_asset_rag.parsers import asr_backend
+
+    get_settings.cache_clear()
+    monkeypatch.setenv("ASR_BACKEND", "http")
+    monkeypatch.setenv("ASR_HTTP_URL", "http://127.0.0.1:9/v1/audio/transcriptions")
+    asr_backend._BACKEND = None
+    asr_backend._BACKEND_KIND = ""
+    try:
+        backend = asr_backend.get_asr_backend()
+        assert backend.name == "http"
+        # 16 kHz mono wav bytes — just needs to be a readable file.
+        wav = tmp_path / "x.wav"
+        wav.write_bytes(b"RIFFfake")
+        with pytest.raises(RuntimeError, match="HTTP"):
+            backend.transcribe(wav)
+    finally:
+        asr_backend._BACKEND = None
+        asr_backend._BACKEND_KIND = ""
+        get_settings.cache_clear()
+
+
+def test_http_asr_parses_verbose_json_segments(monkeypatch, tmp_path):
+    from mm_asset_rag.parsers.asr_backend import HttpAsrBackend
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {
+                "segments": [
+                    {"start": 0.0, "end": 3.5, "text": " 你好 "},
+                    {"start": 4.0, "end": 7.0, "text": "世界"},
+                ]
+            }
+
+    monkeypatch.setattr("requests.post", lambda *a, **k: FakeResponse())
+    backend = HttpAsrBackend(url="http://x/v1/audio/transcriptions")
+    wav = tmp_path / "x.wav"
+    wav.write_bytes(b"RIFFfake")
+    sentences = backend.transcribe(wav)
+    assert sentences == [
+        {"start": 0.0, "end": 3.5, "text": "你好"},
+        {"start": 4.0, "end": 7.0, "text": "世界"},
+    ]
+
+
+def test_http_asr_plain_text_fallback(monkeypatch, tmp_path):
+    from mm_asset_rag.parsers.asr_backend import HttpAsrBackend
+
+    class FakeResponse:
+        status_code = 200
+        text = "{}"
+
+        def json(self):
+            return {"text": "整段文本"}
+
+    monkeypatch.setattr("requests.post", lambda *a, **k: FakeResponse())
+    backend = HttpAsrBackend(url="http://x/v1/audio/transcriptions")
+    wav = tmp_path / "x.wav"
+    wav.write_bytes(b"RIFFfake")
+    assert backend.transcribe(wav) == [{"start": 0.0, "end": 0.0, "text": "整段文本"}]
+
+
+def test_http_asr_requires_url():
+    from mm_asset_rag.parsers.asr_backend import HttpAsrBackend
+
+    with pytest.raises(RuntimeError, match="ASR_HTTP_URL"):
+        HttpAsrBackend(url="").transcribe(Path("/tmp/x.wav"))

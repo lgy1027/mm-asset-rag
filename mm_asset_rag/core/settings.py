@@ -496,6 +496,15 @@ class Settings(BaseSettings):
     audio_parser: str = "funasr"
     # Target length when merging ASR sentences into indexable chunks.
     audio_chunk_seconds: int = 30
+    # ASR backend: local (in-process FunASR, [asr] extra) or http (remote
+    # OpenAI-compatible /v1/audio/transcriptions endpoint).
+    asr_backend: Literal["local", "http"] = "local"
+    # http backend connection (used only when asr_backend="http"). The URL
+    # is the full endpoint, e.g. http://host:9000/v1/audio/transcriptions.
+    asr_http_url: str = ""
+    asr_http_token: str = ""
+    asr_http_model: str = "whisper-1"
+    asr_http_timeout: float = 300.0
     # video backend: ffmpeg (subtitles → audio-track ASR → optional VLM
     # frame captions) is the only built-in.
     video_parser: str = "ffmpeg"

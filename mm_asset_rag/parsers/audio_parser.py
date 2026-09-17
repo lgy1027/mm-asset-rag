@@ -23,6 +23,7 @@ from ..core.paths import get_asr_dir
 from ..core.schema import ParsedChunk
 from ..core.settings import get_settings
 from ..ingest.assets import IngestAsset
+from .asr_backend import get_asr_backend
 from .media_probe import MediaProbeError, normalize_to_wav
 
 log = logging.getLogger(__name__)
@@ -69,57 +70,9 @@ def _window(sentences: list[dict], start: float) -> dict:
     }
 
 
-# Process-wide FunASR handle, lazy like the PP-OCRv6 one: importing this
-# module never requires torch; the extra is only needed at first use.
-_ASR_MODEL: object | None = None
-
-
-def _load_asr_model() -> object:
-    global _ASR_MODEL
-    if _ASR_MODEL is None:
-        try:
-            from funasr import AutoModel
-        except ImportError as exc:  # pragma: no cover - exercised via friendly error
-            raise RuntimeError(
-                "Local audio transcription requires the [asr] extra: "
-                'pip install -e ".[asr]"  (or pip install funasr).'
-            ) from exc
-        # paraformer-zh: Chinese-primary ASR; fsmn-vad splits speech into
-        # sentences (giving us per-sentence timestamps); ct-punc restores
-        # punctuation so window text stays readable. Models download from
-        # ModelScope on first run.
-        _ASR_MODEL = AutoModel(
-            model="paraformer-zh",
-            vad_model="fsmn-vad",
-            punc_model="ct-punc",
-        )
-    return _ASR_MODEL
-
-
 def _transcribe(wav_path: Path) -> list[dict]:
-    """Run FunASR on a normalised WAV; return sentence-level timestamps.
-
-    ``sentence_timestamp=True`` makes the pipeline emit per-sentence
-    ``sentence_info`` (start/end in ms). Falls back to a single
-    whole-file sentence when that's absent — chunking then degrades to
-    one chunk instead of failing.
-    """
-    model = _load_asr_model()
-    result = model.generate(input=str(wav_path), sentence_timestamp=True)  # type: ignore[attr-defined]
-    payload = result[0] if isinstance(result, list) and result else {}
-    sentences = payload.get("sentence_info")
-    if isinstance(sentences, list) and sentences:
-        return [
-            {
-                "start": round(float(s["start"]) / 1000.0, 3),
-                "end": round(float(s["end"]) / 1000.0, 3),
-                "text": str(s.get("text", "")),
-            }
-            for s in sentences
-            if isinstance(s, dict) and "start" in s and "end" in s
-        ]
-    text = str(payload.get("text", "")).strip()
-    return [{"start": 0.0, "end": 0.0, "text": text}] if text else []
+    """Transcribe a normalised WAV via the configured ASR backend."""
+    return get_asr_backend().transcribe(wav_path)
 
 
 def _cache_path(asset_id: str) -> Path:
