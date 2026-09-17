@@ -337,6 +337,104 @@ def test_search_response_exposes_document_chunk_without_asset_id(
     assert "asset_id" not in json.dumps(payload)
 
 
+def test_search_response_exposes_media_offsets_and_playback_url(
+    client: TestClient,
+) -> None:
+    from mm_asset_rag.core.schema import SearchHit
+
+    hit = SearchHit(
+        route="text",
+        score=0.9,
+        asset_id="internal-only-cache-key",
+        title="Quarterly review",
+        source_type="video",
+        source_path="video/review.mp4",
+        evidence="transcript…",
+        metadata={
+            "document_id": "review",
+            "chunk_id": "review:0",
+            "kind": "subtitle",
+            "start": 65.5,
+            "end": 92.0,
+        },
+    )
+    with patch("mm_asset_rag.api.api.dispatch_search", return_value=[hit]):
+        response = client.post(
+            "/search",
+            json={"query": "review", "collection": "team", "principal": "alice"},
+        )
+    assert response.status_code == 200
+    payload = response.json()["hits"][0]
+    assert payload["kind"] == "subtitle"
+    assert payload["start"] == 65.5
+    assert payload["end"] == 92.0
+    assert payload["media_url"] == "/media/review"
+
+
+def test_media_endpoint_streams_asset_with_access_control(client: TestClient, tmp_home) -> None:
+    from mm_asset_rag.core.knowledge_models import AccessPolicy, Asset, Document, Source
+    from mm_asset_rag.ingest.asset_index import DocumentRecord
+
+    def make(document_id: str, principal: str, relative_path: str) -> DocumentRecord:
+        document = Document(
+            document_id=document_id,
+            title=document_id,
+            source=Source(source_id=f"upload:{document_id}"),
+            access_policy=AccessPolicy(collection="team", allowed_principals=(principal,)),
+        )
+        return DocumentRecord(
+            document=document,
+            asset=Asset(content_hash="a" * 64, source_type="audio", relative_path=relative_path),
+        )
+
+    record = make("rec", "alice", "audio/rec.mp3")
+    private = make("priv", "bob", "audio/priv.mp3")
+    not_media = make("doc", "alice", "pdfs/doc.pdf")
+
+    from mm_asset_rag.core.paths import get_assets_dir
+
+    media_path = get_assets_dir() / "audio" / "rec.mp3"
+    media_path.parent.mkdir(parents=True, exist_ok=True)
+    media_path.write_bytes(b"audio-bytes")
+
+    with patch(
+        "mm_asset_rag.api.api.asset_index.load_records",
+        return_value=[record, private, not_media],
+    ):
+        response = client.get("/media/rec", params={"collection": "team", "principal": "alice"})
+        assert response.status_code == 200
+        assert response.content == b"audio-bytes"
+        assert response.headers["content-type"].startswith("audio/mpeg")
+        # Range-aware: a bytes range request must answer partial content.
+        ranged = client.get(
+            "/media/rec",
+            params={"collection": "team", "principal": "alice"},
+            headers={"Range": "bytes=0-4"},
+        )
+        assert ranged.status_code == 206
+        assert ranged.content == b"audio"
+
+        assert (
+            client.get(
+                "/media/unknown", params={"collection": "team", "principal": "alice"}
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(
+                "/media/priv", params={"collection": "team", "principal": "alice"}
+            ).status_code
+            == 404
+        )
+        # A document whose asset is not a media file is not streamable.
+        assert (
+            client.get(
+                "/media/doc", params={"collection": "team", "principal": "alice"}
+            ).status_code
+            == 404
+        )
+
+
 def test_eval_endpoint_runs_cases(client: TestClient) -> None:
     service = MagicMock()
     service.execute.return_value = {"kind": "retrieval", "version": "v1", "results": []}

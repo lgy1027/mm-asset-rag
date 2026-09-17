@@ -232,11 +232,13 @@ def _serialize_hit(hit: object) -> dict[str, object]:
     metadata = getattr(hit, "metadata", {})
     if not isinstance(metadata, dict):
         metadata = {}
-    return {
+    document_id = metadata.get("document_id")
+    source_type = getattr(hit, "source_type", "") or metadata.get("source_type", "")
+    payload = {
         "document_id": metadata.get("document_id"),
         "chunk_id": metadata.get("chunk_id"),
         "title": getattr(hit, "title", ""),
-        "source_type": getattr(hit, "source_type", ""),
+        "source_type": source_type,
         "source_path": getattr(hit, "source_path", ""),
         "evidence": getattr(hit, "evidence", ""),
         "score": getattr(hit, "score", 0.0),
@@ -244,7 +246,15 @@ def _serialize_hit(hit: object) -> dict[str, object]:
         "page": metadata.get("page"),
         "parser": metadata.get("parser") or metadata.get("provider"),
         "images": _without_asset_id(getattr(hit, "images", []) or metadata.get("images") or []),
+        # Media chunks (audio/video) carry playback positioning so the UI
+        # can seek straight to the retrieved moment.
+        "kind": metadata.get("kind"),
+        "start": metadata.get("start"),
+        "end": metadata.get("end"),
     }
+    if source_type in {"audio", "video"} and document_id:
+        payload["media_url"] = f"/media/{document_id}"
+    return payload
 
 
 def _serialize_document(record: asset_index.DocumentRecord) -> dict[str, object]:
@@ -846,6 +856,53 @@ def get_parsed_image(
         raise HTTPException(status_code=404, detail="not found")
     suffix = candidate.suffix.lower().lstrip(".")
     return FileResponse(candidate, media_type=f"image/{suffix}")
+
+
+_MEDIA_TYPES = {
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".wma": "audio/x-ms-wma",
+    ".aac": "audio/aac",
+    ".mp4": "video/mp4",
+    ".mkv": "video/x-matroska",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".avi": "video/x-msvideo",
+    ".wmv": "video/x-ms-asf",
+}
+
+
+@app.get("/media/{document_id}")
+def get_media(
+    document_id: str,
+    context: _DocumentAccessContext = Depends(_document_access_context),
+) -> FileResponse:
+    """Stream the original audio/video asset for hit playback.
+
+    Range-aware (Starlette ``FileResponse`` answers 206 partial-content),
+    so the web UI can seek to the retrieved ``start`` offset without
+    downloading the whole file. Access is gated by the same document
+    visibility check as every other document route.
+    """
+    record = next(
+        (row for row in asset_index.load_records() if row.document.document_id == document_id),
+        None,
+    )
+    if record is None or not _record_is_visible(record, context):
+        raise HTTPException(status_code=404, detail="not found")
+    media_type = _MEDIA_TYPES.get(Path(record.asset.relative_path).suffix.lower())
+    if media_type is None:
+        raise HTTPException(status_code=404, detail="not a media asset")
+    assets_root = get_assets_dir().resolve()
+    candidate = (assets_root / record.asset.relative_path).resolve()
+    # Same traversal discipline as the parsed-image route: resolve and
+    # require the file to live under the assets root.
+    if assets_root not in candidate.parents or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(candidate, media_type=media_type)
 
 
 @app.get("/", include_in_schema=False)

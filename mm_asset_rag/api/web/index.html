@@ -1355,11 +1355,38 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
           const imgRow = thumbs
             ? `<div class="src-images">${thumbs}</div>`
             : "";
+          // Media hits (audio/video chunks): a timestamp badge plus an
+          // inline player that starts at the retrieved offset. The
+          // `#t=` media fragment gives instant seeking on load; the
+          // loadedmetadata fallback covers browsers that ignore it.
+          const isMedia = s.source_type === "audio" || s.source_type === "video";
+          const mediaBlock = (() => {
+            if (!isMedia || !s.media_url) return "";
+            const fmt = (t) => {
+              const total = Math.max(0, Math.floor(Number(t) || 0));
+              const m = String(Math.floor(total / 60)).padStart(2, "0");
+              const sec = String(total % 60).padStart(2, "0");
+              return `${m}:${sec}`;
+            };
+            const start = typeof s.start === "number" && !Number.isNaN(s.start) ? s.start : null;
+            const end = typeof s.end === "number" && !Number.isNaN(s.end) ? s.end : null;
+            const badge =
+              start !== null
+                ? `<span class="route" title="retrieved segment">[${fmt(start)}${end !== null ? "–" + fmt(end) : ""}]</span>`
+                : "";
+            const tag = s.source_type === "video" ? "video" : "audio";
+            const seek = start !== null ? Number(start).toFixed(3) : "0";
+            return `${badge}<${tag} controls preload="metadata"
+              style="display:block;width:100%;max-width:420px;margin-top:4px"
+              src="${escapeHtml(s.media_url)}?${imageQuery}#t=${seek}"
+              onloadedmetadata="this.currentTime=${seek}"></${tag}>`;
+          })();
           return `
           <div class="source">
             <div class="head">
               <span class="score">#${i + 1}</span>
               <span class="route">${escapeHtml((s.routes || []).join(", "))}</span>
+              ${isMedia && s.kind ? `<span class="route">${escapeHtml(s.kind)}</span>` : ""}
               <span style="color:var(--accent)">${escapeHtml(s.document_id || "")}</span>
               <span style="color:var(--muted)">·</span>
               <span style="color:var(--muted)">${escapeHtml(s.chunk_id || "")}</span>
@@ -1367,6 +1394,7 @@ label.check input[type=checkbox] { width: auto; flex: 0; margin: 0; }
               <span style="color:var(--muted)">score ${(s.score || 0).toFixed(3)}</span>
             </div>
             <div class="ev">${escapeHtml((s.evidence || "").slice(0, 240))}…</div>
+            ${mediaBlock}
             ${imgRow}
           </div>`;
         })

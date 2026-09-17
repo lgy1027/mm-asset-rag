@@ -280,11 +280,21 @@ not part of the public URL.
       "routes": ["qdrant_text"],
       "page": 4,
       "parser": "pymupdf",
-      "images": []
+      "images": [],
+      "kind": null,
+      "start": null,
+      "end": null,
+      "media_url": null
     }
   ]
 }
 ```
+
+Audio/video chunks additionally carry `kind` (`subtitle` / `asr` /
+`frame`), the retrieved segment as `start` / `end` (seconds), and
+`media_url` — stream the original asset from
+[`GET /media/{document_id}`](#get-mediadocument_id) (Range-aware) to
+play the segment back.
 
 The four modes are selected by `SearchService` and dispatched through the
 active `SearchBackend` adapter:
@@ -301,6 +311,15 @@ active `SearchBackend` adapter:
 The API route is an HTTP adapter only: it converts request fields to a
 `SearchCommand`; retrieval itself is executed by `SearchService`, not by
 Qdrant-specific helpers.
+
+## `GET /media/{document_id}`
+
+Streams the original audio/video asset of one visible document for hit
+playback. Range requests are answered with `206 Partial Content`, so a
+player can seek to a retrieved `start` offset without downloading the
+whole file. Same access context (collection / principal) as every other
+document route; 404 for unknown documents, non-visible documents, and
+non-media assets.
 
 ## `POST /answer`
 
