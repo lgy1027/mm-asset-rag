@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from time import perf_counter
 
-from ..core.observability import runtime_metrics
+from ..core.observability import Span, runtime_metrics
 from ..core.paths import get_assets_dir
 from ..core.protocols import SearchBackend, SearchFilter
 from ..core.registry import get_active_backend
@@ -150,30 +150,17 @@ def dispatch_search(
     principal: str | None = None,
 ) -> list[SearchHit]:
     """Execute one primitive request through the typed search command boundary."""
-    from ..core.observability import get_tracer
-
-    with get_tracer().start_span(
-        "search.dispatch",
-        attributes={
-            "query": query,
-            "mode": str(mode),
-            "top_k": top_k,
-            "collection": collection or "default",
-        },
-    ) as span:
-        hits = get_search_service().execute(
-            SearchCommand(
-                query=query,
-                mode=coerce_search_mode(mode),
-                image_path=image_path,
-                top_k=top_k,
-                collection=collection,
-                metadata_filter=metadata_filter,
-                principal=principal,
-            )
+    return get_search_service().execute(
+        SearchCommand(
+            query=query,
+            mode=coerce_search_mode(mode),
+            image_path=image_path,
+            top_k=top_k,
+            collection=collection,
+            metadata_filter=metadata_filter,
+            principal=principal,
         )
-        span.update(output={"returned": len(hits or [])})
-        return hits
+    )
 
 
 class SearchService:
@@ -183,6 +170,24 @@ class SearchService:
         self._backend = backend if backend is not None else get_active_backend()
 
     def execute(self, command: SearchCommand) -> list[SearchHit]:
+        """Execute one typed retrieval command (traced at this boundary)."""
+        from ..core.observability import get_tracer
+
+        # Instrument at the typed-command boundary, not at ``dispatch_search``:
+        # eval harnesses and the answer pipeline call ``execute`` directly, so
+        # a span here covers every entry path.
+        with get_tracer().start_span(
+            "search.dispatch",
+            attributes={
+                "query": command.query,
+                "mode": str(command.mode),
+                "top_k": command.top_k,
+                "collection": command.collection or "default",
+            },
+        ) as span:
+            return self._execute(command, span)
+
+    def _execute(self, command: SearchCommand, span: Span) -> list[SearchHit]:
         started_at = perf_counter()
         mode = coerce_search_mode(command.mode)
         if mode is SearchMode.AUTO:
@@ -215,6 +220,14 @@ class SearchService:
                 "" if hits else ("no_candidates" if not candidates else "access_policy_filtered")
             )
             elapsed_ms = int((perf_counter() - started_at) * 1000)
+            span.update(
+                output={
+                    "returned": len(hits),
+                    "candidates": len(candidates),
+                    "route": mode.value,
+                    "reason": reason or "none",
+                }
+            )
             runtime_metrics.record_retrieval(
                 route=mode.value,
                 elapsed_ms=elapsed_ms,

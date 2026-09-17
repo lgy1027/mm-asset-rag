@@ -235,24 +235,41 @@ def test_llm_transport_emits_generation(monkeypatch):
 
 
 def test_dispatch_search_emits_span(monkeypatch):
-    from mm_asset_rag.query import search_service
-
     tracer = RecordingTracer()
     set_tracer(tracer)
-    hit = SimpleNamespace(asset_id="a1")
-    monkeypatch.setattr(
-        search_service,
-        "get_search_service",
-        lambda: SimpleNamespace(execute=lambda command: [hit]),
+    from mm_asset_rag.core.schema import SearchHit
+    from mm_asset_rag.query.search_service import SearchCommand, SearchMode, SearchService
+
+    hit = SearchHit(
+        route="text-to-image",
+        score=0.9,
+        asset_id="a1",
+        title="t",
+        source_type="image",
+        source_path="p",
+        evidence="e",
+        metadata={"document_id": "d1", "allowed_principals": ["alice"], "collection": "docs"},
     )
-    hits = search_service.dispatch_search(
-        query="q", mode="text", image_path=None, top_k=3, collection="docs"
+
+    class StubBackend:
+        name = "stub"
+
+        def search_text_to_image(self, *, query, top_k, search_filter=None):
+            return [hit]
+
+    service = SearchService(backend=StubBackend())
+    hits = service.execute(
+        SearchCommand(
+            query="q", mode=SearchMode.TEXT_TO_IMAGE, top_k=3, collection="docs", principal="alice"
+        )
     )
-    assert hits == [hit]
+    assert [h.asset_id for h in hits] == ["d1"]
     assert [s.name for s in tracer.spans] == ["search.dispatch"]
-    assert tracer.spans[0].attributes["query"] == "q"
-    assert tracer.spans[0].attributes["top_k"] == 3
-    assert tracer.spans[0].terminal["output"] == {"returned": 1}
+    span = tracer.spans[0]
+    assert span.attributes["query"] == "q"
+    assert span.attributes["top_k"] == 3
+    assert span.terminal["output"]["returned"] == 1
+    assert span.terminal["output"]["route"] == "text-to-image"
 
 
 def test_answer_question_emits_span(monkeypatch):
