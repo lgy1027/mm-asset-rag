@@ -57,8 +57,11 @@ API / CLI / answer / eval
    │
    └─ SearchCommand → SearchService.execute
         │  (统一校验和路由; 依赖 SearchBackend port)
-        ▼
+         ▼
 query 预处理(小写/纠错/同义词,均可开关)
+   │
+   ├─ QUERY_REWRITE_ENABLED=true: LLM 生成 N 个改写变体(线程池并行)
+   │    每个变体独立走下面的检索路,结果按 RRF 再融合
    │
    ├─ mode=text (文→文,默认)
    │    三路并行: dense + BM25英 + BM25中  → RRF 融合 → 重排
@@ -85,6 +88,12 @@ query 预处理(小写/纠错/同义词,均可开关)
 **两阶段重排**(可选,默认开):各路取候选 → RRF 融合 → bge-reranker
 cross-encoder 对 `(query, evidence)` 精排 → `top_k`。重排器加载失败自动降级
 单阶段。图像源 hit 不被文本重排器打分(保留 CLIP 分)。
+
+**Tracing 视角**:`TRACING_PROVIDER=langfuse` 时,上面每一步都是一条
+`search.dispatch` trace 里的嵌套节点 —— rewrite generation → 每变体
+`qdrant.text_search`(内含 `embed.text`)→ `rerank.score`,每段带耗时与
+响应参数(token 用量、top 分数、向量维度)。详见
+[`configuration.md`](configuration.md#tracing--observability)。
 
 ## 五、回答:检索结果喂 LLM
 

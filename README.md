@@ -248,7 +248,8 @@ mm-asset-rag/
 ├── tests/unit/           # offline unit tests
 ├── tests/integration/    # marked @pytest.mark.integration
 ├── docs/                 # architecture, configuration, api
-└── scripts/              # benchmark.py (perf)
+└── scripts/              # benchmark.py (perf), run_full_eval.py,
+                          #   docker-compose.langfuse.yml (self-hosted tracing)
 ```
 
 ### Adding a new modality (audio, video)
@@ -266,6 +267,7 @@ The registry removes central implementation lookup; routing and backend capabili
 - [Architecture](docs/architecture.md)
 - [Data flow(文本 vs 图片两条线)](docs/data-flow.md)
 - [Configuration](docs/configuration.md)
+- [Tracing / observability](docs/configuration.md#tracing--observability)
 - [HTTP API](docs/api.md)
 - [Upload flow](docs/upload-flow.md)
 - [FAQ & 故障排查](docs/faq.md)

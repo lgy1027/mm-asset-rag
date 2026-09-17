@@ -84,6 +84,24 @@ lifecycle to HTTP and CLI callers. On startup, the FastAPI `lifespan` calls
 reclassifies any task that was still `running` when the previous process
 exited as `interrupted`.
 
+## Observability
+
+Two mechanisms, both living in `core/observability.py`:
+
+- **`RuntimeMetrics`** (always on) — process-local counters for retrieval
+  and refusal events, exposed via the `/metrics` endpoint. No request or
+  document content is retained.
+- **`Tracer` / `Span` protocols** (opt-in) — provider-neutral tracing with a
+  zero-cost `NoOpTracer` default. `TRACING_PROVIDER=langfuse` plus the
+  optional `[langfuse]` extra activates a self-hosted Langfuse backend
+  (lazy SDK import; missing SDK or credentials degrade to no-op with a
+  warning). Instrumentation sits at shared low-level boundaries —
+  `SearchService.execute`, `llm_transport.post_chat_completion`, embedders,
+  Qdrant search, reranker, answer, ingest workflow — so every entry point
+  (API, CLI, eval) is covered without per-route work. See
+  [`configuration.md`](configuration.md#tracing--observability) for the
+  span inventory and the privacy note (full LLM payloads leave the process).
+
 ## Configuration
 
 Every environment variable the codebase reads is declared in
