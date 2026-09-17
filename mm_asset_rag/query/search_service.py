@@ -8,7 +8,7 @@ from enum import Enum
 from pathlib import Path
 from time import perf_counter
 
-from ..core.observability import Span, runtime_metrics
+from ..core.observability import Span, get_tracer, runtime_metrics
 from ..core.paths import get_assets_dir
 from ..core.protocols import SearchBackend, SearchFilter
 from ..core.registry import get_active_backend
@@ -171,8 +171,6 @@ class SearchService:
 
     def execute(self, command: SearchCommand) -> list[SearchHit]:
         """Execute one typed retrieval command (traced at this boundary)."""
-        from ..core.observability import get_tracer
-
         # Instrument at the typed-command boundary, not at ``dispatch_search``:
         # eval harnesses and the answer pipeline call ``execute`` directly, so
         # a span here covers every entry path.

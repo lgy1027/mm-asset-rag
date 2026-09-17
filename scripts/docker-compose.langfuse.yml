@@ -4,6 +4,9 @@
 #
 #   docker compose -f scripts/docker-compose.langfuse.yml up -d
 #   open http://localhost:3000  → sign up → create project → copy API keys
+# WARNING: bootstraps FIXED dev API keys and a known dev password
+# (LANGFUSE_INIT_* / NEXTAUTH_SECRET / SALT below). Override them via the
+# environment before `up -d` for anything beyond local development.
 #
 # If Docker Hub is unreachable, pull images through a mirror first, e.g.:
 #   docker pull docker.m.daocloud.io/langfuse/langfuse:3

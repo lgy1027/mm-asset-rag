@@ -541,6 +541,16 @@ Instrumented seams (each becomes one span / generation):
 Buffered events flush at exit; tracing failures degrade to no-op and are
 logged, never raised.
 
+**Privacy note — what leaves the process.** Tracing ships the full LLM
+request payload to Langfuse, which includes system prompts, the user's raw
+query, and the retrieved document evidence assembled into the answer prompt
+(`llm.chat_completion` generation input), plus raw queries in span
+attributes. For anything beyond local development, self-host Langfuse (below)
+and keep its network unreachable from outside; do not point
+`LANGFUSE_HOST` at the cloud default with production corpora. To disable
+tracing entirely, unset `TRACING_PROVIDER` (or set it to `none`) — that
+restores the exact zero-telemetry behaviour of earlier versions.
+
 Self-hosted Langfuse (web + Postgres + Redis):
 
 ```bash

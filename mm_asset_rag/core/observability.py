@@ -99,10 +99,19 @@ class Span(Protocol):
 
 
 @runtime_checkable
+class SpanContext(Protocol):
+    """Context manager returned by ``Tracer.start_*``: enters to a ``Span``."""
+
+    def __enter__(self) -> Span: ...
+
+    def __exit__(self, *args: Any) -> bool: ...
+
+
+@runtime_checkable
 class Tracer(Protocol):
     """Factory for root observations. Implementations must be thread-safe."""
 
-    def start_span(self, name: str, *, attributes: dict[str, object] | None = None) -> Any:
+    def start_span(self, name: str, *, attributes: dict[str, object] | None = None) -> SpanContext:
         """Return a context manager yielding a ``Span``."""
         ...
 
@@ -114,7 +123,7 @@ class Tracer(Protocol):
         input: object | None = None,
         model_parameters: dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
-    ) -> Any:
+    ) -> SpanContext:
         """Return a context manager yielding an LLM ``Span``."""
         ...
 
@@ -166,6 +175,7 @@ class NoOpTracer:
 
 
 _tracer: Tracer | None = None
+_tracer_lock = Lock()
 
 
 def _build_tracer(settings: Any) -> Tracer:
@@ -182,10 +192,16 @@ def _build_tracer(settings: Any) -> Tracer:
 
 
 def get_tracer() -> Tracer:
-    """Return the process-wide tracer, building it from settings on first use."""
+    """Return the process-wide tracer, building it from settings on first use.
+
+    The built tracer is pinned to the settings snapshot at first call (mirrors
+    the cached ``get_settings``); a later env change does not reconfigure it.
+    """
     global _tracer
     if _tracer is None:
-        _tracer = _build_tracer(get_settings())
+        with _tracer_lock:
+            if _tracer is None:
+                _tracer = _build_tracer(get_settings())
     return _tracer
 
 

@@ -206,6 +206,54 @@ class FakeRawSpan:
         self.updates.append(kwargs)
 
 
+def test_timed_context_swallows_raw_failures():
+    """A raising raw span must never leak into the instrumented pipeline."""
+    import mm_asset_rag.core.langfuse_tracer as lt
+
+    class RaisingRaw:
+        def update(self, **kwargs):
+            raise ValueError("otel exploded")
+
+    class RaisingCM:
+        def __enter__(self):
+            return RaisingRaw()
+
+        def __exit__(self, *args):
+            raise RuntimeError("close exploded")
+
+    class RaisingClient:
+        def start_as_current_span(self, *, name, **kwargs):
+            return RaisingCM()
+
+    tracer = lt.LangfuseTracer(RaisingClient())
+
+    # Clean path: no exception escapes the with-block.
+    with tracer.start_span("clean"):
+        pass
+
+    # Exception path: the block's own ValueError propagates unchanged, and
+    # neither the failing attribute update nor the failing cm.__exit__
+    # replaces it.
+    with pytest.raises(ValueError, match="block-error"), tracer.start_span("fails"):
+        raise ValueError("block-error")
+
+    # enter() itself raising degrades to a no-op span.
+    class EnterRaisesCM:
+        def __enter__(self):
+            raise RuntimeError("enter exploded")
+
+        def __exit__(self, *args):
+            return False
+
+    class EnterRaisesClient:
+        def start_as_current_span(self, *, name, **kwargs):
+            return EnterRaisesCM()
+
+    tracer2 = lt.LangfuseTracer(EnterRaisesClient())
+    with tracer2.start_span("enter-fails") as span:
+        span.set_attribute("k", "v")  # must not raise
+
+
 # ── instrumentation seams ────────────────────────────────────────────────────
 
 

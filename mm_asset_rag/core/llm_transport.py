@@ -116,8 +116,12 @@ def _extract_usage(response: requests.Response) -> dict[str, int] | None:
     usage = payload.get("usage")
     if not isinstance(usage, dict):
         return None
-    prompt = usage.get("prompt_tokens") or usage.get("input_tokens")
-    completion = usage.get("completion_tokens") or usage.get("output_tokens")
+    # ``in`` checks, not ``or``: a legit 0 token count must not fall through
+    # to the alternate key name and get dropped from the report.
+    prompt = usage["prompt_tokens"] if "prompt_tokens" in usage else usage.get("input_tokens")
+    completion = (
+        usage["completion_tokens"] if "completion_tokens" in usage else usage.get("output_tokens")
+    )
     total = usage.get("total_tokens")
     out: dict[str, int] = {}
     if isinstance(prompt, int):

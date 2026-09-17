@@ -36,7 +36,7 @@ class IngestWorkflow:
             "ingest.task",
             attributes={
                 "task_id": record.task_id,
-                "assets": len(list(options.assets)),
+                "assets": len(options.assets),
                 "force": bool(record.force),
             },
         ):

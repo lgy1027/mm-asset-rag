@@ -65,21 +65,34 @@ class _TimedContext:
         self._name = name
         self._kwargs = kwargs
         self.span: _LangfuseSpan | None = None
+        self._cm: Any = None
 
     def __enter__(self) -> _LangfuseSpan:
-        starter = (
-            self._client.start_as_current_generation
-            if self._kind == "generation"
-            else self._client.start_as_current_span
-        )
-        self._started = time.perf_counter()
-        self._cm = starter(name=self._name, **self._kwargs)
-        raw = self._cm.__enter__()
-        self.span = _LangfuseSpan(raw)
-        return self.span
+        try:
+            starter = (
+                self._client.start_as_current_generation
+                if self._kind == "generation"
+                else self._client.start_as_current_span
+            )
+            self._started = time.perf_counter()
+            self._cm = starter(name=self._name, **self._kwargs)
+            raw = self._cm.__enter__()
+            self.span = _LangfuseSpan(raw)
+            return self.span
+        except Exception as exc:
+            # Tracing must never break the pipeline: a failing span start
+            # degrades to a do-nothing span for the rest of the block.
+            log.warning("langfuse span start failed: %s; span disabled", exc)
+            self.span = _LangfuseSpan(_FailingRawSpan())
+            return self.span
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
-        elapsed_ms = int((time.perf_counter() - self._started) * 1000)
+        if self._cm is None:
+            return False  # enter() already degraded; nothing to close
+        try:
+            elapsed_ms = int((time.perf_counter() - self._started) * 1000)
+        except AttributeError:
+            elapsed_ms = 0
         try:
             if self.span is not None:
                 self.span.set_attribute("elapsed_ms", elapsed_ms)
@@ -88,9 +101,24 @@ class _TimedContext:
                         level="ERROR",
                         status_message=f"{type(exc).__name__}: {exc}",
                     )
+        except Exception as log_exc:
+            # Attribute stamping is telemetry — never mask the block's own
+            # exception (or convert a clean return into a failure).
+            log.warning("langfuse span attribute update failed: %s", log_exc)
         finally:
-            self._cm.__exit__(exc_type, exc, tb)
+            cm, self._cm = self._cm, None
+            try:
+                cm.__exit__(exc_type, exc, tb)
+            except Exception as exit_exc:
+                log.warning("langfuse span close failed: %s", exit_exc)
         return False
+
+
+class _FailingRawSpan:
+    """Stand-in raw span used when span start failed: every call no-ops."""
+
+    def update(self, **kwargs: Any) -> None:
+        return None
 
 
 class LangfuseTracer:
