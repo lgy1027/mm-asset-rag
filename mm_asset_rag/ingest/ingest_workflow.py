@@ -253,6 +253,11 @@ class IngestWorkflow:
                         current=f"skip cached document: {status_key}",
                     )
                     continue
+                # ParseOptions carries per-task overrides (CLI --ocr/--vlm);
+                # the ENABLE_OCR / ENABLE_VLM settings are the global
+                # defaults so API-uploaded assets get the same tiers.
+                enable_ocr = options.enable_ocr or service._settings.enable_ocr
+                enable_vlm = options.enable_vlm or service._settings.enable_vlm
                 try:
                     if asset.source_type == "pdf":
                         parser = service_module.get_parser("pdf", options.pdf_parser)
@@ -261,8 +266,8 @@ class IngestWorkflow:
                         parser = service_module.get_parser("image", "image")
                         documents = parser.parse(
                             asset,
-                            enable_ocr=options.enable_ocr,
-                            enable_vlm=options.enable_vlm,
+                            enable_ocr=enable_ocr,
+                            enable_vlm=enable_vlm,
                         )
                     elif asset.source_type == "document":
                         parser = service_module.get_parser("document", options.document_parser)
@@ -272,7 +277,7 @@ class IngestWorkflow:
                         documents = parser.parse(asset)
                     elif asset.source_type == "video":
                         parser = service_module.get_parser("video", options.video_parser)
-                        documents = parser.parse(asset, enable_vlm=options.enable_vlm)
+                        documents = parser.parse(asset, enable_vlm=enable_vlm)
                     else:
                         documents = []
                 except Exception as exc:

@@ -93,3 +93,62 @@ def test_parse_converts_transient_parser_output_to_v2_chunk(tmp_home: Path, monk
     assert raw["chunk_id"] == "scene:0"
     assert record.document_statuses == {"scene": "ok"}
     assert contextual_calls == []
+
+
+def test_parse_video_honours_settings_enable_vlm(tmp_home: Path, monkeypatch) -> None:
+    """ENABLE_VLM=true must reach the video parser for API-style parses
+    (ParseOptions carries no per-task override)."""
+    from mm_asset_rag.core.settings import get_settings
+    from mm_asset_rag.parsers import video_parser
+
+    video_path = tmp_home / "assets" / "video" / "talk.mp4"
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    video_path.write_bytes(b"mp4 bytes")
+    asset = IngestAsset(
+        asset_id="talk",
+        title="Talk",
+        source_type="video",
+        relative_path="video/talk.mp4",
+        asset_dir=tmp_home / "assets",
+    )
+    document = Document(
+        document_id="talk",
+        title="Talk",
+        source=Source(source_id="upload:talk"),
+        access_policy=AccessPolicy(collection="team", allowed_principals=("alice",)),
+    )
+    upsert_record(
+        DocumentRecord(
+            document=document,
+            asset=PersistedAsset(
+                content_hash="e" * 64,
+                source_type="video",
+                relative_path=asset.relative_path,
+            ),
+        )
+    )
+
+    seen: list[bool] = []
+
+    def fake_parse_video(asset, *, enable_vlm=False, chunk_seconds=None):
+        seen.append(enable_vlm)
+        return [
+            video_parser.ParsedChunk(text="语音内容", metadata={"document_id": "talk"})
+        ]
+
+    # The registered parser binds ``parse_video`` in the parsers package
+    # namespace, so patch the name where it is looked up.
+    import mm_asset_rag.parsers as parsers_pkg
+
+    monkeypatch.setattr(parsers_pkg, "parse_video", fake_parse_video)
+    get_settings.cache_clear()
+    monkeypatch.setenv("ENABLE_VLM", "true")
+    try:
+        service = IngestService()
+        record = TaskRecord(task_id="parse-video", kind="parse", status="running", total=1)
+        IngestWorkflow().parse(service, record, ParseOptions(assets=[asset]))
+    finally:
+        get_settings.cache_clear()
+
+    assert seen == [True]
+    assert record.document_statuses == {"talk": "ok"}

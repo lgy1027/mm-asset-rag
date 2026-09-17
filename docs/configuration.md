@@ -524,8 +524,9 @@ unchanged. Design and roadmap: [`docs/design-audio-video.md`](design-audio-video
 3. **Keyframe VLM captions** (opt-in) — one frame every
    `VIDEO_FRAME_INTERVAL_S` seconds gets a concise caption via the
    configured `VLM_*`, covering slides/diagrams/silent footage that
-   speech and subtitles never mention. Enable with the same
-   `--vlm` / `enable_vlm` flag as image captions.
+   speech and subtitles never mention. Enabled globally by
+   `ENABLE_VLM=true` or per task with the CLI `--vlm` flag (same
+   opt-in as image captions).
 
 | Variable | Default | Purpose |
 | --- | ---: | --- |
