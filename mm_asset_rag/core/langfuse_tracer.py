@@ -113,6 +113,7 @@ class LangfuseTracer:
         *,
         model: str | None = None,
         input: object | None = None,
+        model_parameters: dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
     ) -> _TimedContext:
         kwargs: dict[str, Any] = {}
@@ -120,6 +121,8 @@ class LangfuseTracer:
             kwargs["model"] = model
         if input is not None:
             kwargs["input"] = input
+        if model_parameters:
+            kwargs["model_parameters"] = dict(model_parameters)
         merged: dict[str, object] = {}
         if metadata:
             merged.update(metadata)

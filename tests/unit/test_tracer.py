@@ -52,10 +52,14 @@ class RecordingTracer:
         yield span
 
     @contextmanager
-    def start_generation(self, name, *, model=None, input=None, metadata=None):
+    def start_generation(
+        self, name, *, model=None, input=None, model_parameters=None, metadata=None
+    ):
         span = RecordingSpan(self.generations, name)
         if model:
             span.attributes["model"] = model
+        if model_parameters:
+            span.attributes["model_parameters"] = model_parameters
         if metadata:
             span.attributes.update(metadata)
         self.generations.append(span)
@@ -232,6 +236,44 @@ def test_llm_transport_emits_generation(monkeypatch):
     assert gen.attributes["model"] == "test-model"
     assert gen.attributes["stream"] is False
     assert gen.attributes["status_code"] == 200
+    assert gen.attributes["model_parameters"] == {
+        "stream": False,
+        "temperature": 0.1,
+        "max_tokens": None,
+    }
+
+
+def test_llm_transport_extracts_usage(monkeypatch):
+    """Non-streaming completions report token usage; stream/absent → None."""
+    from mm_asset_rag.core.llm_transport import _extract_usage
+
+    class Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    assert _extract_usage(
+        Resp({"usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}})
+    ) == {
+        "input": 11,
+        "output": 7,
+        "total": 18,
+    }
+    # OpenAI-style new key names
+    assert _extract_usage(Resp({"usage": {"input_tokens": 3, "output_tokens": 4}})) == {
+        "input": 3,
+        "output": 4,
+    }
+    assert _extract_usage(Resp({"choices": []})) is None
+    assert _extract_usage(Resp("not-a-dict")) is None
+
+    class BrokenJson:
+        def json(self):
+            raise ValueError("no json")
+
+    assert _extract_usage(BrokenJson()) is None
 
 
 def test_dispatch_search_emits_span(monkeypatch):

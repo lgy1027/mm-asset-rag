@@ -112,6 +112,7 @@ class Tracer(Protocol):
         *,
         model: str | None = None,
         input: object | None = None,
+        model_parameters: dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
     ) -> Any:
         """Return a context manager yielding an LLM ``Span``."""
@@ -155,6 +156,7 @@ class NoOpTracer:
         *,
         model: str | None = None,
         input: object | None = None,
+        model_parameters: dict[str, object] | None = None,
         metadata: dict[str, object] | None = None,
     ):
         yield _NO_OP_SPAN

@@ -73,6 +73,11 @@ def post_chat_completion(
         "llm.chat_completion",
         model=model,
         input=messages,
+        model_parameters={
+            "stream": stream,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        },
         metadata={
             "stream": stream,
             "temperature": temperature,
@@ -90,4 +95,35 @@ def post_chat_completion(
         status_code = getattr(response, "status_code", None)
         if status_code is not None:
             span.set_attribute("status_code", status_code)
+        if not stream:
+            span.update(usage=_extract_usage(response))
         return response
+
+
+def _extract_usage(response: requests.Response) -> dict[str, int] | None:
+    """Pull ``usage`` token counts out of a non-streaming completion body.
+
+    Returns Langfuse-style ``{"input": n, "output": n, "total": n}`` keys, or
+    ``None`` when the provider sent no usage block (or the body is not JSON).
+    Never raises — usage is telemetry, not transport.
+    """
+    try:
+        payload = response.json()
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    prompt = usage.get("prompt_tokens") or usage.get("input_tokens")
+    completion = usage.get("completion_tokens") or usage.get("output_tokens")
+    total = usage.get("total_tokens")
+    out: dict[str, int] = {}
+    if isinstance(prompt, int):
+        out["input"] = prompt
+    if isinstance(completion, int):
+        out["output"] = completion
+    if isinstance(total, int):
+        out["total"] = total
+    return out or None
