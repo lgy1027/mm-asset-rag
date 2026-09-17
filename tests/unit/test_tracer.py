@@ -35,6 +35,14 @@ class RecordingSpan:
             "status_message": status_message,
         }
 
+    def score(self, *, name, value, comment=None, metadata=None):
+        self.terminal.setdefault("scores", []).append(
+            {"name": name, "value": value, "comment": comment, "metadata": metadata}
+        )
+
+    def set_tags(self, tags):
+        self.attributes["tags"] = list(tags)
+
 
 class RecordingTracer:
     """Captures every span/generation opened through it."""
@@ -360,8 +368,57 @@ def test_dispatch_search_emits_span(monkeypatch):
     span = tracer.spans[0]
     assert span.attributes["input"] == "q"
     assert span.attributes["top_k"] == 3
+    assert span.attributes["tags"] == ["route:text-to-image", "collection:docs"]
     assert span.terminal["output"]["returned"] == 1
     assert span.terminal["output"]["route"] == "text-to-image"
+
+
+def test_eval_case_emits_span_with_retrieval_scores(tmp_path):
+    from mm_asset_rag.core.schema import SearchHit
+    from mm_asset_rag.eval.evaluation import run_eval
+
+    tracer = RecordingTracer()
+    set_tracer(tracer)
+    cases = tmp_path / "cases.json"
+    cases.write_text(
+        '{"version": "v1", "groups": {'
+        '"en": [{"query_id": "q1", "query": "handbook"}], '
+        '"negative": [{"query_id": "n1", "query": "offtopic"}]}, '
+        '"qrels": {"q1": {"doc-1": 1}, "n1": {}}}',
+        encoding="utf-8",
+    )
+
+    def search(command):
+        hit = SearchHit(
+            route="text",
+            score=0.9,
+            asset_id="a1",
+            title="t",
+            source_type="pdf",
+            source_path="p",
+            evidence="e",
+            metadata={"document_id": "doc-1"},
+        )
+        return [hit] if "handbook" in command.query else []
+
+    results = run_eval(
+        search_fn=search,
+        collection="team",
+        principal="alice",
+        cases_path=cases,
+    )
+    assert [result.hit for result in results] == [True, False]
+    assert [s.name for s in tracer.spans] == ["eval.case", "eval.case"]
+    positive, negative = tracer.spans
+    assert positive.attributes["query_id"] == "q1"
+    assert positive.terminal["scores"] == [
+        {"name": "retrieval_hit", "value": 1.0, "comment": "rank=1", "metadata": None}
+    ]
+    assert [s["name"] for s in negative.terminal["scores"]] == [
+        "retrieval_hit",
+        "negative_reject",
+    ]
+    assert negative.terminal["scores"][1]["value"] == 1.0
 
 
 def test_answer_question_emits_span(monkeypatch):

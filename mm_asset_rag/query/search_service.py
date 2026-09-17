@@ -218,6 +218,9 @@ class SearchService:
                 "" if hits else ("no_candidates" if not candidates else "access_policy_filtered")
             )
             elapsed_ms = int((perf_counter() - started_at) * 1000)
+            # Trace tags replace the whole list, so set them exactly once at
+            # the single point where the final route is known.
+            span.set_tags([f"route:{mode.value}", f"collection:{command.collection or 'default'}"])
             span.update(
                 output={
                     "returned": len(hits),

@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from ..core.metrics import aggregate_metrics
+from ..core.observability import get_tracer
 from ..core.paths import get_eval_report
 from ..core.schema import SearchHit
 from ..query.search_service import SearchCommand, SearchMode, get_search_service
@@ -60,19 +61,37 @@ def run_eval(
     for group in ("en", "zh", "zh_doc", "legacy", "negative"):
         for case in groups.get(group, ()):
             query = str(case["query"])
-            hits = search(
-                SearchCommand(
-                    query=query,
-                    mode=SearchMode.HYBRID,
-                    top_k=top_k,
-                    collection=collection,
-                    metadata_filter=metadata_filter,
-                    principal=principal,
+            # Wrap each case so retrieval scores land on the query's trace
+            # (search.dispatch nests underneath as a child observation).
+            with get_tracer().start_span(
+                "eval.case",
+                attributes={"query_id": str(case["query_id"]), "group": group},
+                input=query,
+            ) as span:
+                hits = search(
+                    SearchCommand(
+                        query=query,
+                        mode=SearchMode.HYBRID,
+                        top_k=top_k,
+                        collection=collection,
+                        metadata_filter=metadata_filter,
+                        principal=principal,
+                    )
                 )
-            )
-            actual = _document_ids(hits)
-            qrels = dict(case["qrels"])
-            rank = _first_relevant_rank(actual, qrels)
+                actual = _document_ids(hits)
+                qrels = dict(case["qrels"])
+                rank = _first_relevant_rank(actual, qrels)
+                span.score(
+                    name="retrieval_hit",
+                    value=1.0 if rank is not None else 0.0,
+                    comment=f"rank={rank}",
+                )
+                if group == "negative":
+                    span.score(
+                        name="negative_reject",
+                        value=1.0 if rank is None else 0.0,
+                        comment=f"rank={rank}",
+                    )
             results.append(
                 EvalResult(
                     query_id=str(case["query_id"]),

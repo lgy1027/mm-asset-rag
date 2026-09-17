@@ -51,6 +51,24 @@ class _LangfuseSpan:
         if kwargs:
             self._raw.update(**kwargs)
 
+    def score(
+        self,
+        *,
+        name: str,
+        value: float,
+        comment: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        kwargs: dict[str, Any] = {"name": name, "value": value}
+        if comment:
+            kwargs["comment"] = comment
+        if metadata:
+            kwargs["metadata"] = metadata
+        self._raw.score(**kwargs)
+
+    def set_tags(self, tags: list[str]) -> None:
+        self._raw.update_trace(tags=list(tags))
+
 
 class _TimedContext:
     """Context manager wrapping one ``start_as_current_*`` call.
@@ -118,6 +136,12 @@ class _FailingRawSpan:
     """Stand-in raw span used when span start failed: every call no-ops."""
 
     def update(self, **kwargs: Any) -> None:
+        return None
+
+    def score(self, **kwargs: Any) -> None:
+        return None
+
+    def update_trace(self, **kwargs: Any) -> None:
         return None
 
 

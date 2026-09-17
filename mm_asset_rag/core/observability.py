@@ -97,6 +97,26 @@ class Span(Protocol):
         """Merge terminal details (output / token usage / error level)."""
         ...
 
+    def score(
+        self,
+        *,
+        name: str,
+        value: float,
+        comment: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        """Attach a quality score to the trace this observation belongs to.
+
+        Scores are the primary Langfuse filtering/aggregation dimension
+        (recall trends, answer quality), so evaluators report through this
+        hook instead of logging.
+        """
+        ...
+
+    def set_tags(self, tags: list[str]) -> None:
+        """Set trace-level tags (replaces), e.g. ``collection:x mode:hybrid``."""
+        ...
+
 
 @runtime_checkable
 class SpanContext(Protocol):
@@ -157,6 +177,19 @@ class _NoOpSpan:
         level: str | None = None,
         status_message: str | None = None,
     ) -> None:
+        return None
+
+    def score(
+        self,
+        *,
+        name: str,
+        value: float,
+        comment: str | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> None:
+        return None
+
+    def set_tags(self, tags: list[str]) -> None:
         return None
 
 

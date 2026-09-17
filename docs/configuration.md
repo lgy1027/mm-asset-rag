@@ -539,6 +539,18 @@ Instrumented seams (each becomes one span / generation):
 - `rerank.score` — candidates, blend factor, top re-scored hits
 - `answer.generate` — question, answer length, refusal flag
 - `ingest.task` — task id, asset count, force flag
+- `eval.case` — one per eval case (query id, group); the case's retrieval
+  outcome is attached as `retrieval_hit` (and `negative_reject` for negative
+  cases) Langfuse scores, so the dashboard can chart hit rate per run
+
+Each trace is tagged `route:<search-mode>` and `collection:<name>`; filter
+traces by tag in the Langfuse UI.
+
+**Cost display.** Langfuse only computes token costs for models in its price
+table. For custom model names (e.g. a self-hosted or relayed deployment),
+open the project **Settings → Models** page in Langfuse, add the model with
+its input/output unit price, and costs appear on existing and future
+generations automatically.
 
 One `search.dispatch` trace therefore shows the full per-query pipeline:
 rewrite generation → parallel per-variant `qdrant.text_search` (each with an
