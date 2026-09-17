@@ -15,6 +15,7 @@ class EmbeddingConfigError(RuntimeError):
 
 class TextEmbedder:
     modality = "text"
+    _span_name = "embed.text"
 
     def __init__(
         self, *, api_key=None, base_url=None, model=None, settings=None, **overrides
@@ -62,13 +63,26 @@ class TextEmbedder:
         return self.embed_batch([content])[0]
 
     def embed_batch(self, contents: list[Any]) -> list[list[float]]:
-        vectors: list[list[float]] = []
+        from ..core.observability import get_tracer
+
         texts = [str(item)[: self.max_input_chars] for item in contents]
-        for start in range(0, len(texts), self.batch_size):
-            vectors.extend(self._remote_batch(texts[start : start + self.batch_size]))
-            if self.request_interval:
-                time.sleep(self.request_interval)
-        return vectors
+        with get_tracer().start_span(
+            self._span_name,
+            attributes={
+                "model": self.model,
+                "items": len(texts),
+                "chars": sum(len(t) for t in texts),
+                "batch_size": self.batch_size,
+            },
+        ) as span:
+            vectors: list[list[float]] = []
+            for start in range(0, len(texts), self.batch_size):
+                vectors.extend(self._remote_batch(texts[start : start + self.batch_size]))
+                if self.request_interval:
+                    time.sleep(self.request_interval)
+            dim = len(vectors[0]) if vectors else 0
+            span.update(output={"vectors": len(vectors), "dim": dim})
+            return vectors
 
     def _remote_batch(self, texts: list[str]) -> list[list[float]]:
         return self.adapter.embed_batch(texts)

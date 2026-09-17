@@ -258,7 +258,13 @@ def qdrant_text_search(
             include_image_sources=include_image_sources,
             search_filter=search_filter,
         )
-        span.update(output={"hits": len(hits)})
+        span.update(
+            output={
+                "hits": len(hits),
+                "top_scores": [round(h.score, 4) for h in hits[:5]],
+                "top_assets": [h.asset_id for h in hits[:5]],
+            }
+        )
         return hits
 
 

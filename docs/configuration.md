@@ -532,11 +532,18 @@ When `TRACING_PROVIDER=langfuse`:
 Instrumented seams (each becomes one span / generation):
 
 - `llm.chat_completion` — every LLM call (model, streaming, params, latency)
-- `search.dispatch` — query / mode / top_k / hit count
-- `qdrant.text_search` — backend text search latency + hit count
-- `rerank.score` — candidate count + blend config
+- `search.dispatch` — query / mode / top_k / candidates / returned / route / reason
+- `embed.text` — remote text embedding (model, items, chars, vector dim)
+- `embed.image_text` / `embed.image` — CLIP query/image encoding
+- `qdrant.text_search` — backend text search latency + top hit scores/assets
+- `rerank.score` — candidates, blend factor, top re-scored hits
 - `answer.generate` — question, answer length, refusal flag
 - `ingest.task` — task id, asset count, force flag
+
+One `search.dispatch` trace therefore shows the full per-query pipeline:
+rewrite generation → parallel per-variant `qdrant.text_search` (each with an
+`embed.text` child) → `rerank.score`, with every stage's timing and response
+parameters (scores, vector dims, token usage, model parameters) attached.
 
 Buffered events flush at exit; tracing failures degrade to no-op and are
 logged, never raised.

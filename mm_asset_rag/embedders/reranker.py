@@ -69,8 +69,16 @@ class Reranker:
         with get_tracer().start_span(
             "rerank.score",
             attributes={"candidates": len(hits), "top_k": top_k},
-        ):
-            return self._rerank(query, hits, top_k=top_k)
+        ) as span:
+            ranked = self._rerank(query, hits, top_k=top_k)
+            span.update(
+                output={
+                    "returned": len(ranked),
+                    "blend": round(get_settings().reranker_hybrid_blend, 3),
+                    "top_scores": [round(h.score, 4) for h in ranked[:5]],
+                }
+            )
+            return ranked
 
     def _rerank(self, query: str, hits: list[SearchHit], *, top_k: int) -> list[SearchHit]:
         """Score ``hits`` against ``query`` and return the top-k.

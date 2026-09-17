@@ -68,8 +68,16 @@ class ImageEmbedder:
         return self.embed_image(Path(content))
 
     def embed_text(self, text: str) -> list[float]:
-        model = self._load_model()
-        return [float(v) for v in model.encode(text, normalize_embeddings=True).tolist()]
+        from ..core.observability import get_tracer
+
+        with get_tracer().start_span(
+            "embed.image_text",
+            attributes={"model": str(getattr(self, "model", self.__class__.__name__))},
+        ) as span:
+            model = self._load_model()
+            vector = [float(v) for v in model.encode(text, normalize_embeddings=True).tolist()]
+            span.update(output={"dim": len(vector)})
+            return vector
 
     def embed_image(self, image_path: Path) -> list[float] | None:
         """Encode one image. ``None`` if the file cannot be opened / encoded.
@@ -89,7 +97,12 @@ class ImageEmbedder:
         except ImageEmbeddingUnavailable:
             return None
         try:
-            return [float(v) for v in model.encode(image, normalize_embeddings=True).tolist()]
+            from ..core.observability import get_tracer
+
+            with get_tracer().start_span("embed.image") as span:
+                vector = [float(v) for v in model.encode(image, normalize_embeddings=True).tolist()]
+                span.update(output={"dim": len(vector)})
+                return vector
         except Exception:
             return None
 

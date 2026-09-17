@@ -96,8 +96,29 @@ def post_chat_completion(
         if status_code is not None:
             span.set_attribute("status_code", status_code)
         if not stream:
-            span.update(usage=_extract_usage(response))
+            span.update(usage=_extract_usage(response), output=_extract_output(response))
         return response
+
+
+def _extract_output(response: requests.Response, *, max_chars: int = 2000) -> str | None:
+    """First completion choice text from a non-streaming body, for tracing.
+
+    Truncated to ``max_chars`` — full transcripts live in the application,
+    telemetry only needs enough to audit what the model was asked and
+    answered. ``None`` when unavailable; never raises.
+    """
+    try:
+        payload = response.json()
+    except (ValueError, AttributeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    text = str(content)
+    return text[:max_chars]
 
 
 def _extract_usage(response: requests.Response) -> dict[str, int] | None:
