@@ -58,8 +58,12 @@ def run_eval(
     search = search_fn or get_search_service().execute
     groups = load_cases(cases_path)
     results: list[EvalResult] = []
-    for group in ("en", "zh", "zh_doc", "legacy", "negative"):
-        for case in groups.get(group, ()):
+    # Iterate the groups present in the cases file rather than a fixed
+    # menu — user-supplied case files name their own groups, and a group
+    # skipped here is silently unscored. The bundled default's groups
+    # are all covered by this; "negative" keeps its reject scoring below.
+    for group, group_cases in groups.items():
+        for case in group_cases:
             query = str(case["query"])
             # Wrap each case so retrieval scores land on the query's trace
             # (search.dispatch nests underneath as a child observation).

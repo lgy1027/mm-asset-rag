@@ -219,3 +219,36 @@ def test_write_eval_report_includes_required_metrics(tmp_path: Path) -> None:
     assert payload["metrics"]["all"]["recall"]["1"] == 1.0
     assert payload["per_query"][0]["qrels"] == {"doc": 3}
     assert payload["per_query"][0]["actual_document_ids"] == ["doc"]
+
+
+def test_run_eval_scores_user_named_groups(tmp_path: Path) -> None:
+    """User-supplied case files name their own groups; run_eval must score
+    every group in the file, not a hardcoded menu (silently skipping a
+    group leaves it unscored and the report shows an empty eval)."""
+    path = tmp_path / "cases.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": "v1",
+                "groups": {
+                    "口播音频": [{"query_id": "k1", "query": "三伏天"}],
+                    "健康养生": [{"query_id": "j1", "query": "空腹"}],
+                },
+                "qrels": {"k1": {"三伏天养生": 1}, "j1": {"空腹力_36": 1}},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    results = run_eval(
+        top_k=5,
+        cases_path=path,
+        collection="team",
+        principal="alice",
+        search_fn=lambda _command: [_hit("三伏天养生")],
+    )
+
+    assert {r.query_id for r in results} == {"k1", "j1"}
+    by_id = {r.query_id: r for r in results}
+    assert by_id["k1"].group == "口播音频" and by_id["k1"].hit
+    assert by_id["j1"].group == "健康养生" and not by_id["j1"].hit
