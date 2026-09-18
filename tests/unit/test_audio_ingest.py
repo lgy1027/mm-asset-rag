@@ -170,6 +170,7 @@ def test_parse_audio_chunks_carry_timestamps(tmp_path, monkeypatch):
     assert len(chunks) == 1
     assert chunks[0].metadata["start"] == 0.0
     assert chunks[0].metadata["end"] == 12.0
+    assert chunks[0].metadata["kind"] == "asr"
     assert chunks[0].metadata["parser"] == "audio-funasr"
     assert "第一句" in chunks[0].text
 

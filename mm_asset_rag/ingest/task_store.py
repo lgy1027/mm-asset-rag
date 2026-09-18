@@ -16,6 +16,16 @@ class TaskStoreError(RuntimeError):
     """Raised when the task database cannot be read safely."""
 
 
+def _record_from_payload(obj: dict) -> TaskRecord:
+    """Build a record from a persisted payload, ignoring unknown keys.
+
+    Older schema versions may leave extra fields (e.g. ``version_statuses``)
+    in stored payloads; those must not crash task listing/retry.
+    """
+    known = {f.name for f in TaskRecord.__dataclass_fields__.values()}
+    return TaskRecord(**{key: value for key, value in obj.items() if key in known})
+
+
 @dataclass
 class TaskRecord:
     task_id: str
@@ -65,7 +75,7 @@ class TaskStore:
                 continue
             task_id = obj.get("task_id") if isinstance(obj, dict) else None
             if isinstance(task_id, str) and task_id:
-                records.append(TaskRecord(**obj))
+                records.append(_record_from_payload(obj))
         return records
 
     def save(self, record: TaskRecord) -> None:
@@ -113,7 +123,7 @@ class TaskStore:
             except json.JSONDecodeError:
                 continue
             if isinstance(obj, dict):
-                records.append(TaskRecord(**obj))
+                records.append(_record_from_payload(obj))
         return records
 
     def delete(self, task_id: str) -> bool:

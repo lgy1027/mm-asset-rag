@@ -482,7 +482,16 @@ def _payload_to_hit(route: str, score: float, payload: dict[str, object]) -> Sea
         source_type=str(payload.get("source_type", "")),
         source_path=str(payload.get("source_path", "")),
         evidence=evidence,
-        metadata={**dict(payload), "document_id": str(payload.get("document_id", ""))},
+        # Flatten parser-owned chunk metadata into the public hit
+        # metadata so consumers (serializers, playback positioning,
+        # evidence policy) see page/start/end/kind at the top level.
+        # Payload identity fields win collisions; the nested
+        # ``chunk_metadata`` copy stays for explicit readers.
+        metadata={
+            **chunk_metadata,
+            **dict(payload),
+            "document_id": str(payload.get("document_id", "")),
+        },
         images=list(images) if isinstance(images, list) else [],
         cache_id=str(payload.get("cache_id", "")),
     )

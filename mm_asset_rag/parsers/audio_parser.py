@@ -141,6 +141,7 @@ def parse_audio(
                 metadata={
                     "asset_id": asset.asset_id,
                     "asset_title": asset.title,
+                    "kind": "asr",
                     "source_type": "audio",
                     "source_path": asset.relative_path,
                     "source_url": asset.source_url,

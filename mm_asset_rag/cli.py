@@ -180,6 +180,11 @@ def _serialize_hit(hit) -> dict[str, object]:
         "page": metadata.get("page"),
         "parser": metadata.get("parser") or metadata.get("provider"),
         "images": _without_asset_id(hit.images or metadata.get("images") or []),
+        # Media chunks (audio/video) carry playback positioning, same
+        # fields as the HTTP API contract.
+        "kind": metadata.get("kind"),
+        "start": metadata.get("start"),
+        "end": metadata.get("end"),
     }
 
 

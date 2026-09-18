@@ -987,3 +987,122 @@ def test_get_qdrant_client_remote_mode_no_local_cache_to_close(monkeypatch) -> N
 
     assert constructed == ["http://example:6333"]
     assert qdrant_client._QDRANT_CLIENT is None
+
+
+def test_qdrant_hit_flattens_chunk_metadata_for_media_playback() -> None:
+    """Parser-owned fields (start/end/kind/page) must be visible in the
+    public hit metadata — serializers read them at the top level."""
+    hit = qdrant_search._payload_to_hit(
+        "text",
+        0.9,
+        {
+            "document_id": "podcast-1",
+            "title": "口播",
+            "source_type": "audio",
+            "source_path": "audio/clip.mp3",
+            "text": "三伏天养生…",
+            "chunk_metadata": {
+                "kind": "asr",
+                "start": 0.19,
+                "end": 21.14,
+                "duration_s": 20.95,
+                "page": None,
+                "parser": "audio",
+                "source_type": "audio",
+            },
+        },
+    )
+
+    assert hit.metadata["start"] == 0.19
+    assert hit.metadata["end"] == 21.14
+    assert hit.metadata["kind"] == "asr"
+    assert hit.metadata["page"] is None
+    assert hit.metadata["parser"] == "audio"
+    assert hit.metadata["document_id"] == "podcast-1"
+    # Payload identity fields win collisions; nested copy stays for
+    # consumers that already read chunk_metadata explicitly.
+    assert hit.metadata["source_type"] == "audio"
+    assert hit.metadata["chunk_metadata"]["start"] == 0.19
+
+
+def _make_chunk(text: str, metadata: dict):
+    from mm_asset_rag.core.knowledge_models import (
+        AccessPolicy,
+        Asset,
+        Chunk,
+        Document,
+        Source,
+    )
+
+    source = Source(source_id="upload:t", uri="uploads/t.mp3")
+    policy = AccessPolicy(collection="c", allowed_principals=("alice",))
+    document = Document("doc", "Doc", source, policy)
+    return Chunk.create(
+        document=document,
+        asset=Asset("b" * 64, "audio", "audio/t.mp3"),
+        ordinal=0,
+        text=text,
+        source=source,
+        access_policy=policy,
+        metadata=metadata,
+    )
+
+
+def test_searchable_text_prepends_title_and_context() -> None:
+    from mm_asset_rag.backends.qdrant.indexing import _searchable_text
+
+    assert (
+        _searchable_text(_make_chunk("body", {"asset_title": "口播主题"}))
+        == "口播主题\n\nbody"
+    )
+    assert (
+        _searchable_text(
+            _make_chunk("body", {"asset_title": "T", "context": "chunk context"})
+        )
+        == "T\n\nchunk context\n\nbody"
+    )
+    # No title / no context → bare body, matching pre-change behavior.
+    assert _searchable_text(_make_chunk("body", {})) == "body"
+    assert _searchable_text(_make_chunk("body", {"context": "ctx"})) == "ctx\n\nbody"
+
+
+def test_index_embeds_title_but_payload_text_stays_raw(
+    monkeypatch, fake_qdrant_client
+) -> None:
+    """Embedding/BM25 input includes the title; stored payload text stays the
+    raw body so evidence and answers are unpolluted."""
+    chunk = _make_chunk(
+        "transcript body",
+        {"asset_id": "legacy", "asset_title": "单口喜剧吐槽"},
+    )
+    embedder = MagicMock()
+    embedder.embed.return_value = [0.1, 0.2]
+    captured_embed_texts: list[str] = []
+    embedder.embed_batch.side_effect = lambda texts: (
+        captured_embed_texts.extend(texts) or [[0.1, 0.2] for _ in texts]
+    )
+    captured_bm25_texts: list[str] = []
+    monkeypatch.setattr(qdrant_indexing, "read_documents", lambda: [chunk])
+    monkeypatch.setattr(qdrant_indexing, "get_default_text_embedder", lambda: embedder)
+    monkeypatch.setattr(
+        qdrant_indexing,
+        "_embed_bm25",
+        lambda texts: captured_bm25_texts.extend(texts)
+        or [qdrant_indexing.models.SparseVector(indices=[1], values=[1.0])],
+    )
+    monkeypatch.setattr(qdrant_indexing, "get_qdrant_client", lambda: fake_qdrant_client)
+    monkeypatch.setattr(qdrant_indexing, "text_collection", lambda dim: "v2_text")
+    monkeypatch.setattr(qdrant_indexing, "_create_collection", lambda *a, **k: None)
+    fake_qdrant_client.retrieve.return_value = []
+    captured_points = []
+    fake_qdrant_client.upsert.side_effect = lambda *, collection_name, points, wait: (
+        captured_points.extend(points)
+    )
+
+    qdrant_indexing.build_qdrant_text_index(force_recreate=True)
+
+    # Probe embeds doc 0's searchable text; batch loop must not duplicate it.
+    assert embedder.embed.call_args[0][0] == "单口喜剧吐槽\n\ntranscript body"
+    assert captured_embed_texts == []  # probe reuse covered doc 0
+    assert captured_bm25_texts == ["单口喜剧吐槽\n\ntranscript body"]
+    assert captured_points[0].payload["text"] == "transcript body"

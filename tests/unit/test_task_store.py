@@ -24,3 +24,32 @@ def test_load_raises_for_corrupt_database(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="task store"):
         TaskStore(tmp_path).load()
+
+
+def test_load_ignores_fields_from_older_schema_versions(tmp_path):
+    """Records persisted by an older schema (e.g. carrying
+    ``version_statuses``) must not crash task listing/retry."""
+    import sqlite3
+
+    db = tmp_path / "tasks.db"
+    payload = {
+        "task_id": "legacy-1",
+        "kind": "ingest",
+        "status": "done",
+        "version_statuses": {"doc-a": "indexed"},
+        "unknown_future_field": 123,
+    }
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            "CREATE TABLE tasks (task_id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at REAL)"
+        )
+        conn.execute(
+            "INSERT INTO tasks VALUES (?, ?, ?)",
+            ("legacy-1", __import__("json").dumps(payload), 1.0),
+        )
+
+    store = TaskStore.__new__(TaskStore)
+    store._data_dir = tmp_path
+    records = store.load()
+    assert [r.task_id for r in records] == ["legacy-1"]
+    assert records[0].status == "done"

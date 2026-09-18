@@ -330,6 +330,10 @@ class IngestWorkflow:
             except Exception as exc:
                 failed += 1
                 local_statuses[status_key] = "failed"
+                print(
+                    f"[task {record.task_id}] parse failed for document "
+                    f"{status_key}: {type(exc).__name__}: {exc}"
+                )
                 service._patch(
                     record,
                     processed=index,
