@@ -59,7 +59,7 @@ import requests
 from ..core.llm_transport import LlmTransportError, post_chat_completion
 from ..core.schema import SearchHit
 from ..core.settings import Settings, get_settings
-from .retrieval import hybrid_search, merge_hits
+from .retrieval import filter_low_evidence_hits, hybrid_search, merge_hits
 
 if TYPE_CHECKING:
     from ..core.protocols import SearchBackend
@@ -583,8 +583,14 @@ def _multi_query_text(
                 variant_hits[idx] = []
 
     groups = [h if h is not None else [] for h in variant_hits]
-    weights = [1.0] * len(groups)
-    return merge_hits(groups, weights, top_k=top_k, min_score=effective_min)
+    # queries[0] is the user's original (``rewrite_query`` contract):
+    # give it the same boosted weight the hybrid multi-query path uses,
+    # and apply the same evidence-coverage filter ``hybrid_search``
+    # runs per variant — evaluated here against the original wording.
+    original_weight = float(get_settings().query_rewrite_original_weight)
+    weights = [original_weight, *([1.0] * (len(groups) - 1))]
+    merged = merge_hits(groups, weights, top_k=top_k, min_score=effective_min)
+    return filter_low_evidence_hits(queries[0], merged)
 
 
 def text_search_with_rewrite(

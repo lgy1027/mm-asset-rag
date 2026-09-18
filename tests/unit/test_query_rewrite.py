@@ -444,7 +444,9 @@ def test_text_search_multi_variant_applies_settings_min_score(monkeypatch) -> No
 
     out = qr.text_search_with_rewrite("q", top_k=5, backend=_Backend())
 
-    assert [hit.asset_id for hit in out] == ["shared"]
+    # min_score drops "alt-only" (rank 2 of a 1.0-weight variant); the
+    # boosted original query keeps its rank-2 hit above the 0.02 floor.
+    assert [hit.asset_id for hit in out] == ["shared", "original-only"]
 
 
 def test_text_search_multi_variant_explicit_zero_disables_settings_floor(monkeypatch) -> None:
