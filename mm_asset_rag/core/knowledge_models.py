@@ -164,8 +164,10 @@ class Chunk:
 
     @classmethod
     def from_record(cls, payload: object) -> Chunk:
-        """Decode a complete current-document chunk row."""
-        if not isinstance(payload, dict) or "asset_id" in payload or "document_version" in payload:
+        """Decode a persisted chunk row, migrating ``document_version``-era rows."""
+        if isinstance(payload, dict) and "document_version" in payload:
+            return cls._from_legacy_record(payload)
+        if not isinstance(payload, dict) or "asset_id" in payload:
             raise ValueError("legacy chunk rows are unsupported")
         document_data = payload.get("document")
         asset_data = payload.get("asset")
@@ -219,4 +221,63 @@ class Chunk:
                 metadata=policy_metadata,
             ),
             metadata=chunk_metadata,
+        )
+
+    @classmethod
+    def _from_legacy_record(cls, payload: dict) -> Chunk:
+        """Best-effort migration of a ``document_version``-era chunk row.
+
+        Those rows carry every identity field the current model needs,
+        but their ``chunk_id`` used the ``doc@version-hash:ordinal``
+        format, which violates the current ``document_id:ordinal``
+        invariant — so the id is rebuilt from document id + ordinal.
+        Older ``asset_id``-era rows predate the persisted access policy
+        and stay unsupported.
+        """
+        version = payload.get("document_version")
+        if not isinstance(version, dict):
+            raise ValueError("legacy chunk row has no document version")
+        document_id = str(version.get("document_id") or "")
+        if not document_id:
+            raise ValueError("legacy chunk row has no document id")
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError("legacy chunk metadata is invalid")
+        source_data = payload.get("source") or {}
+        asset_data = payload.get("asset") or {}
+        policy_data = payload.get("access_policy") or {}
+        principals = policy_data.get("allowed_principals")
+        if not isinstance(principals, list):
+            raise ValueError("legacy chunk policy is invalid")
+        ordinal = int(payload.get("ordinal", 0))
+        policy = AccessPolicy(
+            collection=str(policy_data.get("collection") or "default"),
+            allowed_principals=tuple(str(value) for value in principals),
+            metadata=policy_data.get("metadata") or {},
+        )
+        source = Source(
+            source_id=str(source_data.get("source_id") or f"upload:{document_id}"),
+            uri=str(source_data.get("uri", "")),
+            provider=str(source_data.get("provider", "upload")),
+        )
+        return cls(
+            chunk_id=f"{document_id}:{ordinal}",
+            document=Document(
+                document_id=document_id,
+                title=str(metadata.get("asset_title") or document_id),
+                source=source,
+                access_policy=policy,
+            ),
+            asset=Asset(
+                content_hash=str(
+                    asset_data.get("content_hash") or version.get("content_hash") or ""
+                ),
+                source_type=str(asset_data.get("source_type", "")),
+                relative_path=str(asset_data.get("relative_path", "")),
+            ),
+            ordinal=ordinal,
+            text=str(payload.get("text", "")),
+            source=source,
+            access_policy=policy,
+            metadata={key: value for key, value in metadata.items() if key != "asset_id"},
         )
