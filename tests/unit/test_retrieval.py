@@ -463,3 +463,29 @@ def test_filter_low_evidence_hits_bypasses_short_segments(
     kept = retrieval.filter_low_evidence_hits("夏天怎么去寒气", [short_hit])
 
     assert kept == [short_hit]
+
+
+def test_merge_hits_one_chunk_per_document_per_group() -> None:
+    """Many chunks of one document must not stack RRF contributions.
+
+    Regression: a video asset with 13 VLM-frame chunks occupied ~10 of
+    the per-variant top-k slots, so its asset-level RRF score scaled
+    with min(chunk_count, top_k) instead of relevance and it out-ranked
+    exact-match single-chunk assets on every query. Within one group a
+    document contributes exactly one term — its best rank.
+    """
+    spam_chunks = [
+        _make_hit(f"spam-chunk-{i}", "text", 0.5 - i * 0.01) for i in range(5)
+    ]
+    for chunk in spam_chunks:
+        chunk.metadata["document_id"] = "spam-doc"
+    relevant = _make_hit("relevant-doc-chunk", "text", 0.4)
+
+    merged = retrieval.merge_hits([spam_chunks + [relevant]], [1.0], top_k=5)
+
+    by_id = {hit.asset_id: hit for hit in merged}
+    # spam-doc appears at ranks 1-5 in the group but must contribute once.
+    assert by_id["spam-doc"].score == pytest.approx(1.0 / (RRF_K + 1))
+    assert by_id["relevant-doc-chunk"].score == pytest.approx(1.0 / (RRF_K + 6))
+    # And the document still appears once in the output, not five times.
+    assert [hit.asset_id for hit in merged].count("spam-doc") == 1

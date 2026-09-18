@@ -24,6 +24,19 @@ class MediaProbeError(RuntimeError):
     """ffmpeg/ffprobe missing or a probe/extraction command failed."""
 
 
+def ffmpeg_error_detail(stderr: str, *, limit: int = 300) -> str:
+    """Human-readable tail of an ffmpeg stderr dump.
+
+    ffmpeg prints its version banner and stream inventory first and the
+    actual error last, so a head-truncation (``stderr[:200]``) shows only
+    the banner. Keep the last non-empty line instead; fall back to a
+    generic message when stderr carried nothing at all.
+    """
+    lines = [ln.strip() for ln in (stderr or "").splitlines() if ln.strip()]
+    if not lines:
+        return "unknown ffmpeg error"
+    return lines[-1][:limit]
+
 def _require(tool: str) -> str:
     path = shutil.which(tool)
     if path is None:
@@ -52,7 +65,7 @@ def probe_media(path: Path, *, timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:
     except subprocess.TimeoutExpired as exc:
         raise MediaProbeError(f"ffprobe timed out on {path.name}") from exc
     if proc.returncode != 0:
-        raise MediaProbeError(f"ffprobe failed on {path.name}: {proc.stderr.strip()[:200]}")
+        raise MediaProbeError(f"ffprobe failed on {path.name}: {ffmpeg_error_detail(proc.stderr)}")
     try:
         return json.loads(proc.stdout or "{}")
     except json.JSONDecodeError as exc:
@@ -105,7 +118,9 @@ def normalize_to_wav(
     except subprocess.TimeoutExpired as exc:
         raise MediaProbeError(f"ffmpeg normalisation timed out on {source.name}") from exc
     if proc.returncode != 0 or not out_path.exists():
-        raise MediaProbeError(f"ffmpeg could not decode {source.name}: {proc.stderr.strip()[:200]}")
+        raise MediaProbeError(
+            f"ffmpeg could not decode {source.name}: {ffmpeg_error_detail(proc.stderr)}"
+        )
 
 
 def subtitle_streams(probe: dict) -> list[dict]:
@@ -148,7 +163,8 @@ def extract_subtitle_stream(
         raise MediaProbeError(f"ffmpeg subtitle extraction timed out on {source.name}") from exc
     if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size == 0:
         raise MediaProbeError(
-            f"ffmpeg could not extract subtitles from {source.name}: {proc.stderr.strip()[:200]}"
+            f"ffmpeg could not extract subtitles from {source.name}: "
+            f"{ffmpeg_error_detail(proc.stderr)}"
         )
 
 
@@ -186,7 +202,7 @@ def extract_frames(
         raise MediaProbeError(f"ffmpeg frame extraction timed out on {source.name}") from exc
     if proc.returncode != 0:
         raise MediaProbeError(
-            f"ffmpeg could not extract frames from {source.name}: {proc.stderr.strip()[:200]}"
+            f"ffmpeg could not extract frames from {source.name}: {ffmpeg_error_detail(proc.stderr)}"
         )
     frames = sorted(out_dir.glob("frame_*.jpg"))
     if not frames:

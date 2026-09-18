@@ -95,10 +95,11 @@ def merge_hits(
 
     Each group is independently ranked by its own raw ``score`` (so a
     route with small scores can still contribute high ranks), then
-    every hit contributes ``weight / (RRF_K + rank)`` to its
-    ``asset_id``. Hits for the same ``asset_id`` across routes sum
-    their RRF contributions, which is exactly the standard
-    reciprocal-rank fusion formula extended with per-route weights.
+    each document contributes ``weight / (RRF_K + rank)`` once — at its
+    best rank in that group. Hits for the same ``asset_id`` across
+    groups (routes, rewrite variants) sum their RRF contributions,
+    which is exactly the standard reciprocal-rank fusion formula
+    extended with per-route weights.
 
     Pure function: returns a new list of ``SearchHit`` instances; the
     input groups are not mutated.
@@ -115,15 +116,24 @@ def merge_hits(
         if weight <= 0:
             continue
         valid_hits = [hit for hit in group if _document_id(hit) is not None]
+        # One contribution per document per group: the document's best
+        # rank. Without this, an asset with N chunks occupying N of the
+        # group's top-k slots accumulates N RRF terms and its score
+        # scales with min(chunk_count, top_k) instead of relevance —
+        # long documents (novels, many-frame videos) would dominate
+        # every query regardless of fit.
+        seen: set[str] = set()
         for hit, rank in _rank_hits(valid_hits):
+            doc_key = _document_id(hit)
+            if doc_key in seen:
+                continue
             if hit.score <= 0:
                 # A zero-score hit carries no signal in its route; skip
                 # it so it neither contributes RRF weight nor crowds the
                 # per-route rank space for downstream hits.
                 continue
-            key = _document_id(hit)
-            if key is None:  # Defensive: ``valid_hits`` establishes this invariant.
-                continue
+            key = doc_key  # Defensive: ``valid_hits`` establishes this invariant.
+            seen.add(key)
             contribution = _rrf_score(rank, weight)
             if key not in merged:
                 merged[key] = SearchHit(

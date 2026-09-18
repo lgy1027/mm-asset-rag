@@ -21,22 +21,24 @@ Three tiers, in priority order:
 Degradation contract (project-wide): missing ffmpeg, unprobed media, or
 a missing VLM leaves that tier empty/failed — the asset either still
 yields the other tiers' chunks or fails with a readable reason; the rest
-of the ingest batch is untouched.
+of the ingest batch is untouched. A video with no audio stream
+skips the ASR tier entirely and is covered by the VLM tier when enabled.
 """
 
 from __future__ import annotations
 
 import base64
 import logging
+import math
 import tempfile
 from pathlib import Path
 
-from ..core.llm_transport import post_chat_completion
+from ..core.llm_transport import completion_message_content, post_chat_completion
 from ..core.paths import get_parsed_dir
 from ..core.schema import ParsedChunk
 from ..core.settings import get_settings
 from ..ingest.assets import IngestAsset
-from .audio_parser import merge_sentences_into_windows, transcript_for
+from .audio_parser import has_searchable_text, merge_sentences_into_windows, transcript_for
 from .media_probe import (
     MediaProbeError,
     extract_frames,
@@ -91,7 +93,7 @@ def _chunks_from_cues(
     chunks: list[ParsedChunk] = []
     windows = merge_sentences_into_windows(cues, chunk_seconds=chunk_seconds)
     for window in windows:
-        if not window["text"]:
+        if not has_searchable_text(window["text"]):
             continue
         chunks.append(
             ParsedChunk(
@@ -153,32 +155,43 @@ def _caption_frame(frame_path: Path, *, timeout: float, temperature: float) -> s
             timeout=timeout,
             temperature=temperature,
         )
-        choices = (response or {}).get("choices") or []
-        message = (choices[0] or {}).get("message") or {}
-        content = (message.get("content") or "").strip()
-        if not content:
-            # Reasoning models may answer only in the thinking field
-            # (same convention as contextual._THINK_RE / image_caption).
-            reasoning = (message.get("reasoning_content") or message.get("reasoning") or "").strip()
-            content = reasoning.splitlines()[-1].strip() if reasoning else ""
-        return content[:500]
+        return completion_message_content(response)[:500]
     except Exception as exc:
         log.warning("video: frame caption failed for %s: %s", frame_path.name, exc)
         return ""
 
 
+def _effective_interval(interval_s: int, duration: float | None) -> int:
+    """Clamp the frame-sampling interval so short videos still yield frames.
+
+    ffmpeg's ``fps=1/N`` filter emits nothing when the footage is shorter
+    than ``N`` seconds (the output grid lands beyond every input pts), so
+    a 2 s clip with the default 10 s interval would produce zero frames
+    and silently lose the whole VLM tier. Unknown duration keeps the
+    configured interval.
+    """
+    interval = max(int(interval_s), 1)
+    if duration:
+        return max(1, min(interval, math.ceil(duration)))
+    return interval
+
+
 def _frame_chunks(asset: IngestAsset, probe: dict) -> list[ParsedChunk]:
     """VLM captions for sampled keyframes, stored under ``parsed/<id>/frames/``."""
     settings = get_settings()
-    interval = max(int(settings.video_frame_interval_s), 1)
     frames_dir = get_parsed_dir() / asset.asset_id / "frames"
     duration = probe.get("format", {}).get("duration")
+    try:
+        duration_f = float(duration) if duration else None
+    except (TypeError, ValueError):
+        duration_f = None
+    interval = _effective_interval(int(settings.video_frame_interval_s), duration_f)
     try:
         frames = extract_frames(asset.file_path, frames_dir, interval_s=interval)
     except MediaProbeError as exc:
         log.warning("video: frame extraction skipped: %s", exc)
         return []
-    total = float(duration) if duration else len(frames) * interval
+    total = duration_f if duration_f else len(frames) * interval
     chunks: list[ParsedChunk] = []
     for index, frame in enumerate(frames):
         caption = _caption_frame(
@@ -230,6 +243,7 @@ def parse_video(
         raise MediaProbeError(f"{asset.relative_path}: no video stream found")
 
     chunks: list[ParsedChunk] = []
+    vlm_ran = False
     cues = _subtitle_cues(asset, probe)
     if cues:
         chunks.extend(
@@ -242,19 +256,49 @@ def parse_video(
             )
         )
     else:
-        # No usable embedded subtitles → transcribe the audio track. This
-        # reuses the audio pipeline wholesale (including its transcript
-        # cache); ffmpeg -vn drops the video track during normalisation.
-        try:
-            chunks.extend(_asr_chunks(asset, chunk_seconds=window_s))
-        except MediaProbeError as exc:
+        # No usable embedded subtitles → transcribe the audio track, when
+        # there is one. ``has_stream`` gates the ASR call so silent footage
+        # never shells out to ffmpeg only to fail; a decode failure is
+        # recorded instead of raised, giving the VLM tier below a chance
+        # to cover the asset from frames.
+        asr_error: MediaProbeError | None = None
+        if has_stream(probe, "audio"):
+            try:
+                chunks.extend(_asr_chunks(asset, chunk_seconds=window_s))
+            except MediaProbeError as exc:
+                asr_error = exc
+        if not chunks and enable_vlm:
+            chunks.extend(_frame_chunks(asset, probe))
+            vlm_ran = True
+        if not chunks:
             raise MediaProbeError(
-                f"{asset.relative_path}: no usable subtitles and ASR failed: {exc}"
-            ) from exc
-
-    if enable_vlm:
+                _explain_no_chunks(asset, probe, asr_error, enable_vlm=enable_vlm)
+            )
+    if enable_vlm and not vlm_ran:
+        # Speech/subtitles succeeded; frames still add coverage for
+        # on-screen content that speech never mentions.
         chunks.extend(_frame_chunks(asset, probe))
     return chunks
+
+
+def _explain_no_chunks(
+    asset: IngestAsset,
+    probe: dict,
+    asr_error: MediaProbeError | None,
+    *,
+    enable_vlm: bool,
+) -> str:
+    """Readable reason every text tier came up empty."""
+    parts = ["no usable subtitles"]
+    if not has_stream(probe, "audio"):
+        parts.append("no audio stream")
+    elif asr_error is not None:
+        parts.append(f"ASR failed: {asr_error}")
+    if enable_vlm:
+        parts.append("VLM produced no frame captions")
+    else:
+        parts.append("VLM disabled (set ENABLE_VLM=true to index frames from silent footage)")
+    return f"{asset.relative_path}: " + "; ".join(parts)
 
 
 __all__ = ["parse_video"]

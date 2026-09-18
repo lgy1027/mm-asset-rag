@@ -152,3 +152,54 @@ def _extract_usage(response: requests.Response) -> dict[str, int] | None:
     if isinstance(total, int):
         out["total"] = total
     return out or None
+
+
+def completion_message_content(response: "requests.Response") -> str:
+    """Assistant text from a non-streaming chat-completion response.
+
+    OpenAI-compatible body: ``choices[0].message.content``. Reasoning
+    models (gemma thinking, deepseek-r1, …) may leave ``content`` empty
+    and answer only in a ``reasoning``/``thinking`` field — in that case
+    drop the meta preface and keep the tail (the concrete description
+    tends to end the monologue). Raises on malformed bodies; callers that
+    treat a missing caption as non-fatal should catch.
+    """
+    payload = response.json()
+    message = payload["choices"][0]["message"]
+    content = str(message.get("content") or "").strip()
+    if content:
+        return content
+    raw = str(message.get("reasoning") or message.get("thinking") or "").strip()
+    return _strip_reasoning_preface(raw) if raw else ""
+
+
+def _strip_reasoning_preface(raw: str) -> str:
+    """Best-effort recovery of an answer from a reasoning-model's thought dump.
+
+    The raw narrative usually opens with a meta preface ("Thinking Process:",
+    "思考过程:", "1. **Analyze...") and ends with the concrete answer. We drop
+    the preface lines and keep the final non-empty sentence(s), capped so a
+    runaway monologue doesn't bloat the chunk. Model-agnostic heuristic; if
+    it yields nothing usable the caller treats the answer as empty.
+    """
+    import re
+
+    # Drop common preface openers; only the label goes — the narrative that
+    # follows on the same line may already contain the concrete answer.
+    cleaned = re.sub(
+        r"^(Thinking Process|思考过程|思考|分析|Analyze|Reasoning)\s*[:：]\s*",
+        "",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    # Split into sentences on CJK / Latin terminators.
+    sentences = re.split(r"[。.!！?？\n]+", cleaned)
+    # strip leading bullets / numbering / punctuation from each sentence.
+    _bullet_re = re.compile(r"^[\s*\-•0-9.、]+")
+    sentences = [_bullet_re.sub("", s).strip() for s in sentences]
+    sentences = [s for s in sentences if s]
+    if not sentences:
+        return ""
+    # The concrete description tends to be the last 1-2 sentences; cap length.
+    tail = "。".join(sentences[-2:])
+    return tail[:200]

@@ -82,7 +82,10 @@ def _asset(tmp_path: Path) -> object:
 
 
 def _probe(*, with_subtitle: bool) -> dict:
-    streams = [{"codec_type": "video", "codec_name": "h264"}]
+    streams = [
+        {"codec_type": "video", "codec_name": "h264"},
+        {"codec_type": "audio", "codec_name": "aac"},
+    ]
     if with_subtitle:
         streams.append(
             {"codec_type": "subtitle", "codec_name": "subrip", "tags": {"language": "chi"}}
@@ -130,6 +133,7 @@ def test_video_bitmap_subtitles_fall_through_to_asr(tmp_path, monkeypatch):
     probe = {
         "streams": [
             {"codec_type": "video", "codec_name": "h264"},
+            {"codec_type": "audio", "codec_name": "aac"},
             {"codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle"},
         ],
         "format": {"duration": "10.0"},
@@ -204,3 +208,210 @@ def test_video_vlm_tier_off_by_default(tmp_path, monkeypatch):
     )
     chunks = video_parser.parse_video(asset)
     assert [c.metadata["kind"] for c in chunks] == ["subtitle"]
+
+
+# ── silent-video degradation (option B: auto-fallback to VLM) ───────────────
+
+
+def _frame_chunk() -> video_parser.ParsedChunk:
+    return video_parser.ParsedChunk(
+        text="画面显示海底鱼群游动",
+        metadata={
+            "asset_id": "clip",
+            "source_type": "video",
+            "parser": "video-frame-vlm",
+            "kind": "frame",
+            "start": 0.0,
+            "end": 2.0,
+            "frame_path": "frames/frame_0001.jpg",
+        },
+    )
+
+
+def _silent_probe() -> dict:
+    return {
+        "streams": [{"codec_type": "video", "codec_name": "h264"}],
+        "format": {"duration": "2.0"},
+    }
+
+
+def test_silent_video_skips_asr_and_falls_back_to_vlm(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    monkeypatch.setattr(video_parser, "probe_media", lambda _p: _silent_probe())
+    monkeypatch.setattr(video_parser, "_subtitle_cues", lambda _a, _p: [])
+    calls: list[str] = []
+    monkeypatch.setattr(
+        video_parser,
+        "transcript_for",
+        lambda _a: calls.append("asr") or [],
+    )
+    monkeypatch.setattr(video_parser, "_frame_chunks", lambda _a, _p: [_frame_chunk()])
+    chunks = video_parser.parse_video(asset, enable_vlm=True, chunk_seconds=30)
+    assert calls == []  # no audio stream → must not shell out to ffmpeg/ASR at all
+    assert [c.metadata["kind"] for c in chunks] == ["frame"]
+
+
+def test_silent_video_without_vlm_raises_readable_error(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    monkeypatch.setattr(video_parser, "probe_media", lambda _p: _silent_probe())
+    monkeypatch.setattr(video_parser, "_subtitle_cues", lambda _a, _p: [])
+    monkeypatch.setattr(
+        video_parser,
+        "transcript_for",
+        lambda _a: pytest.fail("ASR must not run on a file with no audio stream"),
+    )
+    with pytest.raises(MediaProbeError, match="no audio stream"):
+        video_parser.parse_video(asset, enable_vlm=False)
+    # The hint must point at the VLM switch so users know the escape hatch.
+    with pytest.raises(MediaProbeError, match="ENABLE_VLM"):
+        video_parser.parse_video(asset, enable_vlm=False)
+
+
+def test_silent_video_with_vlm_but_no_captions_raises_readable_error(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    monkeypatch.setattr(video_parser, "probe_media", lambda _p: _silent_probe())
+    monkeypatch.setattr(video_parser, "_subtitle_cues", lambda _a, _p: [])
+    monkeypatch.setattr(video_parser, "_frame_chunks", lambda _a, _p: [])
+    with pytest.raises(MediaProbeError, match="no frame captions"):
+        video_parser.parse_video(asset, enable_vlm=True)
+
+
+def test_asr_failure_falls_back_to_vlm_frames(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    probe = {
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264"},
+            {"codec_type": "audio", "codec_name": "aac"},
+        ],
+        "format": {"duration": "10.0"},
+    }
+    monkeypatch.setattr(video_parser, "probe_media", lambda _p: probe)
+    monkeypatch.setattr(video_parser, "_subtitle_cues", lambda _a, _p: [])
+    monkeypatch.setattr(
+        video_parser,
+        "transcript_for",
+        lambda _a: (_ for _ in ()).throw(MediaProbeError("ffmpeg could not decode")),
+    )
+    monkeypatch.setattr(video_parser, "_frame_chunks", lambda _a, _p: [_frame_chunk()])
+    chunks = video_parser.parse_video(asset, enable_vlm=True, chunk_seconds=30)
+    assert [c.metadata["kind"] for c in chunks] == ["frame"]
+
+
+def test_asr_failure_without_vlm_keeps_asr_reason(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    probe = {
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264"},
+            {"codec_type": "audio", "codec_name": "aac"},
+        ],
+        "format": {"duration": "10.0"},
+    }
+    monkeypatch.setattr(video_parser, "probe_media", lambda _p: probe)
+    monkeypatch.setattr(video_parser, "_subtitle_cues", lambda _a, _p: [])
+    monkeypatch.setattr(
+        video_parser,
+        "transcript_for",
+        lambda _a: (_ for _ in ()).throw(MediaProbeError("ffmpeg could not decode clip: boom")),
+    )
+    with pytest.raises(MediaProbeError, match="ASR failed: .*boom"):
+        video_parser.parse_video(asset, enable_vlm=False)
+
+
+# ── ffmpeg error message hygiene ────────────────────────────────────────────
+
+
+def test_ffmpeg_error_uses_last_line_not_banner():
+    from mm_asset_rag.parsers import media_probe
+
+    stderr = (
+        "ffmpeg version 8.1.1 Copyright (c) 2000-2026 the FFmpeg developers\n"
+        "  built with Apple clang version 21.0.0\n"
+        "Output #0, wav, to '/tmp/x.wav':\n"
+        "Error opening output file /tmp/x.wav.\n"
+        "Error opening output files: Invalid argument\n"
+    )
+    assert media_probe.ffmpeg_error_detail(stderr) == "Error opening output files: Invalid argument"
+
+
+def test_ffmpeg_error_detail_handles_empty():
+    from mm_asset_rag.parsers import media_probe
+
+    assert media_probe.ffmpeg_error_detail("") == "unknown ffmpeg error"
+    assert media_probe.ffmpeg_error_detail("   \n  ") == "unknown ffmpeg error"
+
+
+# ── VLM caption response handling ───────────────────────────────────────────
+
+
+def _fake_settings():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        vlm_creds=("http://vlm.local/v1", "key", "vlm-model"),
+        vlm_timeout=10.0,
+        vlm_temperature=0.1,
+    )
+
+
+def _fake_response(body: dict) -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(json=lambda: body)
+
+
+def test_caption_frame_reads_chat_completion_json_body(tmp_path, monkeypatch):
+    """Regression: post_chat_completion returns requests.Response, not a dict."""
+    frame = tmp_path / "frame_0001.jpg"
+    frame.write_bytes(b"\xff\xd8\xff\xe0")
+    body = {"choices": [{"message": {"content": " 画面显示海底鱼群游动 "}}]}
+    monkeypatch.setattr(video_parser, "get_settings", _fake_settings)
+    monkeypatch.setattr(
+        video_parser, "post_chat_completion", lambda *a, **k: _fake_response(body)
+    )
+    assert video_parser._caption_frame(frame, timeout=10, temperature=0.1) == "画面显示海底鱼群游动"
+
+
+def test_caption_frame_falls_back_to_reasoning_field(tmp_path, monkeypatch):
+    frame = tmp_path / "frame_0001.jpg"
+    frame.write_bytes(b"\xff\xd8\xff\xe0")
+    body = {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "reasoning": "思考过程: 1. 观察画面主体。 2. 判断为水下场景。",
+                }
+            }
+        ]
+    }
+    monkeypatch.setattr(video_parser, "get_settings", _fake_settings)
+    monkeypatch.setattr(
+        video_parser, "post_chat_completion", lambda *a, **k: _fake_response(body)
+    )
+    caption = video_parser._caption_frame(frame, timeout=10, temperature=0.1)
+    assert "水下场景" in caption
+
+
+# ── frame sampling on videos shorter than the interval ──────────────────────
+
+
+def test_effective_interval_clamped_to_short_video():
+    # 2 s footage with a 10 s interval must still yield at least one frame:
+    # ffmpeg's fps filter emits nothing when 1/interval > 1/duration.
+    assert video_parser._effective_interval(10, 2.0) == 2
+    assert video_parser._effective_interval(10, 21.75) == 10
+    assert video_parser._effective_interval(10, 0.4) == 1
+    assert video_parser._effective_interval(10, 0.0) == 10  # unknown duration: keep setting
+    assert video_parser._effective_interval(10, None) == 10
+
+
+def test_video_cue_chunks_drop_punctuation_only_windows(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    cues = [
+        {"start": 0.0, "end": 5.0, "text": "有用内容。"},
+        {"start": 5.0, "end": 9.0, "text": "，，。"},
+    ]
+    chunks = video_parser._chunks_from_cues(
+        asset, cues, chunk_seconds=30, parser_name="video-asr", kind="asr"
+    )
+    assert [c.text for c in chunks] == ["有用内容。"]

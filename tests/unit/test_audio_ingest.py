@@ -270,3 +270,28 @@ def test_http_asr_requires_url():
 
     with pytest.raises(RuntimeError, match="ASR_HTTP_URL"):
         HttpAsrBackend(url="").transcribe(Path("/tmp/x.wav"))
+
+
+def test_parse_audio_drops_punctuation_only_windows(tmp_path, monkeypatch):
+    """ASR noise on silent stretches yields "，，。" fragments — not retrievable."""
+    from mm_asset_rag.ingest.assets import IngestAsset
+    from mm_asset_rag.parsers import audio_parser
+
+    wav = _fake_wav(tmp_path)
+    asset = IngestAsset(
+        asset_id="talk",
+        title="Talk",
+        source_type="audio",
+        relative_path=wav.name,
+        asset_dir=tmp_path,
+    )
+    sentences = [
+        {"start": 0.0, "end": 5.0, "text": "有用的第一句话。"},
+        {"start": 5.0, "end": 9.0, "text": "，，。"},
+        {"start": 9.0, "end": 14.0, "text": "……"},
+    ]
+    monkeypatch.setattr(audio_parser, "_transcribe", lambda _p: sentences)
+    monkeypatch.setattr(audio_parser, "_normalize_to_wav", lambda _s, _d: None)
+
+    chunks = parse_audio(asset, chunk_seconds=30)
+    assert [c.text for c in chunks] == ["有用的第一句话。"]

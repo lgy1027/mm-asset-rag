@@ -38,7 +38,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from ..core.llm_transport import post_chat_completion
+from ..core.llm_transport import completion_message_content, post_chat_completion
 from ..core.paths import get_parsed_dir
 from ..core.settings import get_settings
 
@@ -185,52 +185,9 @@ def _caption_one(asset_id: str, image_rel_path: str) -> str:
             temperature=s.vlm_temperature,
             max_tokens=s.vlm_max_tokens,
         )
-        message = response.json()["choices"][0]["message"]
-        content = str(message.get("content") or "").strip()
-        # Reasoning-model fallback: when content is empty the answer may live
-        # in the reasoning/thinking field. Strip leading "Thinking Process:"
-        # / "思考:" style prefaces and take the last sentence (reasoning
-        # narratives often end with the concrete description).
-        if not content:
-            raw = str(message.get("reasoning") or message.get("thinking") or "").strip()
-            if raw:
-                content = _strip_reasoning_preface(raw)
-        return content
+        return completion_message_content(response)
     except Exception:
         return ""
-
-
-def _strip_reasoning_preface(raw: str) -> str:
-    """Best-effort recovery of a caption from a reasoning-model's thought dump.
-
-    Reasoning models (gemma thinking, deepseek-r1, …) sometimes emit the
-    whole answer inside ``reasoning`` with an empty ``content``. The raw
-    narrative usually opens with a meta preface ("Thinking Process:", "思考过程:",
-    "1. **Analyze...") and ends with the concrete description. We drop the
-    preface lines and keep the final non-empty sentence(s), capped so a
-    runaway monologue doesn't bloat the chunk. Model-agnostic heuristic; if
-    it yields nothing usable the caller treats the caption as empty.
-    """
-    import re
-
-    # Drop common preface openers and numbered analysis step lines.
-    cleaned = re.sub(
-        r"^(Thinking Process|思考过程|思考|分析|Analyze|Reasoning)\s*[:：].*",
-        "",
-        raw,
-        flags=re.IGNORECASE,
-    )
-    # Split into sentences on CJK / Latin terminators.
-    sentences = re.split(r"[。.!！?？\n]+", cleaned)
-    # strip leading bullets / numbering / punctuation from each sentence.
-    _bullet_re = re.compile(r"^[\s*\-•0-9.、]+")
-    sentences = [_bullet_re.sub("", s).strip() for s in sentences]
-    sentences = [s for s in sentences if s]
-    if not sentences:
-        return ""
-    # The concrete description tends to be the last 1-2 sentences; cap length.
-    tail = "。".join(sentences[-2:])
-    return tail[:200]
 
 
 def enrich_docs_with_image_captions(

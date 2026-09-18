@@ -62,11 +62,26 @@ def merge_sentences_into_windows(
     return windows
 
 
+def has_searchable_text(text: str) -> bool:
+    """Whether a transcript window carries any retrievable token.
+
+    ASR on noisy or silent stretches can yield fragments of pure
+    punctuation ("，，。"); they match nothing, pollute rankings, and add
+    zero recall, so parsers drop them. CJK ideographs count as alnum in
+    Unicode, so Chinese transcripts pass with a single character.
+    """
+    return any(ch.isalnum() for ch in text)
+
+
 def _window(sentences: list[dict], start: float) -> dict:
+    # Skip punctuation-only sentence fragments (ASR noise on silent
+    # stretches) — they add no recall value while polluting the window.
+    # The window keeps the full time span regardless.
+    texts = [str(s.get("text", "")) for s in sentences if has_searchable_text(str(s.get("text", "")))]
     return {
         "start": start,
         "end": float(sentences[-1]["end"]),
-        "text": "".join(str(s.get("text", "")) for s in sentences).strip(),
+        "text": "".join(texts).strip(),
     }
 
 
@@ -133,7 +148,7 @@ def parse_audio(
     sentences = transcript_for(asset)
     chunks: list[ParsedChunk] = []
     for window in merge_sentences_into_windows(sentences, chunk_seconds=window_s):
-        if not window["text"]:
+        if not has_searchable_text(window["text"]):
             continue
         chunks.append(
             ParsedChunk(
