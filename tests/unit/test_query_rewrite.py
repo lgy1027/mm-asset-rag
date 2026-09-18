@@ -722,3 +722,50 @@ def test_post_chat_json_strips_think_preamble_before_parsing(monkeypatch) -> Non
     parsed = qr._post_chat_json("http://api.example/v1", "key", "model", "prompt", timeout=5)
 
     assert parsed == {"variants": ["甲", "乙"]}
+
+
+def test_multi_query_original_gets_boosted_weight(monkeypatch) -> None:
+    """``queries[0]`` (the user's original) must carry
+    ``query_rewrite_original_weight`` against 1.0 for each LLM variant,
+    so faithful variants enrich recall without out-voting the original."""
+    captured: dict[str, list[float]] = {}
+
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None, backend=None):
+        return [_hit(f"asset-{query}", 0.9)]
+
+    def _fake_merge(groups, weights, *, top_k, min_score=0.0):
+        captured["weights"] = list(weights)
+        return []
+
+    monkeypatch.setattr(qr, "hybrid_search", _fake_hybrid)
+    monkeypatch.setattr(qr, "merge_hits", _fake_merge)
+
+    qr.multi_query_search(["original", "variant-a", "variant-b"], top_k=5)
+
+    assert captured["weights"] == [1.5, 1.0, 1.0]
+
+
+def test_multi_query_original_weight_is_configurable(monkeypatch) -> None:
+    captured: dict[str, list[float]] = {}
+
+    def _fake_hybrid(query, *, image_path=None, top_k=5, min_score=None, backend=None):
+        return [_hit(f"asset-{query}", 0.9)]
+
+    def _fake_merge(groups, weights, *, top_k, min_score=0.0):
+        captured["weights"] = list(weights)
+        return []
+
+    from mm_asset_rag.core.settings import get_settings
+
+    monkeypatch.setattr(qr, "hybrid_search", _fake_hybrid)
+    monkeypatch.setattr(qr, "merge_hits", _fake_merge)
+    monkeypatch.setattr(
+        get_settings(),
+        "query_rewrite_original_weight",
+        2.5,
+        raising=False,
+    )
+
+    qr.multi_query_search(["original", "variant-a"], top_k=5)
+
+    assert captured["weights"] == [2.5, 1.0]

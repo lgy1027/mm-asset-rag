@@ -352,10 +352,13 @@ def multi_query_search(
     The N variants are searched in parallel (a thread pool of size
     ``n_parallel``) because each ``hybrid_search`` is a blocking Qdrant
     round-trip. The hits are then merged with
-    :func:`mm_asset_rag.query.retrieval.merge_hits` using uniform per-variant
-    weights — rank-based RRF means the asset appearing in *multiple*
-    variants accumulates higher score than the asset appearing in one
-    (this is the whole point of multi-query RAG).
+    :func:`mm_asset_rag.query.retrieval.merge_hits` using rank-based RRF:
+    the asset appearing in *multiple* variants accumulates higher score
+    than the asset appearing in one (this is the whole point of
+    multi-query RAG). The original query — always ``queries[0]`` — gets
+    ``query_rewrite_original_weight`` (default 1.5) against 1.0 for each
+    LLM variant, so variants enrich recall without out-voting the
+    user's own wording.
 
     Args:
         queries: Non-empty list of query variants. An empty list
@@ -454,14 +457,16 @@ def multi_query_search(
                 variant_hits[idx] = []
 
     groups.extend(h if h is not None else [] for h in variant_hits)
-    weights.extend(1.0 for _ in variant_hits)
+    # queries[0] is always the user's original query (``rewrite_query``
+    # contract: the original is prepended and deduped into first place).
+    # Give it extra RRF weight so faithful-but-broader LLM variants can
+    # enrich recall without out-voting the original's ranking en bloc.
+    # Rank-based RRF keeps this ratio scale-free — it shifts ranks, not
+    # raw-score scales.
+    original_weight = float(get_settings().query_rewrite_original_weight)
+    weights.append(original_weight)
+    weights.extend(1.0 for _ in variant_hits[1:])
 
-    # Uniform per-variant weight — rank-based RRF means the per-asset
-    # contribution is ``weight / (RRF_K + rank)`` regardless of how the
-    # route scaled its raw score. Equal weights give each variant an
-    # equal voice; tweaking this would re-introduce the same
-    # cross-variant score-scale coupling the route fusion was designed
-    # to remove.
     return merge_hits(groups, weights, top_k=top_k, min_score=min_score or 0.0)
 
 

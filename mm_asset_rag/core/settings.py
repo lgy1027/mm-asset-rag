@@ -456,6 +456,13 @@ class Settings(BaseSettings):
     # if you have the Qdrant headroom and a corpus that benefits from
     # more variant coverage.
     query_rewrite_concurrency: int = 4
+    # RRF weight of the user's ORIGINAL query relative to each LLM
+    # rewrite variant (variants keep 1.0). Faithful-but-broader variants
+    # improve recall on long-tail queries, but under uniform weights a
+    # doc that merely appears in every variant list can out-vote a doc
+    # the original query ranked top — the user's own words should win
+    # those ties. Rank-based RRF keeps this ratio scale-free.
+    query_rewrite_original_weight: float = 1.5
 
     # ─── Per-channel RRF weights ──────────────────────────────────────────
     # Inside ``_hybrid_text_query`` the three prefetches (dense / BM25-en /
