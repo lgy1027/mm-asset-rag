@@ -150,6 +150,13 @@ class Settings(BaseSettings):
     # filter would suppress relevant hits for verbose queries while
     # short keyword queries are scored against their full term set.
     retrieval_lexical_coverage_max_terms: int = 12
+    # Evidence-length floor below which the lexical-coverage filter does
+    # not gate hits. The filter's premise — lexical overlap is a reliable
+    # relevance signal — holds for long document paragraphs, but short
+    # segments (e.g. a 30-second audio chunk, ~100 chars) can be the
+    # correct answer while sharing only one or two query bigrams, so
+    # gating them only produces false rejections.
+    retrieval_min_evidence_chars: int = 200
 
     # ─── Text embedding ───────────────────────────────────────────────────
     # Text embedding is always remote OpenAI-compatible `/embeddings`.

@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from ..core.schema import SearchHit
 from ..core.settings import get_settings
 from ..embedders import get_default_reranker
-from .evidence_policy import _terms, lexical_coverage
+from .evidence_policy import _searchable_text, _terms, lexical_coverage
 from .query_intent import (
     IntentWeights,
     classify_intent,
@@ -175,15 +175,27 @@ def merge_hits(
 
 
 def filter_low_evidence_hits(query: str, hits: list[SearchHit]) -> list[SearchHit]:
-    """Suppress results that cannot support enough of the query terms."""
+    """Suppress results that cannot support enough of the query terms.
+
+    Only long evidence is gated: on short segments (audio windows, slide
+    bullets) lexical overlap is too sparse to be a reliable relevance
+    signal, and the filter would reject correct hits that merely paraphrase
+    the query.
+    """
     if not _terms(query):
         return hits
     settings = get_settings()
     threshold = settings.retrieval_min_lexical_coverage
     cap = settings.retrieval_lexical_coverage_max_terms
-    return [
-        hit for hit in hits if lexical_coverage(query, [hit], max_terms=cap) >= threshold
-    ]
+    min_chars = settings.retrieval_min_evidence_chars
+    kept: list[SearchHit] = []
+    for hit in hits:
+        if len(_searchable_text(hit)) < min_chars:
+            kept.append(hit)
+            continue
+        if lexical_coverage(query, [hit], max_terms=cap) >= threshold:
+            kept.append(hit)
+    return kept
 
 
 def hybrid_search(

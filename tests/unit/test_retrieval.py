@@ -115,7 +115,7 @@ def test_merge_hits_preserves_raw_score_for_reranker() -> None:
 
 def test_filter_low_evidence_hits_rejects_unrelated_document() -> None:
     hit = _make_hit("policy", "text", 0.9)
-    hit.evidence = "年度预算和行政审批流程"
+    hit.evidence = "年度预算和行政审批流程。" + "本节介绍行政经费的审批与预算管理流程。" * 12
 
     assert retrieval.filter_low_evidence_hits("量子电池材料研究", [hit]) == []
 
@@ -129,9 +129,9 @@ def test_filter_low_evidence_hits_keeps_matching_document() -> None:
 
 def test_filter_low_evidence_hits_drops_individual_weak_hits() -> None:
     weak = _make_hit("weak", "text", 0.9)
-    weak.evidence = "行政审批流程"
+    weak.evidence = "行政审批流程。" + "本节介绍行政经费的审批与预算管理流程。" * 12
     strong = _make_hit("strong", "text", 0.8)
-    strong.evidence = "量子电池材料研究介绍了电极材料"
+    strong.evidence = "量子电池材料研究介绍了电极材料。" + "量子点与储能性能的关系详见下文。" * 12
 
     filtered = retrieval.filter_low_evidence_hits("量子电池材料研究", [weak, strong])
 
@@ -423,25 +423,43 @@ def test_hybrid_search_default_image_to_image_weight_is_positive(monkeypatch, fi
 def test_filter_low_evidence_hits_caps_denominator_for_long_queries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Verbose NL queries expand to many CJK bigrams; a short relevant
-    chunk can never cover a fixed fraction of them. The denominator cap
-    keeps such hits while still suppressing lexically unsupported ones."""
+    """Verbose NL queries expand to many CJK bigrams; a long relevant
+    chunk may still fail a fixed fraction of the full term set. The
+    denominator cap keeps such hits while still suppressing lexically
+    unsupported long evidence."""
     from mm_asset_rag.core.settings import get_settings
 
     monkeypatch.setattr(
         get_settings(), "retrieval_lexical_coverage_max_terms", 12, raising=False
     )
+    pad = "这是一段用于撑长证据文本的填充说明，确保文本长度超过过滤门限。"
     relevant = _make_hit("consult", "text", 0.9)
     relevant.title = "空腹力_52_第四章_（5）需要向主治医师咨询的情况"
     relevant.evidence = (
-        "服用降血糖药物的人请务必先向主治医生咨询再开始轻松断食"
+        "服用降血糖药物的人请务必先向主治医生咨询再开始轻松断食。" + pad * 6
     )
     unrelated = _make_hit("bath", "text", 0.8)
     unrelated.title = "空腹力_59_第五章_（6）泡澡的惊人功效"
-    unrelated.evidence = "泡澡的水压可以收紧腰围促进代谢"
+    unrelated.evidence = "泡澡的水压可以收紧腰围促进代谢。" + pad * 6
 
     long_query = "那本讲断食的书里，提醒说吃降血糖药的人不能擅自断食，必须要先问医生的音频"
 
     filtered = retrieval.filter_low_evidence_hits(long_query, [relevant, unrelated])
 
     assert [hit.asset_id for hit in filtered] == ["consult"]
+
+
+def test_filter_low_evidence_hits_bypasses_short_segments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Short segments (audio windows, bullets) are correct answers too
+    sparse to gate lexically — the filter must not reject them."""
+    from mm_asset_rag.core.settings import get_settings
+
+    monkeypatch.setattr(get_settings(), "retrieval_min_evidence_chars", 200, raising=False)
+    short_hit = _make_hit("clip", "text", 0.9)
+    short_hit.evidence = "每天晒被二十分钟排出体内寒气"  # < 200 chars, paraphrase-only
+
+    kept = retrieval.filter_low_evidence_hits("夏天怎么去寒气", [short_hit])
+
+    assert kept == [short_hit]
