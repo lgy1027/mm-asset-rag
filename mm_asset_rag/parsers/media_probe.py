@@ -168,6 +168,88 @@ def extract_subtitle_stream(
         )
 
 
+def detect_scenes(
+    source: Path,
+    *,
+    threshold: float = 27.0,
+) -> list[tuple[float, float]] | None:
+    """Scene ``(start, end)`` windows in seconds via PySceneDetect.
+
+    Returns ``None`` when scenedetect isn't installed (callers fall back
+    to fixed-interval sampling), and ``[]`` / one window when the clip
+    has no hard cuts.
+    """
+    try:
+        from scenedetect import ContentDetector, detect
+    except ImportError:
+        return None
+    scenes = detect(str(source), ContentDetector(threshold=threshold))
+    return [(float(scn.get_seconds()), float(end.get_seconds())) for scn, end in scenes]
+
+
+def extract_frame_at(
+    source: Path,
+    out_dir: Path,
+    t: float,
+    *,
+    index: int = 0,
+    timeout_s: int = _DEFAULT_TIMEOUT_S,
+) -> Path:
+    """Grab the single frame at second ``t`` into ``out_dir``."""
+    ffmpeg = _require("ffmpeg")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"frame_{index:04d}.jpg"
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-ss",
+        f"{max(float(t), 0.0):.3f}",
+        "-i",
+        str(source),
+        "-frames:v",
+        "1",
+        "-q:v",
+        "4",
+        str(out),
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as exc:
+        raise MediaProbeError(f"ffmpeg frame grab timed out on {source.name}") from exc
+    if proc.returncode != 0 or not out.exists():
+        raise MediaProbeError(
+            f"ffmpeg could not grab frame at {t:.1f}s from {source.name}: "
+            f"{ffmpeg_error_detail(proc.stderr)}"
+        )
+    return out
+
+
+def frames_too_similar(a: Path, b: Path, *, threshold: float = 0.99) -> bool:
+    """Whether two frames are near-identical by RGB histogram correlation.
+
+    Sampling pipelines (fixed-interval or scene-cut) can emit visually
+    duplicate frames — static shots, flash triggers. Captioning and
+    indexing both wastes a VLM call and pollutes ranking, so callers
+    skip the later one. Pure-Python Pearson over the 3×256-bin RGB
+    histogram; ``True`` when correlation ≥ ``threshold``.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return False
+    ha = Image.open(a).convert("RGB").histogram()
+    hb = Image.open(b).convert("RGB").histogram()
+    n = len(ha)
+    mean_a = sum(ha) / n
+    mean_b = sum(hb) / n
+    cov = sum((x - mean_a) * (y - mean_b) for x, y in zip(ha, hb))
+    var_a = sum((x - mean_a) ** 2 for x in ha)
+    var_b = sum((y - mean_b) ** 2 for y in hb)
+    if not var_a or not var_b:
+        return True  # both flat histograms → effectively identical
+    return (cov * cov) / (var_a * var_b) >= threshold * threshold
+
+
 def extract_frames(
     source: Path,
     out_dir: Path,

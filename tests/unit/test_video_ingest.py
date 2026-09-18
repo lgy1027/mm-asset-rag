@@ -415,3 +415,151 @@ def test_video_cue_chunks_drop_punctuation_only_windows(tmp_path, monkeypatch):
         asset, cues, chunk_seconds=30, parser_name="video-asr", kind="asr"
     )
     assert [c.text for c in chunks] == ["有用内容。"]
+
+
+# ── scene-cut frame sampling + duplicate suppression ────────────────────────
+
+
+def _vlm_settings(interval: int = 10, scene_threshold: float = 27.0):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        video_frame_interval_s=interval,
+        video_scene_threshold=scene_threshold,
+        vlm_creds=("http://vlm.local/v1", "key", "vlm-model"),
+        vlm_timeout=10.0,
+        vlm_temperature=0.1,
+    )
+
+
+def _fake_frame(tmp_path: Path, name: str, rgb: tuple[int, int, int]) -> Path:
+    from PIL import Image
+
+    frame = tmp_path / name
+    Image.new("RGB", (64, 64), rgb).save(frame, "JPEG")
+    return frame
+
+
+def test_cap_scenes_even_sampling_keeps_endpoints():
+    scenes = [(float(i), float(i + 1)) for i in range(20)]
+    capped = video_parser._cap_scenes(scenes, 5)
+    assert capped[0] == (0.0, 1.0)
+    assert capped[-1] == (19.0, 20.0)
+    assert len(capped) == 5
+    # even spacing: indices 0, ~4.75, ~9.5, ~14.25, 19
+    starts = [int(s) for s, _ in capped]
+    assert starts[0] == 0 and starts[-1] == 19
+
+
+def test_cap_scenes_noop_below_cap():
+    scenes = [(0.0, 5.0), (5.0, 9.0)]
+    assert video_parser._cap_scenes(scenes, 10) == scenes
+
+
+def test_frame_chunks_use_scene_windows_when_cuts_detected(tmp_path, monkeypatch):
+    from mm_asset_rag.parsers import media_probe
+
+    asset = _asset(tmp_path)
+    frames_dir = tmp_path / "frames"
+    f1 = _fake_frame(tmp_path, "scene_a.jpg", (200, 30, 30))
+    f2 = _fake_frame(tmp_path, "scene_b.jpg", (30, 30, 200))
+    calls: dict[str, int] = {"interval": 0, "at": 0}
+
+    monkeypatch.setattr(video_parser, "get_settings", lambda: _vlm_settings())
+    monkeypatch.setattr(
+        video_parser, "detect_scenes", lambda *_a, **_k: [(0.0, 8.0), (8.0, 20.0)]
+    )
+
+    def fake_frame_at(_src, out_dir, t, *, index=0):
+        calls["at"] += 1
+        return f1 if t < 8 else f2
+
+    monkeypatch.setattr(video_parser, "extract_frame_at", fake_frame_at)
+
+    def no_interval(*_a, **_k):
+        calls["interval"] += 1
+        raise AssertionError("interval sampling must not run when cuts exist")
+
+    monkeypatch.setattr(video_parser, "extract_frames", no_interval)
+    monkeypatch.setattr(
+        video_parser, "_caption_frame", lambda frame, **k: f"caption-{frame.name}"
+    )
+
+    probe = {"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}
+    chunks = video_parser._frame_chunks(asset, probe)
+    assert calls == {"interval": 0, "at": 2}
+    assert [(c.metadata["start"], c.metadata["end"]) for c in chunks] == [(0.0, 8.0), (8.0, 20.0)]
+    assert [c.text for c in chunks] == ["caption-scene_a.jpg", "caption-scene_b.jpg"]
+
+
+def test_frame_chunks_fall_back_to_interval_without_cuts(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    f1 = _fake_frame(tmp_path, "f1.jpg", (10, 200, 10))
+    f2 = _fake_frame(tmp_path, "f2.jpg", (10, 10, 200))
+    calls: dict[str, int] = {"at": 0}
+
+    monkeypatch.setattr(video_parser, "get_settings", lambda: _vlm_settings())
+    monkeypatch.setattr(video_parser, "detect_scenes", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        video_parser,
+        "extract_frame_at",
+        lambda *_a, **_k: calls.__setitem__("at", calls["at"] + 1) or f1,
+    )
+    monkeypatch.setattr(video_parser, "extract_frames", lambda *_a, **_k: [f1, f2])
+    monkeypatch.setattr(
+        video_parser, "_caption_frame", lambda frame, **k: f"caption-{frame.name}"
+    )
+
+    probe = {"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}
+    chunks = video_parser._frame_chunks(asset, probe)
+    assert calls["at"] == 0  # single-scene footage keeps interval coverage
+    assert len(chunks) == 2
+
+
+def test_frame_chunks_fall_back_when_scenedetect_missing(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    f1 = _fake_frame(tmp_path, "f1.jpg", (10, 200, 10))
+
+    monkeypatch.setattr(video_parser, "get_settings", lambda: _vlm_settings())
+    monkeypatch.setattr(video_parser, "detect_scenes", lambda *_a, **_k: None)
+    monkeypatch.setattr(video_parser, "extract_frames", lambda *_a, **_k: [f1])
+    monkeypatch.setattr(video_parser, "_caption_frame", lambda frame, **k: "caption")
+
+    probe = {"streams": [{"codec_type": "video"}], "format": {"duration": "20.0"}}
+    chunks = video_parser._frame_chunks(asset, probe)
+    assert [c.text for c in chunks] == ["caption"]
+
+
+def test_frame_chunks_dedup_near_identical_frames(tmp_path, monkeypatch):
+    asset = _asset(tmp_path)
+    red_a = _fake_frame(tmp_path, "a.jpg", (200, 40, 40))
+    red_b = _fake_frame(tmp_path, "b.jpg", (200, 40, 40))  # visually identical
+    blue = _fake_frame(tmp_path, "c.jpg", (40, 40, 200))
+    captions: list[str] = []
+
+    monkeypatch.setattr(video_parser, "get_settings", lambda: _vlm_settings())
+    monkeypatch.setattr(video_parser, "detect_scenes", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        video_parser, "extract_frames", lambda *_a, **_k: [red_a, red_b, blue]
+    )
+
+    def caption(frame, **k):
+        captions.append(frame.name)
+        return f"caption-{frame.name}"
+
+    monkeypatch.setattr(video_parser, "_caption_frame", caption)
+
+    probe = {"streams": [{"codec_type": "video"}], "format": {"duration": "30.0"}}
+    chunks = video_parser._frame_chunks(asset, probe)
+    assert captions == ["a.jpg", "c.jpg"]  # red_b skipped, no VLM call wasted
+    assert len(chunks) == 2
+
+
+def test_frames_too_similar_compares_histograms(tmp_path):
+    from mm_asset_rag.parsers import media_probe
+
+    a = _fake_frame(tmp_path, "a.jpg", (200, 40, 40))
+    same = _fake_frame(tmp_path, "same.jpg", (200, 40, 40))
+    different = _fake_frame(tmp_path, "diff.jpg", (40, 40, 200))
+    assert media_probe.frames_too_similar(a, same) is True
+    assert media_probe.frames_too_similar(a, different) is False

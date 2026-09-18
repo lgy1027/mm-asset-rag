@@ -531,6 +531,8 @@ class Settings(BaseSettings):
     video_parser: str = "ffmpeg"
     # Seconds between sampled keyframes for the VLM-caption tier.
     video_frame_interval_s: int = 10
+    # PySceneDetect ContentDetector 阈值(越小越敏感,默认 27);装 [scenes] extra 后生效
+    video_scene_threshold: float = 27.0
     enable_ocr: bool = False
     enable_vlm: bool = False
     image_provider: Literal["clip", "cn_clip"] = "clip"

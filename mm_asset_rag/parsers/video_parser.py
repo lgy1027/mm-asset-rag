@@ -41,8 +41,11 @@ from ..ingest.assets import IngestAsset
 from .audio_parser import has_searchable_text, merge_sentences_into_windows, transcript_for
 from .media_probe import (
     MediaProbeError,
+    detect_scenes,
+    extract_frame_at,
     extract_frames,
     extract_subtitle_stream,
+    frames_too_similar,
     has_stream,
     probe_media,
     subtitle_streams,
@@ -176,8 +179,59 @@ def _effective_interval(interval_s: int, duration: float | None) -> int:
     return interval
 
 
+def _cap_scenes(scenes: list[tuple[float, float]], cap: int) -> list[tuple[float, float]]:
+    """Evenly downsample ``scenes`` to at most ``cap`` windows, endpoints kept."""
+    if cap <= 0 or len(scenes) <= cap:
+        return scenes
+    if cap == 1:
+        return [scenes[0]]
+    step = (len(scenes) - 1) / (cap - 1)
+    return [scenes[round(i * step)] for i in range(cap)]
+
+
+def _scene_samples(
+    asset: IngestAsset,
+    frames_dir: Path,
+    *,
+    interval: int,
+    duration_f: float | None,
+) -> list[tuple[Path, float, float]] | None:
+    """One ``(frame, window_start, window_end)`` per detected scene.
+
+    ``None`` when PySceneDetect is unavailable or the footage has no
+    real cuts (< 2 scenes) — callers fall back to fixed-interval
+    sampling, which covers single-scene clips more evenly. The scene
+    count is capped so VLM cost stays in the same ballpark as interval
+    sampling (≈ one frame per ``interval`` seconds).
+    """
+    settings = get_settings()
+    scenes = detect_scenes(asset.file_path, threshold=settings.video_scene_threshold)
+    if scenes is None or len(scenes) < 2:
+        return None
+    if duration_f:
+        scenes = _cap_scenes(scenes, max(1, math.ceil(duration_f / interval)))
+    samples: list[tuple[Path, float, float]] = []
+    for index, (start, end) in enumerate(scenes):
+        try:
+            frame = extract_frame_at(
+                asset.file_path, frames_dir, start + (end - start) / 2, index=index
+            )
+        except MediaProbeError as exc:
+            log.warning("video: scene %d frame skipped: %s", index, exc)
+            continue
+        samples.append((frame, round(start, 3), round(end, 3)))
+    return samples
+
+
 def _frame_chunks(asset: IngestAsset, probe: dict) -> list[ParsedChunk]:
-    """VLM captions for sampled keyframes, stored under ``parsed/<id>/frames/``."""
+    """VLM captions for sampled keyframes, stored under ``parsed/<id>/frames/``.
+
+    Scene-cut sampling when PySceneDetect detects real cuts (frames land
+    on shot boundaries, timestamps are scene windows); fixed-interval
+    sampling otherwise. Near-identical consecutive frames are deduped
+    before captioning so VLM calls and index slots aren't spent twice
+    on the same shot.
+    """
     settings = get_settings()
     frames_dir = get_parsed_dir() / asset.asset_id / "frames"
     duration = probe.get("format", {}).get("duration")
@@ -186,14 +240,26 @@ def _frame_chunks(asset: IngestAsset, probe: dict) -> list[ParsedChunk]:
     except (TypeError, ValueError):
         duration_f = None
     interval = _effective_interval(int(settings.video_frame_interval_s), duration_f)
-    try:
-        frames = extract_frames(asset.file_path, frames_dir, interval_s=interval)
-    except MediaProbeError as exc:
-        log.warning("video: frame extraction skipped: %s", exc)
-        return []
-    total = duration_f if duration_f else len(frames) * interval
+
+    samples = _scene_samples(asset, frames_dir, interval=interval, duration_f=duration_f)
+    if samples is None:
+        try:
+            frames = extract_frames(asset.file_path, frames_dir, interval_s=interval)
+        except MediaProbeError as exc:
+            log.warning("video: frame extraction skipped: %s", exc)
+            return []
+        total = duration_f if duration_f else len(frames) * interval
+        samples = [
+            (frame, round(i * interval, 3), round(min((i + 1) * interval, total), 3))
+            for i, frame in enumerate(frames)
+        ]
+
     chunks: list[ParsedChunk] = []
-    for index, frame in enumerate(frames):
+    previous: Path | None = None
+    for frame, start, end in samples:
+        if previous is not None and frames_too_similar(previous, frame):
+            continue
+        previous = frame
         caption = _caption_frame(
             frame,
             timeout=settings.vlm_timeout,
@@ -201,8 +267,6 @@ def _frame_chunks(asset: IngestAsset, probe: dict) -> list[ParsedChunk]:
         )
         if not caption:
             continue
-        start = round(index * interval, 3)
-        end = round(min((index + 1) * interval, total), 3)
         chunks.append(
             ParsedChunk(
                 text=caption,
