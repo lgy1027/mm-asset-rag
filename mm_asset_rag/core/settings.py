@@ -143,6 +143,13 @@ class Settings(BaseSettings):
     answer_min_rerank_score: float = 0.0
     answer_min_lexical_coverage: float = 0.2
     retrieval_min_lexical_coverage: float = 0.2
+    # Cap on the query-term count that the retrieval lexical-coverage
+    # filter divides by. Long natural-language queries expand to many
+    # CJK bigrams (many spanning function-word boundaries), and no short
+    # chunk can cover a fixed fraction of them — without the cap the
+    # filter would suppress relevant hits for verbose queries while
+    # short keyword queries are scored against their full term set.
+    retrieval_lexical_coverage_max_terms: int = 12
 
     # ─── Text embedding ───────────────────────────────────────────────────
     # Text embedding is always remote OpenAI-compatible `/embeddings`.

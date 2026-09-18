@@ -31,13 +31,22 @@ def _searchable_text(hit: SearchHit) -> str:
     return f"{hit.title} {hit.evidence} {extra}"
 
 
-def lexical_coverage(question: str, hits: list[SearchHit]) -> float:
-    """Return the fraction of query terms supported by retrieved evidence."""
+def lexical_coverage(
+    question: str, hits: list[SearchHit], *, max_terms: int | None = None
+) -> float:
+    """Return the fraction of query terms supported by retrieved evidence.
+
+    ``max_terms`` caps the denominator: verbose natural-language queries
+    expand to far more terms than a keyword query, and requiring a fixed
+    fraction of an ever-growing term set would suppress relevant short
+    evidence. The numerator (matched distinct terms) is unaffected.
+    """
     query_terms = _terms(question)
     if not query_terms:
         return 0.0
+    denominator = min(len(query_terms), max_terms) if max_terms else len(query_terms)
     matched = set().union(*(_terms(_searchable_text(hit)) for hit in hits)) & query_terms
-    return len(matched) / len(query_terms)
+    return len(matched) / denominator
 
 
 def _has_conflicting_claims(hits: list[SearchHit]) -> bool:

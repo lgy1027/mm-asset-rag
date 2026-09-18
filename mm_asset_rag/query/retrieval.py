@@ -178,8 +178,12 @@ def filter_low_evidence_hits(query: str, hits: list[SearchHit]) -> list[SearchHi
     """Suppress results that cannot support enough of the query terms."""
     if not _terms(query):
         return hits
-    threshold = get_settings().retrieval_min_lexical_coverage
-    return [hit for hit in hits if lexical_coverage(query, [hit]) >= threshold]
+    settings = get_settings()
+    threshold = settings.retrieval_min_lexical_coverage
+    cap = settings.retrieval_lexical_coverage_max_terms
+    return [
+        hit for hit in hits if lexical_coverage(query, [hit], max_terms=cap) >= threshold
+    ]
 
 
 def hybrid_search(

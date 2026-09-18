@@ -418,3 +418,30 @@ def test_hybrid_search_default_image_to_image_weight_is_positive(monkeypatch, fi
     # Use the default weight (don't monkeypatch it).
     retrieval.hybrid_search("q", image_path=Path("/tmp/nonexistent.png"), backend=backend)
     assert called["i2i"] == 1
+
+
+def test_filter_low_evidence_hits_caps_denominator_for_long_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verbose NL queries expand to many CJK bigrams; a short relevant
+    chunk can never cover a fixed fraction of them. The denominator cap
+    keeps such hits while still suppressing lexically unsupported ones."""
+    from mm_asset_rag.core.settings import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "retrieval_lexical_coverage_max_terms", 12, raising=False
+    )
+    relevant = _make_hit("consult", "text", 0.9)
+    relevant.title = "空腹力_52_第四章_（5）需要向主治医师咨询的情况"
+    relevant.evidence = (
+        "服用降血糖药物的人请务必先向主治医生咨询再开始轻松断食"
+    )
+    unrelated = _make_hit("bath", "text", 0.8)
+    unrelated.title = "空腹力_59_第五章_（6）泡澡的惊人功效"
+    unrelated.evidence = "泡澡的水压可以收紧腰围促进代谢"
+
+    long_query = "那本讲断食的书里，提醒说吃降血糖药的人不能擅自断食，必须要先问医生的音频"
+
+    filtered = retrieval.filter_low_evidence_hits(long_query, [relevant, unrelated])
+
+    assert [hit.asset_id for hit in filtered] == ["consult"]
