@@ -117,9 +117,9 @@ def _metric_rows(results: list[EvalResult]) -> list[dict[str, object]]:
     ]
 
 
-def write_eval_report(results: list[EvalResult], path=None) -> None:
+def write_eval_report(results: list[EvalResult], path=None, *, collection: str | None = None) -> None:
     """Write qrels, exact document results, and required retrieval metrics."""
-    target = path or get_eval_report()
+    target = path or get_eval_report(collection)
     by_group: dict[str, list[EvalResult]] = {"all": list(results)}
     for result in results:
         by_group.setdefault(result.group, []).append(result)

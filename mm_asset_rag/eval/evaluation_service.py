@@ -53,14 +53,14 @@ class EvaluationService:
         }
         if command.answer_quality:
             results = self._run_answer(**kwargs)
-            self._write_answer(results)
+            self._write_answer(results, collection=command.collection)
             return {"kind": "answer_quality", "version": "answer_v1", "results": _rows(results)}
         if command.v2:
             results = self._run_v2(**kwargs)
-            self._write_v2({"text_to_text": results})
+            self._write_v2({"text_to_text": results}, collection=command.collection)
             return {"kind": "retrieval", "version": "v2", "results": _rows(results)}
         results = self._run_v1(**kwargs)
-        self._write_v1(results)
+        self._write_v1(results, collection=command.collection)
         return {"kind": "retrieval", "version": "v1", "results": _rows(results)}
 
 

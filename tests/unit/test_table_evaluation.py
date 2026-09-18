@@ -158,7 +158,9 @@ def test_cli_v2_writes_table_results_under_their_own_group(tmp_path: Path, monke
     monkeypatch.setattr(cli_mod, "_resolve_cli_cases_path", lambda _value: "table.json")
     monkeypatch.setattr(evaluation_v2, "run_eval_v2", lambda **_kwargs: [result])
     monkeypatch.setattr(
-        evaluation_v2, "write_eval_report_v2", lambda groups: written.update(groups)
+        evaluation_v2,
+        "write_eval_report_v2",
+        lambda groups, **kw: written.update(groups),
     )
 
     build_parser().parse_args(

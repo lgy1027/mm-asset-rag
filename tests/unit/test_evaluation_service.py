@@ -15,7 +15,7 @@ def test_service_runs_v2_and_writes_one_group_report() -> None:
         calls["run"] = kwargs
         return [_Result()]
 
-    def write_v2(groups):
+    def write_v2(groups, **kwargs):
         calls["groups"] = groups
 
     service = EvaluationService(run_v2=run_v2, write_v2=write_v2)

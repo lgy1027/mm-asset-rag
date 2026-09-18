@@ -120,7 +120,7 @@ def test_documents_100_qrels_are_loadable_and_explicit() -> None:
     assert all(not case["qrels"] for case in groups["negative"])
 
 
-def test_api_v1_default_uses_bundled_qrels(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_api_v1_default_uses_bundled_qrels(tmp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from types import SimpleNamespace
 
     from fastapi.testclient import TestClient

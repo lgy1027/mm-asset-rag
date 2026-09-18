@@ -444,9 +444,17 @@ def _execute_image_eval_search(
     )
 
 
-def write_eval_report_v2(results_by_group: dict[str, list[V2Result]], path=None) -> None:
+def write_eval_report_v2(
+    results_by_group: dict[str, list[V2Result]], path=None, *, collection: str | None = None
+) -> None:
     """Write per-query qrels and required document-level aggregate metrics."""
-    target = path or get_eval_report().with_name("eval_report_v2.json")
+    if path is None:
+        slug_path = get_eval_report(collection)
+        target = slug_path.with_name(
+            slug_path.name.replace("eval_report", "eval_report_v2", 1)
+        )
+    else:
+        target = path
     all_results = [result for results in results_by_group.values() for result in results]
     groups = {
         group: {

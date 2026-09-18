@@ -590,7 +590,7 @@ def test_cli_eval_answer_quality_flag(tmp_home, monkeypatch, capsys) -> None:
     command_eval(args)
     captured = capsys.readouterr()
     assert "no LLM creds configured" in captured.out
-    assert (tmp_home / "eval_report_answer.json").exists()
+    assert (tmp_home / "eval_report_answer_team.json").exists()
 
 
 def test_api_eval_request_rejects_v2_and_answer_quality_together() -> None:

@@ -275,7 +275,7 @@ def command_eval(args: argparse.Namespace) -> None:
             metadata_filter=args.metadata_filter,
             principal=args.principal,
         )
-        write_answer_eval_report(results)
+        write_answer_eval_report(results, collection=args.collection)
         safe_print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
         # Surface the dominant "all fallback" / "all faithfulness skipped"
         # outcomes so a user on a machine without an LLM doesn't think the
@@ -312,7 +312,7 @@ def command_eval(args: argparse.Namespace) -> None:
             results_by_group.setdefault(str(getattr(result, "group", "text_to_text")), []).append(
                 result
             )
-        write_eval_report_v2(results_by_group)
+        write_eval_report_v2(results_by_group, collection=args.collection)
         safe_print(json.dumps([asdict(r) for r in results], ensure_ascii=False, indent=2))
         return
     results = run_eval(
@@ -322,7 +322,7 @@ def command_eval(args: argparse.Namespace) -> None:
         metadata_filter=args.metadata_filter,
         principal=args.principal,
     )
-    write_eval_report(results)
+    write_eval_report(results, collection=args.collection)
     safe_print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
 
 

@@ -316,7 +316,7 @@ def test_cli_eval_v1_passes_cases_path(monkeypatch: pytest.MonkeyPatch, tmp_path
         calls["cases_path"] = cases_path
         return []
 
-    def fake_write_v1(results, path=None):
+    def fake_write_v1(results, path=None, *, collection=None):
         calls["write_v1"] = results
 
     monkeypatch.setattr(cli_mod, "load_env", lambda: None)
@@ -534,7 +534,9 @@ def test_cli_eval_default_uses_bundled_qrels(
     assert len(rows) == 8
     assert all(set(row) >= {"query_id", "qrels", "actual_document_ids"} for row in rows)
     assert not any("expected_asset_ids" in row for row in rows)
-    assert (tmp_home / "eval_report.json").is_file()
+    # Reports are scoped per collection so one knowledge base's eval
+    # cannot clobber another's.
+    assert (tmp_home / "eval_report_team.json").is_file()
 
 
 def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -566,10 +568,10 @@ def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> Non
         calls["v2_called"] = True
         return [_FakeV2Result()]
 
-    def fake_write_v2(by_group, path=None):
+    def fake_write_v2(by_group, path=None, *, collection=None):
         calls["write_v2"] = by_group
 
-    def fake_write_v1(results, path=None):
+    def fake_write_v1(results, path=None, *, collection=None):
         calls["write_v1"] = results
 
     # Block ``load_env`` from touching the real env in case the test
@@ -634,7 +636,9 @@ def test_cli_eval_image_runs_auto_image_qrels(monkeypatch: pytest.MonkeyPatch) -
         lambda **kwargs: calls.setdefault("run", kwargs) and [_Result()],
     )
     monkeypatch.setattr(
-        ev2, "write_eval_report_v2", lambda groups: calls.setdefault("groups", groups)
+        ev2,
+        "write_eval_report_v2",
+        lambda groups, **kw: calls.setdefault("groups", groups),
     )
 
     args = build_parser().parse_args(

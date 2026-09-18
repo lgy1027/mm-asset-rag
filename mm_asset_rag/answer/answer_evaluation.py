@@ -235,10 +235,12 @@ def run_answer_eval(
 def write_answer_eval_report(
     results: list[AnswerEvalResult],
     path: Path | None = None,
+    *,
+    collection: str | None = None,
 ) -> None:
     """Write the answer-quality report (payload version ``answer_v1``)."""
     payload = _aggregate_answer_metrics(results)
-    out = path or get_answer_eval_report()
+    out = path or get_answer_eval_report(collection)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

@@ -106,17 +106,35 @@ def get_documents_jsonl() -> Path:
     return get_data_dir() / "documents.jsonl"
 
 
-def get_eval_report() -> Path:
-    return get_data_dir() / "eval_report.json"
+def _report_slug(collection: str | None) -> str:
+    """Filesystem-safe slug for collection-scoped report names."""
+    slug = "".join(ch if (ch.isalnum() or ch in "-_") else "_" for ch in str(collection or ""))
+    return slug[:48]
 
 
-def get_answer_eval_report() -> Path:
+def get_eval_report(collection: str | None = None) -> Path:
+    """Eval report path, scoped per collection when one is known.
+
+    A single global ``eval_report.json`` meant an eval run on one
+    knowledge base silently clobbered the previous collection's report.
+    ``None`` / ``"default"`` keeps the legacy filename; named collections
+    get their own ``eval_report_<slug>.json``.
+    """
+    base = get_data_dir() / "eval_report"
+    if not collection or collection == "default":
+        return base.with_suffix(".json")
+    return base.with_name(f"eval_report_{_report_slug(collection)}.json")
+
+
+def get_answer_eval_report(collection: str | None = None) -> Path:
     """Output path for ``mmrag eval --answer-quality`` (coverage / citation
     / LLM-judge faithfulness scores). Sits next to ``eval_report.json`` /
     ``eval_report_v2.json`` and is ``answer_v1``-versioned in the payload
     so dashboards can tell reports apart after a schema bump.
     """
-    return get_eval_report().with_name("eval_report_answer.json")
+    return get_eval_report(collection).with_name(
+        f"eval_report_answer{_report_slug(collection) and '_' + _report_slug(collection) or ''}.json"
+    )
 
 
 def get_eval_cases_dir() -> Path:
