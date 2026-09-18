@@ -292,6 +292,26 @@ def _without_asset_id(value: object) -> object:
     return value
 
 
+def _searchable_text(chunk) -> str:
+    """Text that gets embedded / BM25-indexed: title + contextual preamble + body.
+
+    The payload ``text`` stays the raw body so evidence and answer
+    generation are unpolluted — the same contract as the contextual
+    retrieval preamble. Indexing the title makes title-word queries
+    reachable (e.g. an audio clip whose transcript never says its own
+    name), which pure body indexing cannot serve.
+    """
+    parts: list[str] = []
+    title = str(chunk.metadata.get("title") or chunk.metadata.get("asset_title") or "")
+    if title:
+        parts.append(title)
+    ctx = chunk.metadata.get("context")
+    if ctx:
+        parts.append(str(ctx))
+    parts.append(chunk.text)
+    return "\n\n".join(parts)
+
+
 def _v2_payload(chunk) -> dict[str, object]:
     """Build the explicit document/version/chunk/source/policy payload."""
     return {
@@ -435,7 +455,9 @@ def build_qdrant_text_index(
 
     # One embedding call up front to learn the vector size (= collection name).
     # On a warm cache this doc may already be in qdrant; we still need it.
-    first_vector = embedder.embed(documents[0].text)
+    # Embeds the searchable text (title + context + body) so the batch
+    # loop can reuse it verbatim for doc 0.
+    first_vector = embedder.embed(_searchable_text(documents[0]))
     client = get_qdrant_client()
     collection_name = text_collection(len(first_vector))
 
@@ -499,28 +521,17 @@ def build_qdrant_text_index(
                 progress_cb(offset + len(batch), len(documents), "skipping cached")
             continue
 
-        # Contextual Retrieval: prepend the LLM-generated context (stored in
-        # ``metadata["context"]`` at parse time) to the embedding/BM25 input
-        # so dense + sparse channels see the disambiguating preamble. The
-        # payload ``text`` below stays the raw chunk body so evidence / answer
-        # generation isn't polluted by the preamble. No ``context`` key →
-        # identical to the pre-contextual behavior.
-        texts = []
-        for i in to_do:
-            ctx = batch[i].metadata.get("context")
-            if ctx:
-                texts.append(f"{ctx}\n\n{batch[i].text}")
-            else:
-                texts.append(batch[i].text)
+        # Embedding/BM25 input is the searchable text (title + optional
+        # contextual preamble + body); the payload ``text`` below stays the
+        # raw chunk body so evidence / answer generation isn't polluted.
+        texts = [_searchable_text(batch[i]) for i in to_do]
 
-        # Reuse the probe embedding when offset==0 and doc 0 is in to_do —
-        # but only when doc 0 carries no contextual preamble. With context,
-        # texts[0] is "{ctx}\n\n{text}" while the probe embedded the bare
-        # text; reusing it would give the first chunk a context-less dense
-        # vector whose sparse sibling carries the context.
+        # The probe embedded doc 0's searchable text, so reuse it whenever
+        # doc 0 lands in the first batch's to_do list (to_do is ascending,
+        # hence texts[0] is batch[0]'s searchable text).
         dense_vectors: list[list[float]] = []
         start = 0
-        if offset == 0 and 0 in to_do and not batch[0].metadata.get("context"):
+        if offset == 0 and 0 in to_do:
             dense_vectors.append(first_vector)
             start = 1
         if start < len(texts):

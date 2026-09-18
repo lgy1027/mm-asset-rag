@@ -225,19 +225,18 @@ def test_build_qdrant_text_index_prepends_context(tmp_home, fake_qdrant_client, 
         assert p.payload["context"] == "这是关于DDPM去噪扩散的前缀"
 
 
-def test_build_qdrant_text_index_probe_not_reused_when_doc0_has_context(
+def test_build_qdrant_text_index_probe_embeds_searchable_text_with_context(
     tmp_home, fake_qdrant_client, fixed_vector
 ):
-    """When ``documents[0]`` carries a context preamble, the probe embedding
-    (computed on the bare text) must NOT be reused into ``dense_vectors[0]``.
+    """The probe embedding must cover the full searchable text (title +
+    context preamble + body) so it can be reused as doc 0's dense vector.
 
-    Regression: the probe reuses ``first_vector = embed(documents[0].text)``
-    as ``dense_vectors[0]`` when offset==0 and doc 0 is in ``to_do``. With
-    context, the dense input should be ``"{ctx}\\n\\n{text}"`` but the probe
-    embedded the bare ``{text}`` — reusing it gives the first chunk a
-    context-less dense vector whose sparse sibling carries the context.
-    The fix adds a ``not batch[0].metadata.get("context")`` guard so the
-    first chunk goes through ``embed_batch`` with its context prefix."""
+    Regression history: the probe used to embed the bare body, so with a
+    context preamble the reused vector was context-less while its sparse
+    sibling carried the context. The fix then skipped reuse for contextual
+    docs. Now the probe embeds ``_searchable_text(documents[0])`` — the
+    exact string the batch loop would embed — so reuse is always
+    consistent and doc 0 never needs a duplicate batch embedding."""
     from mm_asset_rag.backends.qdrant.indexing import build_text_index
     from mm_asset_rag.core.registry import embedders, register_embedder
     from mm_asset_rag.ingest.document_store import write_documents
@@ -273,15 +272,14 @@ def test_build_qdrant_text_index_probe_not_reused_when_doc0_has_context(
     finally:
         embedders._items.pop(("text", "default"), None)
 
-    # Every batch embedding input must carry the context prefix. The probe
-    # (embed(documents[0].text)) is bare-text by design and is excluded: when
-    # doc 0 has context it is NOT reused into dense_vectors[0], so the
-    # context-prefixed input only reaches the batch call.
+    # The single doc is fully covered by the probe: its input must be the
+    # searchable text (context preamble + body) and no batch call is needed.
     assert seen_texts, "no embedding calls captured"
-    batch_inputs = seen_texts[1:]  # skip the bare probe
-    assert batch_inputs, "no batch embedding call captured"
-    for t in batch_inputs:
-        assert "CTX-前缀" in t, f"context prefix missing from input: {t!r}"
+    assert seen_texts[0] == "CTX-前缀\n\n正文内容", f"probe input: {seen_texts[0]!r}"
+    assert len(seen_texts) == 1, (
+        "doc 0 should be covered by the probe alone, got extra calls: "
+        f"{seen_texts[1:]!r}"
+    )
 
 
 def test_enrich_noop_without_credentials_writes_no_cache(tmp_home, monkeypatch) -> None:
