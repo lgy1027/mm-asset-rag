@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # skip the probe. The Qdrant image collection name is auto-suffixed
     # with this value. Make sure the value matches your model's actual
     # output (clip-ViT-B-32 → 512, OFA-Sys/chinese-clip-vit-base-patch16
-    # → 768, cn-clip-vit-huge-patch14 → 1024).
+    # → 512 image embeddings, cn-clip-vit-huge-patch14 → 1024).
     image_embedding_dim: int | None = None
 
     # ─── Qdrant ──────────────────────────────────────────────────────────
@@ -590,9 +590,11 @@ class Settings(BaseSettings):
     # each chunk gets a short LLM-generated preamble situating it within its
     # document, prepended to the embedding/BM25 input so dense + sparse
     # channels can disambiguate generic terms ("diffusion" → DDPM vs Stable
-    # Diffusion). Enabled by default — the latency/precision trade-off favors
-    # precision; set ``CONTEXTUAL_ENABLED=false`` to opt out. It costs ~1 LLM
-    # call per chunk (4158 PDF chunks on the bundled corpus ≈ 9.4M tokens).
+    # Diffusion). Off by default (opt-in): enable per run via
+    # ``mmrag parse --contextual`` (``ParseOptions.contextual`` defaults to
+    # ``False``); there is no ``CONTEXTUAL_ENABLED`` env setting. It costs
+    # ~1 LLM call per chunk (4158 PDF chunks on the bundled corpus ≈ 9.4M
+    # tokens).
     contextual_model: str | None = None
     contextual_concurrency: int = 4
     contextual_chunk_max_chars: int = 8000
@@ -620,7 +622,7 @@ class Settings(BaseSettings):
     # Cases have ``query_id`` + ``query`` entries and one top-level
     # ``qrels: {query_id: {document_id: relevance}}`` mapping. The default
     # (None) loads the small qrels sample shipped at
-    # ``mm_asset_rag/eval_data/<version>_cases.json``. Point this at a custom
+    # ``mm_asset_rag/eval/eval_data/<version>_cases.json``. Point this at a custom
     # qrels file to score another corpus; ``--cases`` overrides it for one run.
     eval_cases_path: str | None = None
 

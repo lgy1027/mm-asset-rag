@@ -94,8 +94,10 @@ class EvalRequest(BaseModel):
             "Run the strict image eval (text_to_image_zh / text_to_image_en "
             "/ image_to_image primitive routes only, no rewrite / rerank) "
             "instead of v1 / v2 retrieval. Mutually exclusive with v2 and "
-            "answer_quality; defaults to the bundled image case file when "
-            "cases_path is not set."
+            "answer_quality; defaults to the eval_cases_images_v2.json image "
+            "case file (shipped in the repo examples/ dir for source installs; "
+            "wheel installs must copy it into eval_cases/) when cases_path is "
+            "not set."
         ),
     )
     cases_path: str | None = Field(

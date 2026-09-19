@@ -129,12 +129,13 @@ def get_eval_report(collection: str | None = None) -> Path:
 def get_answer_eval_report(collection: str | None = None) -> Path:
     """Output path for ``mmrag eval --answer-quality`` (coverage / citation
     / LLM-judge faithfulness scores). Sits next to ``eval_report.json`` /
-    ``eval_report_v2.json`` and is ``answer_v1``-versioned in the payload
-    so dashboards can tell reports apart after a schema bump.
+    ``eval_report_v2.json``; the payload shares ``schema_version:
+    evaluation.v1`` with the retrieval reports and is distinguished by
+    ``kind: answer_quality`` so dashboards can tell report kinds apart.
     """
-    return get_eval_report(collection).with_name(
-        f"eval_report_answer{_report_slug(collection) and '_' + _report_slug(collection) or ''}.json"
-    )
+    slug = _report_slug(collection)
+    suffix = f"_{slug}" if slug else ""
+    return get_eval_report(collection).with_name(f"eval_report_answer{suffix}.json")
 
 
 def get_eval_cases_dir() -> Path:

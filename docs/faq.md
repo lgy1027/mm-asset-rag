@@ -201,12 +201,12 @@ IMAGE_CAPTION_ENABLED=true   # VLM 给文档图打 caption,文本 + 进 image co
 
 ```env
 IMAGE_PROVIDER=cn_clip
-CLIP_MODEL=OFA-Sys/chinese-clip-vit-base-patch16   # 768d
+CLIP_MODEL=OFA-Sys/chinese-clip-vit-base-patch16   # 图像 embedding 512d
 ```
 
 注意:
 1. 需要 `[cn_clip]` extra(`uv sync --extra cn_clip`)或 `[docling]` 间接拉入 `transformers`。
-2. image collection 后缀变 `_768d`,需要 `mmrag reindex` drop + rebuild。
+2. image collection 后缀变 `_512d`,需要 `mmrag reindex` drop + rebuild。
 3. 首跑会下 ~1 GB 模型,macOS 系统代理坑见下节。
 
 ### eval 跑了但 `hit_rate=0`

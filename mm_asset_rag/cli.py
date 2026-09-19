@@ -179,7 +179,8 @@ def command_reindex(args: argparse.Namespace) -> None:
     you need concurrent access.
 
     ``--yes`` skips the interactive confirmation — useful for CI / scripts
-    and for the "switch CLIP model" recipe in ``docs/eval-report-v3.md``.
+    and for the "switch CLIP model" recipe in the image-eval section of
+    ``README.md``.
     """
     from .service import get_service
 
@@ -616,8 +617,8 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     # --v2 and --answer-quality are mutually exclusive: they share top_k /
-    # cases_path inputs but write different reports (eval_report_v2.json vs
-    # eval_report_answer.json) and score different things (retrieval vs
+    # cases_path inputs but write different reports (eval_report_v2_<collection>.json
+    # vs eval_report_answer_<collection>.json) and score different things (retrieval vs
     # generation). argparse requires the mutex group to be created before
     # any of its members, so both flags live here rather than one per branch.
     eval_mode = eval_cmd.add_mutually_exclusive_group()
@@ -630,7 +631,8 @@ def build_parser() -> argparse.ArgumentParser:
             "primitive retrieval routes. Query rewrite and reranking are bypassed for a "
             "deterministic retrieval gate; fails fast when judged documents are missing "
             "from the collection. Defaults to eval_cases_images_v2.json for --cases. "
-            "Writes eval_report_v2.json."
+            "Writes eval_report_v2_<collection>.json (eval_report_v2.json for the "
+            "default collection)."
         ),
     )
     eval_mode.add_argument(
@@ -639,7 +641,8 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Run the v2 regression set (multi-dimensional, Chinese-primary: "
             "cross-language / multi-relevant / negative) instead of the v1 "
-            "set. Writes eval_report_v2.json. Default is v1 so existing "
+            "set. Writes eval_report_v2_<collection>.json (eval_report_v2.json for "
+            "the default collection). Default is v1 so existing "
             "scripts / dashboards keep their numbers."
         ),
     )
@@ -648,7 +651,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Run the answer-quality eval (coverage + citation + LLM-judge "
-            "faithfulness). Writes eval_report_answer.json. Text→text cases "
+            "faithfulness). Writes eval_report_answer_<collection>.json. Text→text cases "
             "only in v0; image-route cases raise ValueError. Coverage / "
             "citation always run; faithfulness is skipped when no LLM creds "
             "are configured (set MODEL_* or LLM_*)."

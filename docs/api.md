@@ -17,7 +17,7 @@ Returns service liveness plus file and index state.
 ```json
 {
   "status": "ok",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "files": 12,
   "documents_jsonl_exists": true,
   "text_index_exists": true,
@@ -283,8 +283,7 @@ not part of the public URL.
       "images": [],
       "kind": null,
       "start": null,
-      "end": null,
-      "media_url": null
+      "end": null
     }
   ]
 }

@@ -45,9 +45,9 @@ class CnClipImageEmbedder:
     """Chinese-CLIP 图像 + 文本编码器(``transformers`` 后端)。
 
     模型名默认走 ``Settings.clip_model``,常规用法是 ``OFA-Sys/chinese-clip-vit-base-patch16``
-    (768d, ~1 GB,中文 zero-shot Flickr30K-CN R@1 ~71%)。向量维度由 ``dim()`` 在
-    首次探测时确定,Qdrant collection 会据此自动加 ``_768d`` 后缀 — 切换模型
-    必须 ``mmrag reindex`` 重建 image collection。
+    (图像 embedding 512d,~1 GB,中文 zero-shot Flickr30K-CN R@1 ~71%)。向量维度由
+    ``dim()`` 在首次探测时确定,Qdrant collection 会据此自动加维度后缀(如
+    ``_512d``)— 切换模型必须 ``mmrag reindex`` 重建 image collection。
     """
 
     modality = "image"

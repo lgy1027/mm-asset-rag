@@ -47,7 +47,7 @@ def _isolate_env_file(monkeypatch):
     Two channels load ``.env`` and both must be blocked, or a developer's
     local ``.env`` (git-ignored, so CI is fine) overrides code defaults
     (``AUTO_META_ENABLED`` / ``RERANKER_ENABLED`` / ``ENRICH_CHUNK_WITH_KEYWORDS``
-    / ``PDF_EXTRACT_IMAGES`` / ``CONTEXTUAL_ENABLED``) and turns tests that
+    / ``PDF_EXTRACT_IMAGES``) and turns tests that
     assert those defaults red:
 
     1. :func:`mm_asset_rag.core.config.load_env` calls ``python-dotenv``'s

@@ -463,9 +463,10 @@ def _execute_image_eval_search(
 def _image_encoder_fingerprint_violation() -> str | None:
     """Preflight check: the image index must match the current encoder's fingerprint.
 
-    Both CLIP-family providers emit 512-dim vectors into the same collection
-    name, so a provider/model switch after ingest is silent: every query
-    scores near zero and the strict eval would report garbage hit rates.
+    Same-dimension CLIP-family vectors land in the same dim-suffixed
+    collection name (e.g. ``multimodal_image_512d``), so a same-dimension
+    provider/model switch after ingest is silent: every query scores near
+    zero and the strict eval would report garbage hit rates.
     Returns a human-readable violation when the eval home's image index has
     points but no usable matching fingerprint sidecar; ``None`` otherwise.
 

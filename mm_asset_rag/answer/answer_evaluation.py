@@ -238,7 +238,9 @@ def write_answer_eval_report(
     *,
     collection: str | None = None,
 ) -> None:
-    """Write the answer-quality report (payload version ``answer_v1``)."""
+    """Write the answer-quality report (payload ``schema_version:
+    evaluation.v1``, distinguished from retrieval reports by
+    ``kind: answer_quality``)."""
     payload = _aggregate_answer_metrics(results)
     out = path or get_answer_eval_report(collection)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -492,7 +494,7 @@ def _load_cases(cases_path: str | Path | None) -> tuple[dict[str, list[dict]], s
     (``expected_answer_keywords`` / ``expected_answer_assets``) pass through.
 
     Resolution: explicit ``cases_path`` → ``Settings.eval_cases_path`` →
-    bundled default at ``mm_asset_rag/eval_data/answer_v1_cases.json``
+    bundled default at ``mm_asset_rag/eval/eval_data/answer_v1_cases.json``
     (resolved via ``importlib.resources`` so it ships inside the wheel).
     """
     from ..eval.evaluation_v2 import _default_cases_path

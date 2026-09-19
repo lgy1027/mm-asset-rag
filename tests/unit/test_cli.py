@@ -814,7 +814,7 @@ def test_cli_documents_enforces_acl_and_hides_policy(
 def test_cli_reindex_subcommand_yes_flag() -> None:
     """``--yes`` skips the interactive confirmation. Needed for CI
     and for the "switch CLIP / embedding model" recipe in
-    ``docs/eval-report-v3.md``.
+    the image-eval section of ``README.md``.
     """
     parser = build_parser()
     args = parser.parse_args(["reindex", "--image-only"])

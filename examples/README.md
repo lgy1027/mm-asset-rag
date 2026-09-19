@@ -16,4 +16,4 @@ The project is upload-first: use the web UI or `/upload/preview` + `/upload/conf
 
 ## Eval case sets
 
-`eval_cases_chapter11_v{1,2}.json` are opt-in regression case files (the project's internal chapter11 baseline). The default `mmrag eval` does **not** use them — it loads the small generic sample shipped with the package. Load one explicitly with `--cases`; see [`eval_cases_README.md`](eval_cases_README.md) for the schema and the corpus requirement.
+`eval_cases_chapter11_v{1,2}.json` are **archived legacy fixtures** (the project's internal chapter11 baseline), kept only for historical comparison with the chapter11 reports. The default `mmrag eval` does **not** use them — it loads the small generic sample shipped with the package. They use the removed `expected_asset_ids` schema, so the qrels-only v2 evaluator intentionally **rejects them — they cannot be loaded via `--cases`**. Do not use these files as templates; see [`eval_cases_README.md`](eval_cases_README.md) for the current schema and the corpus requirement.

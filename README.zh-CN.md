@@ -89,7 +89,7 @@ pip install mm-asset-rag   # core:文本检索 + FastAPI web UI(图检索需 [cl
 pip install "mm-asset-rag[clip]"     # sentence-transformers CLIP
 ```
 
-可选中文 CLIP(中文 zero-shot,768d,中文语料强烈推荐):
+可选中文 CLIP(中文 zero-shot,图像 embedding 512d,中文语料强烈推荐):
 
 ```bash
 pip install "mm-asset-rag[cn_clip]"  # transformers + OFA-Sys/chinese-clip-vit-base-patch16
@@ -255,9 +255,11 @@ manifest(`examples/image_eval_manifest_v1.json`)是语料和查询的语义事�
 
 ingest 还会在图像索引旁记录编码器指纹(provider 类名、模型名和一张确定性
 canary 图的 embedding)。ingest 之后切换 `IMAGE_PROVIDER` 或 `CLIP_MODEL`
-会改变向量空间但不改 collection 名,每个查询的得分都会接近零,评估会静默
-地产出垃圾数字;严格评估的 preflight 会在发起任何搜索之前直接失败,并在
-错误信息里同时给出记录与当前的编码器。发生这种切换后需要重新 ingest
+会改变向量空间。同维度切换仍写入按维度后缀命名的同一 collection(如
+`multimodal_image_512d`),新编码器会静默查询旧向量——每个查询的得分都会
+接近零——严格评估的 preflight 会在发起任何搜索之前直接失败,并在错误信息里
+同时给出记录与当前的编码器;跨维度切换则会落入一个新的 collection 名,查询
+打到的是空 collection 或缺失 collection。发生这种切换后需要重新 ingest
 (使用全新的 eval 数据目录,或强制重建图像索引)。
 
 ### 跑性能基准

@@ -1,11 +1,12 @@
 """Encoder fingerprint for the image vector index.
 
-The image index (``multimodal_image_512d``) stores vectors produced by
-whichever image embedder was configured at ingest time; the search routes
-embed queries with the *currently* configured embedder. Both CLIP-family
-providers emit 512-dim vectors into the same collection name, so a
-provider switch (``clip`` vs ``cn_clip``) is silent: every query scores
-near zero and nothing errors.
+The image index (a dim-suffixed collection such as ``multimodal_image_512d``)
+stores vectors produced by whichever image embedder was configured at ingest
+time; the search routes embed queries with the *currently* configured
+embedder. Same-dimension CLIP-family vectors land in the same dim-suffixed
+collection name (e.g. ``multimodal_image_512d``), so a same-dimension
+provider switch (``clip`` vs ``cn_clip``) is silent: every query scores near
+zero and nothing errors.
 
 The fingerprint records *which* encoder produced the index — concrete
 provider class name, best-effort model name, vector dimension, and the

@@ -29,4 +29,4 @@ unique `query_id` and provide a top-level graded `qrels` mapping.
 
 Document IDs are matched exactly and case-sensitively. Positive integer grades
 mean relevant; a negative case must still have a qrels entry whose value is
-`{}`. See the working bundled samples in `mm_asset_rag/eval_data/`.
+`{}`. See the working bundled samples in `mm_asset_rag/eval/eval_data/`.

@@ -719,8 +719,9 @@ class IngestService:
             "enable_vlm": options.enable_vlm,
             # Persisted so a retry of a ``--contextual`` task keeps the
             # per-task override; without this the retry silently falls back
-            # to the global ``CONTEXTUAL_ENABLED`` and produces chunks
-            # without the context preamble, inconsistent with the original.
+            # to the default (``ParseOptions.contextual=False``) and produces
+            # chunks without the context preamble, inconsistent with the
+            # original.
             "contextual": options.contextual,
         }
 
