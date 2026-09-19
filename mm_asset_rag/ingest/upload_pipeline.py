@@ -55,6 +55,7 @@ from ..core.paths import physical_cache_id
 from ..core.settings import get_settings
 from .assets import IngestAsset, from_sniffed, persisted_asset
 from .auto_meta import AutoMeta
+from .file_identity import slugify_filename_stem
 from .sniff import SniffedAsset, sniff
 
 log = logging.getLogger(__name__)
@@ -86,7 +87,6 @@ def enable_auto_meta() -> None:
 
 
 _CACHE_ID_RE = re.compile(r"^[0-9a-f]{12}$")
-_DANGEROUS_FILENAME_CHARS = re.compile(r"[<>:\"|?*\x00-\x1f]+")
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 SUPPORTED_MANIFEST_VERSIONS = {1}
 
@@ -172,21 +172,6 @@ class AssetPreview:
 
 
 # ─── Helpers ───────────────────────────────────────────────────────────
-
-
-def _slugify(value: str, *, max_len: int | None = None) -> str:
-    """Normalise a filename stem so it's safe to embed in a path.
-
-    Keeps unicode (so Chinese titles stay readable), removes path
-    separators and control characters, collapses whitespace.
-    """
-    cleaned = re.sub(r"[\\/]+", " ", value).strip()
-    cleaned = _DANGEROUS_FILENAME_CHARS.sub(" ", cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned)
-    cleaned = cleaned.strip(" .") or "asset"
-    if max_len is not None and max_len > 0 and len(cleaned) > max_len:
-        cleaned = cleaned[:max_len].rstrip(" .") or "asset"
-    return cleaned
 
 
 def _target_subdir(source_type: str) -> str:
@@ -717,7 +702,7 @@ class UploadPipeline:
             # the LLM plucked an inner-page heading as the title). The
             # display_title still flows to title_override below for the
             # human-facing name; only the key is pinned to the filename.
-            id_stem = _slugify(source_path.stem, max_len=settings.upload_slug_max_len)
+            id_stem = slugify_filename_stem(source_path.stem, max_len=settings.upload_slug_max_len)
             document_id = edit.document_id if edit and edit.document_id else id_stem
             if edit is None or edit.collection is None or edit.allowed_principals is None:
                 raise UploadManifestError("collection and allowed_principals are required")

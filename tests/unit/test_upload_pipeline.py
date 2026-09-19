@@ -15,12 +15,12 @@ from typing import Any
 import pytest
 
 from mm_asset_rag.ingest import auto_meta
+from mm_asset_rag.ingest.file_identity import slugify_filename_stem
 from mm_asset_rag.ingest.upload_pipeline import (
     UploadManifestError,
     UploadPipeline,
     UserEdits,
     _parse_tags,
-    _slugify,
 )
 
 # ─── fixtures & helpers ────────────────────────────────────────────────
@@ -113,15 +113,15 @@ def test_parse_tags_empty() -> None:
     assert _parse_tags(None) == []
 
 
-# ─── _slugify ──────────────────────────────────────────────────────────
+# ─── slugify_filename_stem ─────────────────────────────────────────────
 
 
 def test_slugify_collapses_separators() -> None:
-    assert _slugify("foo/bar\\baz qux") == "foo bar baz qux"
+    assert slugify_filename_stem("foo/bar\\baz qux") == "foo bar baz qux"
 
 
 def test_slugify_empty_falls_back() -> None:
-    assert _slugify("   /  \\  ") == "asset"
+    assert slugify_filename_stem("   /  \\  ") == "asset"
 
 
 # ─── preview ───────────────────────────────────────────────────────────
