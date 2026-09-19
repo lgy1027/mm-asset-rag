@@ -22,8 +22,10 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import tempfile
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -137,7 +139,12 @@ def fingerprint_matches(
 
 
 def save_image_fingerprint(path: Path, fingerprint: ImageEmbedderFingerprint) -> None:
-    """Write ``fingerprint`` to ``path`` as a JSON sidecar."""
+    """Write ``fingerprint`` to ``path`` as a JSON sidecar, atomically.
+
+    The payload is written to a temp file in the same directory and then
+    ``os.replace``-ed onto the target, so a concurrent reader never sees a
+    partially written sidecar.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -146,15 +153,39 @@ def save_image_fingerprint(path: Path, fingerprint: ImageEmbedderFingerprint) ->
         "dim": fingerprint.dim,
         "canary": list(fingerprint.canary),
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(serialized)
+        os.replace(temp_name, path)
+    except BaseException:
+        with suppress(OSError):
+            os.unlink(temp_name)
+        raise
 
 
 def load_image_fingerprint(path: Path) -> ImageEmbedderFingerprint | None:
-    """Read the fingerprint sidecar at ``path``; ``None`` when it does not exist."""
+    """Read the fingerprint sidecar at ``path``; ``None`` when it does not exist.
+
+    A sidecar that is valid JSON but not a fingerprint-shaped object raises
+    ``ValueError`` — the loader's contract is "corrupt sidecar -> ValueError"
+    so callers can degrade instead of crashing on ``TypeError``.
+    """
     path = Path(path)
     if not path.exists():
         return None
     payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(
+            f"corrupt image fingerprint sidecar at {path}: expected a JSON object, "
+            f"got {type(payload).__name__}"
+        )
+    if not isinstance(payload.get("canary"), list):
+        raise ValueError(
+            f"corrupt image fingerprint sidecar at {path}: "
+            f'"canary" must be a list, got {type(payload.get("canary")).__name__}'
+        )
     return ImageEmbedderFingerprint(
         provider=str(payload["provider"]),
         model=payload.get("model"),

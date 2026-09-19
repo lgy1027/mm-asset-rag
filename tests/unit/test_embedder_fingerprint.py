@@ -152,6 +152,31 @@ def test_load_missing_sidecar_returns_none(tmp_path: Path) -> None:
     assert load_image_fingerprint(tmp_path / "nope.json") is None
 
 
+def test_load_non_object_sidecar_raises_value_error(tmp_path: Path) -> None:
+    path = tmp_path / "image_embedder_fingerprint.json"
+    path.write_text("[1, 2, 3]\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_image_fingerprint(path)
+
+
+def test_load_sidecar_with_non_list_canary_raises_value_error(tmp_path: Path) -> None:
+    path = tmp_path / "image_embedder_fingerprint.json"
+    path.write_text(
+        '{"provider": "p", "model": null, "dim": 8, "canary": "not-a-list"}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_image_fingerprint(path)
+
+
+def test_save_writes_exactly_the_target_file(tmp_path: Path) -> None:
+    path = tmp_path / "image_embedder_fingerprint.json"
+    fp = compute_image_fingerprint(_StubImageEmbedder())
+    save_image_fingerprint(path, fp)
+    assert load_image_fingerprint(path) == fp
+    assert sorted(p.name for p in tmp_path.iterdir()) == [path.name]
+
+
 # ── misc contract ───────────────────────────────────────────────────────────
 
 
