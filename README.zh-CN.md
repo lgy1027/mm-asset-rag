@@ -187,8 +187,8 @@ POST /upload/confirm (cache_id + 编辑过的 previews)
 | `RETRIEVAL_PROFILE` | `fast`、`balanced`、`precision` 三档检索策略 | `balanced` |
 | `VECTOR_BACKEND` | 运行时选用的已注册检索/索引后端 | `qdrant` |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server 模式(不填走本地文件) | — |
-| `CLIP_MODEL` | sentence-transformers CLIP 模型名(配 `[clip]` extra) | `clip-ViT-B-32` |
-| `IMAGE_PROVIDER` | `clip` / `cn_clip` | `clip` |
+| `CLIP_MODEL` | CLIP 模型名(`cn_clip` 走 Chinese-CLIP 加载器;`clip` 需 `[clip]` extra) | `OFA-Sys/chinese-clip-vit-base-patch16` |
+| `IMAGE_PROVIDER` | `cn_clip`(Chinese-CLIP,中英双语,默认)/ `clip`(纯英文);切换后需重建图像索引 | `cn_clip` |
 | `OCR_BACKEND` | 图片 OCR:`local`(PP-OCRv6,`[ocr]` extra)或 `http` | `local` |
 
 档位只会补足未显式设置的高级变量，已有 `.env` 中的显式值保持原行为。简洁模板见 [`.env.example`](.env.example)，高级调优见 [`docs/configuration.md`](docs/configuration.md)。

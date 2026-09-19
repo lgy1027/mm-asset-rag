@@ -183,8 +183,8 @@ All settings come from environment variables (a `.env` file in the current direc
 | `RETRIEVAL_PROFILE` | `fast`, `balanced`, or `precision` retrieval defaults. | `balanced` |
 | `VECTOR_BACKEND` | Registered search/index backend. | `qdrant` |
 | `QDRANT_URL` / `QDRANT_API_KEY` | Qdrant server mode (omit to use local file mode). | — |
-| `CLIP_MODEL` | Sentence-transformers CLIP model name (with `[clip]` extra). | `clip-ViT-B-32` |
-| `IMAGE_PROVIDER` | `clip` or `cn_clip`. | `clip` |
+| `CLIP_MODEL` | CLIP model name (`cn_clip` uses the Chinese-CLIP loader; `clip` needs the `[clip]` extra). | `OFA-Sys/chinese-clip-vit-base-patch16` |
+| `IMAGE_PROVIDER` | `cn_clip` (Chinese-CLIP, bilingual, default) or `clip` (English). Rebuild the image index after switching. | `cn_clip` |
 | `OCR_BACKEND` | Image OCR backend: `local` (PP-OCRv6 via `[ocr]` extra) or `http`. | `local` |
 
 Profiles fill advanced defaults only when that variable is absent, so existing explicit `.env` values keep their behavior. See [`.env.example`](.env.example) for the compact template and [`docs/configuration.md`](docs/configuration.md) for advanced tuning.

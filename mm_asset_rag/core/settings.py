@@ -189,14 +189,12 @@ class Settings(BaseSettings):
     embedding_colbert_enabled: Literal["auto", "true", "false"] = "auto"
 
     # ─── Image embedding (CLIP, optional) ────────────────────────────────
-    # Default is ``clip-ViT-B-32`` (English-only). For Chinese corpora,
-    # consider ``OFA-Sys/chinese-clip-vit-base-patch16`` (≈ 768d,
-    # Chinese + English) or ``sentence-transformers/clip-ViT-B-32-multilingual-v1``.
-    # ``OFA-Sys/chinese-clip-vit-huge-patch14`` is the strongest
-    # Chinese CLIP we are aware of (~1024d) at the cost of a much larger
-    # download. Reindex after changing this — the active collection
-    # name is dim-suffixed.
-    clip_model: str = "clip-ViT-B-32"
+    # 默认 ``OFA-Sys/chinese-clip-vit-base-patch16``(Chinese-CLIP,中英双语,
+    # 512d),与默认 ``image_provider="cn_clip"`` 配套。英文场景可改回
+    # ``clip-ViT-B-32``(512d)或 ``clip-ViT-B-32-multilingual-v1``;中文最强
+    # 是 ``OFA-Sys/chinese-clip-vit-huge-patch14``(~1024d,下载更大)。
+    # 修改后必须重建图像索引(指纹不一致会 fail fast),collection 名按维度区分。
+    clip_model: str = "OFA-Sys/chinese-clip-vit-base-patch16"
     # Override the probed image embedding dim. Default ``None`` lets
     # ``ImageEmbedder.dim()`` / ``CnClipImageEmbedder.dim()`` lazily probe
     # via ``embed_text("probe")`` (cost: one model encode); set this to
@@ -535,7 +533,10 @@ class Settings(BaseSettings):
     video_scene_threshold: float = 27.0
     enable_ocr: bool = False
     enable_vlm: bool = False
-    image_provider: Literal["clip", "cn_clip"] = "clip"
+    # 图像 embedding 提供方:默认中文优先(cn_clip,Chinese-CLIP 双语);
+    # "clip" 为英文 sentence-transformers CLIP。切换后必须重建图像索引
+    # (编码器指纹不一致时 ingest/eval 会 fail fast)。
+    image_provider: Literal["clip", "cn_clip"] = "cn_clip"
     auto_index: bool = True
 
     # ─── Upload preview safety limits ─────────────────────────────────────

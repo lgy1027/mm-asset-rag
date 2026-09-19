@@ -45,12 +45,12 @@ def test_defaults_applied_when_no_env(monkeypatch):
     assert s.document_parser == "markitdown"
     assert s.enable_ocr is False
     assert s.enable_vlm is False
-    assert s.image_provider == "clip"
+    assert s.image_provider == "cn_clip"
     assert s.auto_index is True
     assert s.vector_backend == "qdrant"
     assert s.qdrant_upsert_batch_size == 16
     assert s.llm_timeout == 120.0
-    assert s.clip_model == "clip-ViT-B-32"
+    assert s.clip_model == "OFA-Sys/chinese-clip-vit-base-patch16"
     assert s.upload_max_file_bytes == 50 * 1024 * 1024
     assert s.upload_max_batch_bytes == 200 * 1024 * 1024
     assert s.upload_max_pdf_pages == 500
