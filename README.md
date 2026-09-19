@@ -214,6 +214,44 @@ mmrag eval --v2 --collection default --principal local-user                     
 
 When no LLM is configured, the eval still runs (it measures retrieval only); `/answer`-dependent cases degrade gracefully.
 
+### Image retrieval evaluation
+
+`mmrag eval --image` is a strict, deterministic retrieval gate for images: it
+runs the checked-in image qrels over the primitive `TEXT_TO_IMAGE` and
+`IMAGE_TO_IMAGE` routes only — query rewrite and reranking are bypassed — and
+**fails before any search** when a judged document is missing from the
+collection/principal. Text→image cases are split into Chinese
+(`text_to_image_zh`) and English (`text_to_image_en`) groups; each
+image→image case excludes its own query image from the qrels so a
+self-match can never count as a hit. Non-empty negative qrels are rejected.
+
+The corpus is ingested reproducibly by `mmrag ingest-image-eval`, which
+reads an `image_eval_manifest_v1.json` manifest, derives document IDs from
+filenames (matching the generated qrels), and pins VLM auto-metadata, OCR,
+and contextual retrieval off. Use a dedicated data home — never the
+production `~/.mm_asset_rag`:
+
+```bash
+export MM_ASSET_RAG_HOME=~/.mm_asset_rag_image_eval
+export QDRANT_URL=""
+export HF_HUB_OFFLINE=1
+
+# 1. Ingest the manifest-declared eval corpus (filename-derived document IDs).
+mmrag ingest-image-eval \
+  --manifest examples/image_eval_manifest_v1.json \
+  --collection image-test \
+  --principal alice
+
+# 2. Run the strict image eval (--cases defaults to eval_cases_images_v2.json).
+mmrag eval --image --cases eval_cases_images_v2.json --collection image-test --principal alice
+```
+
+The manifest (`examples/image_eval_manifest_v1.json`) is the semantic source
+of truth for the corpus and queries; the generated qrels sample it produces
+is checked in at `examples/eval_cases_images_v2.json`. The report is written
+to `eval_report_v2.json` with a `primitive_image_routes` run-context gate
+recorded, so reports from image runs are distinguishable from pipeline runs.
+
 ### Quick perf check
 
 Once you have a corpus of any size, get a real p50 / p95 / QPS for your machine before tuning weights:

@@ -218,6 +218,40 @@ mmrag eval --v2 --collection default --principal local-user                     
 
 没配 LLM 也能跑(只评检索),`/answer` 相关 case 优雅降级。
 
+### 图像检索评估
+
+`mmrag eval --image` 是严格、确定性的图像检索闸口:只走原生 `TEXT_TO_IMAGE`
+和 `IMAGE_TO_IMAGE` 路由 — 旁路查询改写和 rerank — 当有被评分的文档缺失于
+collection/principal 时,会在发起任何搜索**之前**直接失败。文本→图像 case
+分成中文(`text_to_image_zh`)和英文(`text_to_image_en`)两组;每个
+图像→图像 case 会把查询图自身从 qrels 中排除,自匹配永远不会算命中。
+非空的 negative qrels 会被拒绝。
+
+语料用 `mmrag ingest-image-eval` 可复现地 ingest:读取
+`image_eval_manifest_v1.json` manifest,从文件名推导 document ID(与生成的
+qrels 一致),并固定关闭 VLM 自动元数据、OCR 和上下文检索。使用独立的
+数据目录 — 不要用生产环境的 `~/.mm_asset_rag`:
+
+```bash
+export MM_ASSET_RAG_HOME=~/.mm_asset_rag_image_eval
+export QDRANT_URL=""
+export HF_HUB_OFFLINE=1
+
+# 1. ingest manifest 声明的评估语料(document ID 由文件名推导)
+mmrag ingest-image-eval \
+  --manifest examples/image_eval_manifest_v1.json \
+  --collection image-test \
+  --principal alice
+
+# 2. 跑严格图像评估(--cases 默认 eval_cases_images_v2.json)
+mmrag eval --image --cases eval_cases_images_v2.json --collection image-test --principal alice
+```
+
+manifest(`examples/image_eval_manifest_v1.json`)是语料和查询的语义事实
+来源;由它生成的 qrels 样例已签入 `examples/eval_cases_images_v2.json`。
+报告写入 `eval_report_v2.json`,并记录 `primitive_image_routes` 运行上下文
+闸口,因此图像运行的报告可以与流水线运行的报告区分开。
+
 ### 跑性能基准
 
 语料到一定量后,在自己机器上跑真实 p50 / p95 / QPS,再去调权重:

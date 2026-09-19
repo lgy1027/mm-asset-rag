@@ -75,3 +75,16 @@ def test_user_docs_describe_tables_and_current_document_model() -> None:
         assert "ParsedDocument" not in text, path
         assert "latest versions" not in text, path
         assert "DELETE /assets" not in text, path
+
+
+def test_image_eval_commands_are_documented() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    zh_readme = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    api_docs = (ROOT / "docs" / "api.md").read_text(encoding="utf-8")
+
+    assert "mmrag ingest-image-eval" in readme
+    assert "mmrag eval" in readme and "--image" in readme
+    assert "mmrag ingest-image-eval" in zh_readme
+    assert "mmrag eval" in zh_readme and "--image" in zh_readme
+    assert '"image": true' in api_docs
+    assert "primitive_image_routes" in api_docs

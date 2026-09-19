@@ -388,7 +388,28 @@ Runs the retrieval regression set. Each case reports whether an exact positively
 | `collection` | required | Access-policy collection to evaluate |
 | `principal` | required | Principal used to apply the access policy |
 | `v2` | `false` | Run the v2 (multi-dimensional, Chinese-primary) set instead of v1 |
+| `image` | `false` | Run the strict image eval over the primitive `TEXT_TO_IMAGE` / `IMAGE_TO_IMAGE` routes (no rewrite / rerank) instead of v1 / v2 |
 | `cases_path` | `null` | Optional path to a case JSON overriding the default (`EVAL_CASES_PATH` → the bundled `mm_asset_rag/eval/eval_data/<version>_cases.json`). Same schema as `mmrag eval --cases`. |
+
+`v2`, `image`, and `answer_quality` are mutually exclusive — a request with
+more than one set is rejected. With `image: true` and no `cases_path`, the
+bundled `eval_cases_images_v2.json` image qrels are used. The image run
+**fails before any search** when a judged document is missing from the
+collection/principal, and each image→image case excludes its own query image
+from the qrels:
+
+```json
+{
+  "collection": "image-test",
+  "principal": "alice",
+  "image": true
+}
+```
+
+Image runs return the same per-query `results` shape and write
+`eval_report_v2.json` with a `primitive_image_routes` retrieval gate recorded
+in the report's run context (`query_rewrite` / `rerank` both `false`), so
+image-gate reports are distinguishable from pipeline runs.
 
 ```json
 {
