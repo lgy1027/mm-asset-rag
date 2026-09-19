@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from mm_asset_rag.core.schema import SearchHit
@@ -15,6 +16,7 @@ from mm_asset_rag.eval.evaluation_v2 import (
     load_cases,
     run_auto_image_eval_v2,
     run_eval_v2,
+    run_image_eval_v2,
     run_image_to_image_eval_v2,
     run_text_to_image_eval_v2,
     run_text_to_text_eval_v2,
@@ -353,3 +355,144 @@ def test_eval_endpoint_v2_returns_document_qrels_shape() -> None:
             }
         ],
     }
+
+
+def _visible_record(document_id: str, relative_path: str, principal: str = "alice"):
+    from mm_asset_rag.core.knowledge_models import AccessPolicy, Asset, Document, Source
+    from mm_asset_rag.ingest.asset_index import DocumentRecord
+
+    policy = AccessPolicy("team", (principal,))
+    return DocumentRecord(
+        document=Document(document_id, document_id, Source(f"upload:{document_id}"), policy),
+        asset=Asset("hash", "image", relative_path),
+        created_at=0,
+    )
+
+
+def _write_image_eval_cases(tmp_path: Path) -> Path:
+    path = tmp_path / "image_cases.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": "v2",
+                "groups": {
+                    "text_to_image_zh": [
+                        {"query_id": "tti-zh", "group": "text_to_image_zh", "query": "猫"}
+                    ],
+                    "text_to_image_en": [
+                        {"query_id": "tti-en", "group": "text_to_image_en", "query": "cat"}
+                    ],
+                    "image_to_image": [{"query_id": "iti", "image_path": "queries/query-cat.jpg"}],
+                    "negative": [{"query_id": "neg", "query": "汽车"}],
+                },
+                "qrels": {
+                    "tti-zh": {"cat-1": 1, "cat-2": 1},
+                    "tti-en": {"cat-1": 1, "cat-2": 1},
+                    "iti": {"cat-2": 1},
+                    "neg": {},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "queries").mkdir()
+    (tmp_path / "queries" / "query-cat.jpg").write_bytes(b"image")
+    return path
+
+
+def test_image_runner_executes_primitive_routes_with_indexed_asset_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = _write_image_eval_cases(tmp_path)
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        lambda: [
+            _visible_record("query-cat", "images/query-cat_hash.jpg"),
+            _visible_record("cat-1", "images/cat-1_hash.jpg"),
+            _visible_record("cat-2", "images/cat-2_hash.jpg"),
+        ],
+    )
+    commands: list[SearchCommand] = []
+
+    def search(command: SearchCommand) -> list[SearchHit]:
+        commands.append(command)
+        return [_hit("cat-1")]
+
+    results = run_image_eval_v2(
+        cases_path=cases_path,
+        collection="team",
+        principal="alice",
+        search_fn=search,
+    )
+
+    assert [(command.mode, command.image_path) for command in commands] == [
+        (SearchMode.TEXT_TO_IMAGE, None),
+        (SearchMode.TEXT_TO_IMAGE, None),
+        (SearchMode.IMAGE_TO_IMAGE, "images/query-cat_hash.jpg"),
+        (SearchMode.TEXT_TO_IMAGE, None),
+    ]
+    assert [result.group for result in results] == [
+        "text_to_image_zh",
+        "text_to_image_en",
+        "image_to_image",
+        "negative",
+    ]
+
+
+def test_image_runner_fails_before_search_when_qrels_document_is_not_indexed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = _write_image_eval_cases(tmp_path)
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        lambda: [_visible_record("query-cat", "images/query-cat_hash.jpg")],
+    )
+    called = False
+
+    def search(command: SearchCommand) -> list[SearchHit]:
+        nonlocal called
+        called = True
+        return []
+
+    with pytest.raises(ValueError, match="missing indexed image-eval documents"):
+        run_image_eval_v2(
+            cases_path=cases_path,
+            collection="team",
+            principal="alice",
+            search_fn=search,
+        )
+
+    assert called is False
+
+
+def test_image_runner_rejects_nonempty_negative_qrels_before_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = _write_image_eval_cases(tmp_path)
+    payload = json.loads(cases_path.read_text(encoding="utf-8"))
+    payload["qrels"]["neg"] = {"cat-1": 1}
+    cases_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        lambda: [
+            _visible_record("query-cat", "images/query-cat_hash.jpg"),
+            _visible_record("cat-1", "images/cat-1_hash.jpg"),
+            _visible_record("cat-2", "images/cat-2_hash.jpg"),
+        ],
+    )
+    called = False
+
+    def search(command: SearchCommand) -> list[SearchHit]:
+        nonlocal called
+        called = True
+        return []
+
+    with pytest.raises(ValueError, match="negative qrels must be empty"):
+        run_image_eval_v2(
+            cases_path=cases_path,
+            collection="team",
+            principal="alice",
+            search_fn=search,
+        )
+
+    assert called is False

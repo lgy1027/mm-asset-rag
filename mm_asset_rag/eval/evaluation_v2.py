@@ -24,8 +24,14 @@ from pathlib import Path
 from ..core.metrics import _is_relevant, aggregate_metrics
 from ..core.paths import get_assets_dir, get_eval_report
 from ..core.schema import SearchHit
+from ..core.settings import get_settings
+from ..ingest import asset_index
+from ..ingest.file_identity import document_id_from_filename
 from ..query.search_service import SearchCommand, SearchMode, get_search_service
 from .evaluation_reporting import build_report
+
+IMAGE_EVAL_TEXT_GROUPS = ("text_to_image_zh", "text_to_image_en")
+IMAGE_EVAL_GROUP_ORDER = ("text_to_image_zh", "text_to_image_en", "image_to_image", "negative")
 
 
 def _default_cases_path(version: str):
@@ -442,6 +448,108 @@ def _execute_image_eval_search(
             principal=command.principal,
         )
     )
+
+
+def run_image_eval_v2(
+    top_k: int = 5,
+    *,
+    collection: str,
+    principal: str,
+    metadata_filter: dict[str, object] | None = None,
+    cases_path: str | Path,
+    search_fn: Callable[[SearchCommand], list[SearchHit]] | None = None,
+) -> list[V2Result]:
+    """Strict image evaluation over the primitive text/image retrieval routes.
+
+    Fail fast before any search when judged documents or query-image
+    documents are missing from the collection/principal, and reject
+    non-empty negative qrels.  Rewrite/rerank are bypassed naturally by
+    calling the primitive routes directly; production settings untouched.
+    """
+    search = search_fn or get_search_service().execute
+    source = Path(cases_path).expanduser()
+    groups = load_cases(source, version="v2")
+    visible = {
+        record.document.document_id: record
+        for record in asset_index.load_records()
+        if record.access_policy.collection == collection
+        and record.access_policy.allows(principal)
+        and all(
+            record.access_policy.metadata.get(k) == v for k, v in (metadata_filter or {}).items()
+        )
+    }
+
+    missing: list[str] = []
+    image_asset_paths: dict[str, str] = {}
+    for case in groups.get("image_to_image", []):
+        raw = Path(str(case["image_path"]))
+        resolved = raw if raw.is_absolute() else source.parent / raw
+        if not resolved.is_file():
+            missing.append(f"{case['query_id']}: image query file not found: {resolved}")
+            continue
+        query_document_id = document_id_from_filename(
+            resolved.name, max_len=get_settings().upload_slug_max_len
+        )
+        record = visible.get(query_document_id)
+        if record is None:
+            missing.append(f"{case['query_id']}: unindexed query document {query_document_id!r}")
+            continue
+        if query_document_id in case["qrels"]:
+            missing.append(f"{case['query_id']}: image-to-image qrels contains query document")
+        if not case["qrels"]:
+            missing.append(f"{case['query_id']}: positive qrels are empty")
+        for document_id in case["qrels"]:
+            if document_id not in visible:
+                missing.append(f"{case['query_id']}: {document_id}")
+        image_asset_paths[str(case["query_id"])] = record.asset.relative_path
+
+    for group in IMAGE_EVAL_TEXT_GROUPS:
+        for case in groups.get(group, []):
+            if not str(case.get("query", "")).strip():
+                missing.append(f"{case['query_id']}: text query is empty")
+            if not case["qrels"]:
+                missing.append(f"{case['query_id']}: positive qrels are empty")
+            for document_id in case["qrels"]:
+                if document_id not in visible:
+                    missing.append(f"{case['query_id']}: {document_id}")
+
+    for case in groups.get("negative", []):
+        if case["qrels"]:
+            missing.append(f"{case['query_id']}: negative qrels must be empty")
+
+    if missing:
+        details = "; ".join(missing[:20])
+        suffix = "" if len(missing) <= 20 else f"; and {len(missing) - 20} more"
+        raise ValueError(
+            f"missing indexed image-eval documents for {collection}/{principal}: {details}{suffix}"
+        )
+
+    results: list[V2Result] = []
+    for group in IMAGE_EVAL_GROUP_ORDER:
+        for case in groups.get(group, []):
+            if group == "image_to_image":
+                command = SearchCommand(
+                    query=Path(str(case["image_path"])).name,
+                    mode=SearchMode.IMAGE_TO_IMAGE,
+                    image_path=image_asset_paths[str(case["query_id"])],
+                    top_k=top_k,
+                    collection=collection,
+                    metadata_filter=metadata_filter,
+                    principal=principal,
+                )
+            else:
+                command = SearchCommand(
+                    query=str(case["query"]),
+                    mode=SearchMode.TEXT_TO_IMAGE,
+                    top_k=top_k,
+                    collection=collection,
+                    metadata_filter=metadata_filter,
+                    principal=principal,
+                )
+            results.append(
+                _make_result(case=case, hits=search(command), group=group, query=command.query)
+            )
+    return results
 
 
 def write_eval_report_v2(
