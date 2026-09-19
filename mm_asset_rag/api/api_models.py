@@ -88,6 +88,16 @@ class EvalRequest(BaseModel):
             "no LLM creds are configured."
         ),
     )
+    image: bool = Field(
+        default=False,
+        description=(
+            "Run the strict image eval (text_to_image_zh / text_to_image_en "
+            "/ image_to_image primitive routes only, no rewrite / rerank) "
+            "instead of v1 / v2 retrieval. Mutually exclusive with v2 and "
+            "answer_quality; defaults to the bundled image case file when "
+            "cases_path is not set."
+        ),
+    )
     cases_path: str | None = Field(
         default=None,
         description=(
@@ -99,9 +109,10 @@ class EvalRequest(BaseModel):
     )
 
     @model_validator(mode="after")
-    def _v2_xor_answer_quality(self) -> EvalRequest:
-        if self.v2 and self.answer_quality:
-            raise ValueError("v2 and answer_quality are mutually exclusive")
+    def _run_kind_flags_are_mutually_exclusive(self) -> EvalRequest:
+        selected = [self.v2, self.image, self.answer_quality]
+        if sum(selected) > 1:
+            raise ValueError("v2, image and answer_quality are mutually exclusive")
         return self
 
     @field_validator("cases_path")

@@ -553,9 +553,20 @@ def run_image_eval_v2(
 
 
 def write_eval_report_v2(
-    results_by_group: dict[str, list[V2Result]], path=None, *, collection: str | None = None
+    results_by_group: dict[str, list[V2Result]],
+    path=None,
+    *,
+    collection: str | None = None,
+    principal: str | None = None,
+    run_context: dict[str, object] | None = None,
 ) -> None:
-    """Write per-query qrels and required document-level aggregate metrics."""
+    """Write per-query qrels and required document-level aggregate metrics.
+
+    ``collection`` / ``principal`` land in ``summary``; ``run_context`` is
+    echoed verbatim as a top-level block so reports record how the run was
+    gated (for example the strict image runner's ``primitive_image_routes``
+    gate). All three are optional to keep legacy call sites unchanged.
+    """
     if path is None:
         slug_path = get_eval_report(collection)
         target = slug_path.with_name(
@@ -574,16 +585,23 @@ def write_eval_report_v2(
         }
         for group, results in results_by_group.items()
     }
+    summary: dict[str, object] = {
+        "total": len(all_results),
+        "scenarios": aggregate_retrieval_scenarios(all_results),
+    }
+    if collection is not None:
+        summary["collection"] = collection
+    if principal is not None:
+        summary["principal"] = principal
     payload = build_report(
         kind="retrieval",
-        summary={
-            "total": len(all_results),
-            "scenarios": aggregate_retrieval_scenarios(all_results),
-        },
+        summary=summary,
         groups=groups,
         metrics={"all": aggregate_metrics(_metric_rows(all_results)) if all_results else {}},
         per_query=[asdict(result) for result in all_results],
     )
+    if run_context is not None:
+        payload["run_context"] = run_context
     target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 

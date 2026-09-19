@@ -496,3 +496,19 @@ def test_image_runner_rejects_nonempty_negative_qrels_before_search(
         )
 
     assert called is False
+
+
+def test_write_v2_report_includes_run_context(tmp_path: Path) -> None:
+    path = tmp_path / "report.json"
+    result = V2Result("q1", "猫", {"cat": 1}, ["cat"], True, 1, "text_to_image_zh")
+
+    write_eval_report_v2(
+        {"text_to_image_zh": [result]},
+        path=path,
+        collection="image-test",
+        run_context={"retrieval_gate": "primitive_image_routes"},
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["run_context"]["retrieval_gate"] == "primitive_image_routes"
+    assert payload["summary"]["collection"] == "image-test"

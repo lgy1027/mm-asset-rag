@@ -444,6 +444,50 @@ def test_eval_endpoint_runs_cases(client: TestClient) -> None:
     assert response.json() == {"kind": "retrieval", "version": "v1", "results": []}
 
 
+def test_eval_endpoint_runs_image_eval(client: TestClient) -> None:
+    service = MagicMock()
+    service.execute.return_value = {
+        "kind": "retrieval",
+        "version": "v2",
+        "results": [
+            {
+                "query_id": "q1",
+                "query": "猫",
+                "qrels": {"cat": 1},
+                "actual_document_ids": ["cat"],
+                "hit": True,
+                "rank": 1,
+                "group": "text_to_image_zh",
+            }
+        ],
+    }
+
+    with patch("mm_asset_rag.api.api.get_evaluation_service", return_value=service):
+        response = client.post(
+            "/eval",
+            json={
+                "image": True,
+                "cases_path": "eval_cases_images_v2.json",
+                "collection": "team",
+                "principal": "alice",
+            },
+        )
+
+    assert response.status_code == 200
+    command = service.execute.call_args.args[0]
+    assert command.image is True
+    assert str(command.cases_path).endswith("eval_cases_images_v2.json")
+    assert response.json()["results"][0]["group"] == "text_to_image_zh"
+
+
+def test_eval_endpoint_rejects_image_with_v2(client: TestClient) -> None:
+    response = client.post(
+        "/eval",
+        json={"image": True, "v2": True, "collection": "team", "principal": "alice"},
+    )
+    assert response.status_code == 422
+
+
 def test_eval_endpoint_requires_and_forwards_access_context(client: TestClient) -> None:
     assert client.post("/eval", json={}).status_code == 422
     service = MagicMock()

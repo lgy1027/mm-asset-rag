@@ -16,6 +16,7 @@ class EvaluationCommand:
     metadata_filter: dict[str, object] | None = None
     cases_path: str | Path | None = None
     v2: bool = False
+    image: bool = False
     answer_quality: bool = False
 
 
@@ -29,6 +30,7 @@ class EvaluationService:
         write_v1: Callable[..., None] | None = None,
         run_v2: Callable[..., list[Any]] | None = None,
         write_v2: Callable[..., None] | None = None,
+        run_image: Callable[..., list[Any]] | None = None,
         run_answer: Callable[..., list[Any]] | None = None,
         write_answer: Callable[..., None] | None = None,
     ) -> None:
@@ -40,6 +42,7 @@ class EvaluationService:
         self._write_v1 = write_v1 or evaluation.write_eval_report
         self._run_v2 = run_v2 or evaluation_v2.run_eval_v2
         self._write_v2 = write_v2 or evaluation_v2.write_eval_report_v2
+        self._run_image = run_image or evaluation_v2.run_image_eval_v2
         self._run_answer = run_answer or answer_evaluation.run_answer_eval
         self._write_answer = write_answer or answer_evaluation.write_answer_eval_report
 
@@ -58,6 +61,25 @@ class EvaluationService:
         if command.v2:
             results = self._run_v2(**kwargs)
             self._write_v2({"text_to_text": results}, collection=command.collection)
+            return {"kind": "retrieval", "version": "v2", "results": _rows(results)}
+        if command.image:
+            results = self._run_image(**kwargs)
+            groups: dict[str, list[Any]] = {}
+            for result in results:
+                groups.setdefault(result.group, []).append(result)
+            self._write_v2(
+                groups,
+                collection=command.collection,
+                run_context={
+                    "collection": command.collection,
+                    "principal": command.principal,
+                    "cases_path": str(command.cases_path) if command.cases_path else None,
+                    "top_k": command.top_k,
+                    "retrieval_gate": "primitive_image_routes",
+                    "query_rewrite": False,
+                    "rerank": False,
+                },
+            )
             return {"kind": "retrieval", "version": "v2", "results": _rows(results)}
         results = self._run_v1(**kwargs)
         self._write_v1(results, collection=command.collection)

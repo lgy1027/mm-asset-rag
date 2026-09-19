@@ -397,7 +397,10 @@ async def eval_endpoint(
     request: EvalRequest,
     _auth: None = Depends(require_token),
 ) -> dict[str, object]:
-    cases_path = _resolve_cases_path(request.cases_path)
+    cases_value = request.cases_path
+    if request.image and cases_value is None:
+        cases_value = "eval_cases_images_v2.json"
+    cases_path = _resolve_cases_path(cases_value)
     return await asyncio.to_thread(
         get_evaluation_service().execute,
         EvaluationCommand(
@@ -407,6 +410,7 @@ async def eval_endpoint(
             metadata_filter=request.metadata_filter,
             principal=request.principal,
             v2=request.v2,
+            image=request.image,
             answer_quality=request.answer_quality,
         ),
     )
