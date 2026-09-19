@@ -611,8 +611,9 @@ def test_cli_eval_v2_invokes_run_eval_v2(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "write_v1" not in calls
 
 
-def test_cli_eval_image_runs_auto_image_qrels(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``mmrag eval --image`` evaluates the user-facing automatic route."""
+def test_cli_eval_image_runs_strict_image_runner_and_scoped_report(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from dataclasses import dataclass, field
 
     import mm_asset_rag.cli as cli_mod
@@ -620,35 +621,37 @@ def test_cli_eval_image_runs_auto_image_qrels(monkeypatch: pytest.MonkeyPatch) -
 
     @dataclass
     class _Result:
-        query_id: str = "poster"
-        query: str = "活动图片"
-        qrels: dict[str, int] = field(default_factory=lambda: {"poster-doc": 1})
-        actual_document_ids: list[str] = field(default_factory=lambda: ["poster-doc"])
+        query_id: str = "tti-airplanes-zh-01"
+        query: str = "飞机"
+        qrels: dict[str, int] = field(default_factory=lambda: {"Caltech Airplanes 01_9fe67b3f": 1})
+        actual_document_ids: list[str] = field(
+            default_factory=lambda: ["Caltech Airplanes 01_9fe67b3f"]
+        )
         hit: bool = True
         rank: int | None = 1
-        group: str = "text_to_image"
+        group: str = "text_to_image_zh"
 
     calls: dict[str, object] = {}
     monkeypatch.setattr(cli_mod, "_resolve_cli_cases_path", lambda _value: "image-qrels.json")
     monkeypatch.setattr(
         ev2,
-        "run_auto_image_eval_v2",
+        "run_image_eval_v2",
         lambda **kwargs: calls.setdefault("run", kwargs) and [_Result()],
     )
     monkeypatch.setattr(
         ev2,
         "write_eval_report_v2",
-        lambda groups, **kw: calls.setdefault("groups", groups),
+        lambda groups, **kwargs: calls.setdefault("write", (groups, kwargs)),
     )
 
-    args = build_parser().parse_args(
+    args = cli_mod.build_parser().parse_args(
         [
             "eval",
             "--image",
             "--cases",
-            "image-qrels.json",
+            "eval_cases_images_v2.json",
             "--collection",
-            "team",
+            "image-test",
             "--principal",
             "alice",
         ]
@@ -658,52 +661,68 @@ def test_cli_eval_image_runs_auto_image_qrels(monkeypatch: pytest.MonkeyPatch) -
     assert calls["run"] == {
         "top_k": 5,
         "cases_path": "image-qrels.json",
-        "collection": "team",
+        "collection": "image-test",
         "metadata_filter": None,
         "principal": "alice",
     }
-    assert calls["groups"] == {"image_auto": [_Result()]}
+    groups, write_kwargs = calls["write"]
+    assert groups == {"text_to_image_zh": [_Result()]}
+    assert write_kwargs["collection"] == "image-test"
+    assert write_kwargs["run_context"]["retrieval_gate"] == "primitive_image_routes"
 
 
-def test_cli_eval_image_disables_optional_retrieval_enhancements(
-    monkeypatch: pytest.MonkeyPatch,
+def test_cli_ingest_image_eval_builds_manifest_file_list_and_uses_default_ids(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from types import SimpleNamespace
-
     import mm_asset_rag.cli as cli_mod
-    import mm_asset_rag.eval.evaluation_v2 as ev2
 
-    settings = SimpleNamespace(query_rewrite_enabled=True, reranker_enabled=True)
-    observed: dict[str, bool] = {}
-    monkeypatch.setattr(cli_mod, "get_settings", lambda: settings)
-    monkeypatch.setattr(cli_mod, "_resolve_cli_cases_path", lambda _value: "image-qrels.json")
+    calls: dict[str, object] = {}
+    monkeypatch.setattr(
+        cli_mod,
+        "_run_cli_ingest",
+        lambda files, **kwargs: calls.setdefault("call", (list(files), kwargs)),
+    )
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.image_cases.image_eval_corpus_files",
+        lambda _path: [tmp_path / "Caltech Cat 01_a.jpg"],
+    )
 
-    def run_gate(**_kwargs):
-        observed["rewrite"] = settings.query_rewrite_enabled
-        observed["reranker"] = settings.reranker_enabled
-        return []
+    args = cli_mod.build_parser().parse_args(
+        [
+            "ingest-image-eval",
+            "--manifest",
+            str(tmp_path / "manifest.json"),
+            "--collection",
+            "image-test",
+            "--principal",
+            "alice",
+        ]
+    )
+    cli_mod.command_ingest_image_eval(args)
 
-    monkeypatch.setattr(ev2, "run_auto_image_eval_v2", run_gate)
-    monkeypatch.setattr(ev2, "write_eval_report_v2", lambda _groups: None)
+    files, kwargs = calls["call"]
+    assert files == [tmp_path / "Caltech Cat 01_a.jpg"]
+    assert kwargs["collection"] == "image-test"
+    assert kwargs["principals"] == ["alice"]
+    assert kwargs["document_id"] is None
 
-    cli_mod.command_eval(
-        build_parser().parse_args(
+
+def test_cli_ingest_image_eval_rejects_document_id_override() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(
             [
-                "eval",
-                "--image",
-                "--cases",
-                "image-qrels.json",
+                "ingest-image-eval",
+                "--manifest",
+                "manifest.json",
                 "--collection",
                 "team",
                 "--principal",
                 "alice",
+                "--document-id",
+                "custom",
             ]
         )
-    )
-
-    assert observed == {"rewrite": False, "reranker": False}
-    assert settings.query_rewrite_enabled is True
-    assert settings.reranker_enabled is True
 
 
 def test_cli_retry_subcommand_parses() -> None:

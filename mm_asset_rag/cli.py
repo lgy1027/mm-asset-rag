@@ -10,14 +10,12 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
 from .answer.answer import answer_json
 from .core.config import load_env
 from .core.paths import get_documents_jsonl, get_eval_cases_dir
-from .core.settings import get_settings
 from .eval.evaluation import run_eval, write_eval_report
 from .ingest.upload_pipeline import UserEdits, get_pipeline
 from .query.search_service import SearchInputError, dispatch_search, get_search_service
@@ -66,25 +64,57 @@ def command_parse(args: argparse.Namespace) -> None:
     missing = [str(p) for p in input_paths if not p.exists()]
     if missing:
         raise SystemExit(f"missing file(s): {', '.join(missing)}")
+    _run_cli_ingest(
+        input_paths,
+        collection=args.collection,
+        principals=list(args.principals),
+        document_id=args.document_id,
+        pdf_parser=args.pdf_parser,
+        document_parser=args.document_parser,
+        ocr=args.ocr,
+        vlm=args.vlm,
+        no_auto_meta=args.no_auto_meta,
+        contextual=args.contextual,
+    )
 
+
+def _run_cli_ingest(
+    files: list[Path],
+    *,
+    collection: str,
+    principals: list[str],
+    document_id: str | None,
+    pdf_parser: str,
+    document_parser: str,
+    ocr: bool,
+    vlm: bool,
+    no_auto_meta: bool,
+    contextual: bool,
+) -> None:
+    """Preview, confirm and schedule parse + index for ``files``.
+
+    Shared by ``mmrag parse`` and ``mmrag ingest-image-eval`` so both go
+    through the exact same upload pipeline (and filename-derived document
+    ID slug rules) as the web upload flow.
+    """
     pipeline = get_pipeline()
-    if args.no_auto_meta:
+    if no_auto_meta:
         from .ingest.upload_pipeline import disable_auto_meta
 
         disable_auto_meta()
-    upload_files = _collect_upload_files(input_paths)
+    upload_files = _collect_upload_files(files)
     previews = pipeline.preview(upload_files)
     if not previews:
         raise SystemExit("no files to parse")
     cache_id = previews[0].cache_id
-    if args.document_id and len(previews) != 1:
+    if document_id and len(previews) != 1:
         raise SystemExit("--document-id requires exactly one input file")
     edits = [
         UserEdits(
             preview_id=p.preview_id,
-            document_id=args.document_id,
-            collection=args.collection,
-            allowed_principals=list(args.principals),
+            document_id=document_id,
+            collection=collection,
+            allowed_principals=list(principals),
             rejected=not p.is_supported,
         )
         for p in previews
@@ -95,16 +125,42 @@ def command_parse(args: argparse.Namespace) -> None:
 
     options = ParseOptions(
         assets=assets,
-        pdf_parser=args.pdf_parser,
-        document_parser=args.document_parser,
-        enable_ocr=args.ocr,
-        enable_vlm=args.vlm,
-        contextual=args.contextual,
+        pdf_parser=pdf_parser,
+        document_parser=document_parser,
+        enable_ocr=ocr,
+        enable_vlm=vlm,
+        contextual=contextual,
     )
     rec = get_service().ingest_assets(assets, options)
     print(f"started task {rec.task_id} (parse + index)")
     _wait_for_task(rec.task_id)
     print(f"documents_jsonl={get_documents_jsonl()}")
+
+
+def command_ingest_image_eval(args: argparse.Namespace) -> None:
+    """Ingest the image-eval corpus with filename-derived document IDs.
+
+    Document IDs must match the checked-in qrels so the strict image-eval
+    preflight passes, so ``--document-id`` is intentionally unavailable and
+    every option that could perturb the corpus (VLM auto-metadata, OCR,
+    contextual retrieval) is pinned off. Run against a dedicated data home
+    (``MM_ASSET_RAG_HOME``, e.g. ``~/.mm_asset_rag_image_eval``), never the
+    production ``~/.mm_asset_rag``.
+    """
+    from .eval.image_cases import image_eval_corpus_files
+
+    _run_cli_ingest(
+        image_eval_corpus_files(args.manifest),
+        collection=args.collection,
+        principals=[args.principal],
+        document_id=None,
+        pdf_parser="auto",
+        document_parser="markitdown",
+        ocr=False,
+        vlm=False,
+        no_auto_meta=True,
+        contextual=False,
+    )
 
 
 def command_reindex(args: argparse.Namespace) -> None:
@@ -236,33 +292,36 @@ def _resolve_cli_cases_path(value: str | None) -> str | Path | None:
     return None if resolved is None else str(resolved)
 
 
-@contextmanager
-def _image_eval_settings():
-    """Keep image qrels focused on retrieval, not optional LLM enhancements."""
-    settings = get_settings()
-    original = settings.query_rewrite_enabled, settings.reranker_enabled
-    settings.query_rewrite_enabled = False
-    settings.reranker_enabled = False
-    try:
-        yield
-    finally:
-        settings.query_rewrite_enabled, settings.reranker_enabled = original
-
-
 def command_eval(args: argparse.Namespace) -> None:
     cases_path = _resolve_cli_cases_path(args.cases)
     if getattr(args, "image_eval", False):
-        from .eval.evaluation_v2 import run_auto_image_eval_v2, write_eval_report_v2
+        from .eval.evaluation_v2 import run_image_eval_v2, write_eval_report_v2
 
-        with _image_eval_settings():
-            results = run_auto_image_eval_v2(
-                top_k=args.top_k,
-                cases_path=cases_path,
-                collection=args.collection,
-                metadata_filter=args.metadata_filter,
-                principal=args.principal,
-            )
-        write_eval_report_v2({"image_auto": results})
+        if cases_path is None:
+            cases_path = _resolve_cli_cases_path("eval_cases_images_v2.json")
+        results = run_image_eval_v2(
+            top_k=args.top_k,
+            cases_path=cases_path,
+            collection=args.collection,
+            metadata_filter=args.metadata_filter,
+            principal=args.principal,
+        )
+        results_by_group: dict[str, list[object]] = {}
+        for result in results:
+            results_by_group.setdefault(result.group, []).append(result)
+        write_eval_report_v2(
+            results_by_group,
+            collection=args.collection,
+            run_context={
+                "collection": args.collection,
+                "principal": args.principal,
+                "cases_path": str(cases_path),
+                "top_k": args.top_k,
+                "retrieval_gate": "primitive_image_routes",
+                "query_rewrite": False,
+                "rerank": False,
+            },
+        )
         safe_print(json.dumps([asdict(result) for result in results], ensure_ascii=False, indent=2))
         return
     if args.answer_quality:
@@ -480,6 +539,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parse_cmd.set_defaults(func=command_parse)
 
+    ingest_image_eval_cmd = subparsers.add_parser(
+        "ingest-image-eval",
+        help="Ingest the image-eval corpus with filename-derived document IDs",
+        description=(
+            "Reproducibly ingest the image evaluation corpus declared by an "
+            "image_eval_manifest_v1.json manifest. Document IDs derive from "
+            "filenames (matching the checked-in qrels), and VLM auto-metadata, "
+            "OCR, and contextual retrieval are pinned off so the corpus stays "
+            "deterministic. Run against a dedicated MM_ASSET_RAG_HOME (e.g. "
+            "~/.mm_asset_rag_image_eval), never the production ~/.mm_asset_rag."
+        ),
+    )
+    ingest_image_eval_cmd.add_argument(
+        "--manifest", required=True, help="Path to an image_eval_manifest_v1.json manifest"
+    )
+    ingest_image_eval_cmd.add_argument(
+        "--collection", required=True, help="Access-policy collection"
+    )
+    ingest_image_eval_cmd.add_argument("--principal", required=True, help="Allowed principal")
+    ingest_image_eval_cmd.set_defaults(func=command_ingest_image_eval)
+
     reindex_cmd = subparsers.add_parser(
         "reindex",
         help="Drop and rebuild qdrant collections from documents.jsonl (use after changing models)",
@@ -546,8 +626,10 @@ def build_parser() -> argparse.ArgumentParser:
         dest="image_eval",
         action="store_true",
         help=(
-            "Run automatic image-retrieval qrels, including negative refusal cases. "
-            "Query rewrite and reranking are disabled for a deterministic retrieval gate. "
+            "Run the strict image-retrieval qrels (text→image / image→image) over the "
+            "primitive retrieval routes. Query rewrite and reranking are bypassed for a "
+            "deterministic retrieval gate; fails fast when judged documents are missing "
+            "from the collection. Defaults to eval_cases_images_v2.json for --cases. "
             "Writes eval_report_v2.json."
         ),
     )
