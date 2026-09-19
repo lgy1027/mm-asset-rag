@@ -406,10 +406,12 @@ from the qrels:
 }
 ```
 
-Image runs return the same per-query `results` shape and write
-`eval_report_v2.json` with a `primitive_image_routes` retrieval gate recorded
-in the report's run context (`query_rewrite` / `rerank` both `false`), so
-image-gate reports are distinguishable from pipeline runs.
+Image runs return the same per-query `results` shape and write a
+collection-scoped `eval_report_v2_<collection>.json`
+(`eval_report_v2.json` for the default collection) with a
+`primitive_image_routes` retrieval gate recorded in the report's run context
+(`query_rewrite` / `rerank` both `false`), so image-gate reports are
+distinguishable from pipeline runs.
 
 ```json
 {

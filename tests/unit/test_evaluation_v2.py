@@ -498,6 +498,55 @@ def test_image_runner_rejects_nonempty_negative_qrels_before_search(
     assert called is False
 
 
+def test_image_runner_rejects_unknown_groups_before_search(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = tmp_path / "unknown_group_cases.json"
+    cases_path.write_text(
+        json.dumps(
+            {
+                "version": "v2",
+                "groups": {
+                    "text_to_image_zn": [
+                        {"query_id": "tti-zn", "group": "text_to_image_zn", "query": "猫"}
+                    ],
+                    "text_to_image_zh": [
+                        {"query_id": "tti-zh", "group": "text_to_image_zh", "query": "猫"}
+                    ],
+                },
+                "qrels": {
+                    "tti-zn": {"cat-1": 1},
+                    "tti-zh": {"cat-1": 1, "cat-2": 1},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        lambda: [
+            _visible_record("cat-1", "images/cat-1_hash.jpg"),
+            _visible_record("cat-2", "images/cat-2_hash.jpg"),
+        ],
+    )
+    called = False
+
+    def search(command: SearchCommand) -> list[SearchHit]:
+        nonlocal called
+        called = True
+        return []
+
+    with pytest.raises(ValueError, match=r"unknown image-eval group.*text_to_image_zn"):
+        run_image_eval_v2(
+            cases_path=cases_path,
+            collection="team",
+            principal="alice",
+            search_fn=search,
+        )
+
+    assert called is False
+
+
 def test_write_v2_report_includes_run_context(tmp_path: Path) -> None:
     path = tmp_path / "report.json"
     result = V2Result("q1", "猫", {"cat": 1}, ["cat"], True, 1, "text_to_image_zh")

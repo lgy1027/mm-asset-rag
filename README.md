@@ -249,8 +249,10 @@ mmrag eval --image --cases eval_cases_images_v2.json --collection image-test --p
 The manifest (`examples/image_eval_manifest_v1.json`) is the semantic source
 of truth for the corpus and queries; the generated qrels sample it produces
 is checked in at `examples/eval_cases_images_v2.json`. The report is written
-to `eval_report_v2.json` with a `primitive_image_routes` run-context gate
-recorded, so reports from image runs are distinguishable from pipeline runs.
+to a collection-scoped `eval_report_v2_<collection>.json`
+(`eval_report_v2.json` for the default collection) with a
+`primitive_image_routes` run-context gate recorded, so reports from image
+runs are distinguishable from pipeline runs.
 
 ### Quick perf check
 

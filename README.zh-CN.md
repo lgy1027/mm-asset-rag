@@ -249,8 +249,9 @@ mmrag eval --image --cases eval_cases_images_v2.json --collection image-test --p
 
 manifest(`examples/image_eval_manifest_v1.json`)是语料和查询的语义事实
 来源;由它生成的 qrels 样例已签入 `examples/eval_cases_images_v2.json`。
-报告写入 `eval_report_v2.json`,并记录 `primitive_image_routes` 运行上下文
-闸口,因此图像运行的报告可以与流水线运行的报告区分开。
+报告写入按 collection 隔离的 `eval_report_v2_<collection>.json`
+(默认 collection 为 `eval_report_v2.json`),并记录 `primitive_image_routes`
+运行上下文闸口,因此图像运行的报告可以与流水线运行的报告区分开。
 
 ### 跑性能基准
 

@@ -462,9 +462,11 @@ def run_image_eval_v2(
     """Strict image evaluation over the primitive text/image retrieval routes.
 
     Fail fast before any search when judged documents or query-image
-    documents are missing from the collection/principal, and reject
-    non-empty negative qrels.  Rewrite/rerank are bypassed naturally by
-    calling the primitive routes directly; production settings untouched.
+    documents are missing from the collection/principal, reject
+    non-empty negative qrels, and reject case groups outside
+    ``IMAGE_EVAL_GROUP_ORDER`` so a typo'd group name cannot silently skip
+    its queries.  Rewrite/rerank are bypassed naturally by calling the
+    primitive routes directly; production settings untouched.
     """
     search = search_fn or get_search_service().execute
     source = Path(cases_path).expanduser()
@@ -479,7 +481,10 @@ def run_image_eval_v2(
         )
     }
 
-    missing: list[str] = []
+    missing: list[str] = [
+        f"unknown image-eval group: {group!r}" for group in sorted(groups)
+        if group not in IMAGE_EVAL_GROUP_ORDER
+    ]
     image_asset_paths: dict[str, str] = {}
     for case in groups.get("image_to_image", []):
         raw = Path(str(case["image_path"]))
