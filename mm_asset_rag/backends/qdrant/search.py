@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from qdrant_client import QdrantClient, models
@@ -15,6 +16,12 @@ from ...embedders import (
     ImageEmbeddingUnavailable,
     get_default_image_embedder,
     get_default_text_embedder,
+)
+from ...embedders.fingerprint import (
+    _probe_model_name,
+    fingerprint_matches,
+    image_fingerprint_path,
+    load_image_fingerprint,
 )
 from ...query.retrieval import RRF_K
 from .client import get_qdrant_client
@@ -34,6 +41,69 @@ from .indexing import (
 )
 
 HYBRID_PREFETCH_LIMIT = get_settings().qdrant_hybrid_prefetch_limit
+
+log = logging.getLogger(__name__)
+
+
+# ── Encoder-fingerprint degradation ─────────────────────────────────────────
+# The image index stores vectors from whichever encoder ingested them; both
+# CLIP-family providers emit 512-dim vectors into the same collection name,
+# so an encoder switch is silent without this check and every query scores
+# near zero. Both image routes degrade to [] with one warning per process —
+# the same contract as "image embedder unavailable". Text search is
+# unaffected. The memo avoids re-embedding the canary on every query; the
+# recorded fingerprint is process-stable, so the memo is never invalidated.
+
+_IMAGE_FINGERPRINT_MEMO: dict[tuple[str, str | None, int, tuple[float, ...]], str | None] = {}
+_IMAGE_FINGERPRINT_WARNED = False
+
+
+def _image_fingerprint_mismatch(provider) -> str | None:
+    """Human-readable mismatch description, or ``None`` when the route may proceed.
+
+    ``None`` means there is no sidecar (e.g. an index predating
+    fingerprinting) or the current provider reproduces the recorded
+    fingerprint. A corrupt sidecar or a canary-embed failure (e.g. the
+    provider returns an empty embedding) degrades to a mismatch description
+    instead of crashing the search route.
+    """
+    try:
+        recorded = load_image_fingerprint(image_fingerprint_path())
+    except (OSError, ValueError, KeyError) as exc:
+        return f"fingerprint sidecar is unreadable ({type(exc).__name__}: {exc})"
+    if recorded is None:
+        return None
+    key = (recorded.provider, recorded.model, recorded.dim, recorded.canary)
+    if key in _IMAGE_FINGERPRINT_MEMO:
+        return _IMAGE_FINGERPRINT_MEMO[key]
+    try:
+        matches = fingerprint_matches(recorded, provider)
+    except ValueError:
+        matches = False
+    if matches:
+        description = None
+    else:
+        description = (
+            f"index was built with encoder {recorded.provider!r} "
+            f"(model={recorded.model!r}) but the current image embedder is "
+            f"{type(provider).__name__!r} (model={_probe_model_name(provider)!r})"
+        )
+    _IMAGE_FINGERPRINT_MEMO[key] = description
+    return description
+
+
+def _warn_image_encoder_mismatch_once(description: str) -> None:
+    """Log the encoder-mismatch warning at most once per process."""
+    global _IMAGE_FINGERPRINT_WARNED
+    if _IMAGE_FINGERPRINT_WARNED:
+        return
+    _IMAGE_FINGERPRINT_WARNED = True
+    log.warning(
+        "Image encoder fingerprint mismatch (%s); returning empty image results. "
+        "Re-ingest the image index with force_recreate=True (e.g. `mmrag reindex "
+        "--image-only`) or use a fresh data home to rebuild.",
+        description,
+    )
 
 
 def _native_policy_filter(search_filter: SearchFilter | None) -> models.Filter:
@@ -391,6 +461,10 @@ def qdrant_text_to_image_search(
         provider = get_default_image_embedder()
     except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
         return []
+    mismatch = _image_fingerprint_mismatch(provider)
+    if mismatch is not None:
+        _warn_image_encoder_mismatch_once(mismatch)
+        return []
     client = get_qdrant_client()
     try:
         query_vector = provider.embed_text(query)
@@ -426,6 +500,10 @@ def qdrant_image_to_image_search(
     try:
         provider = get_default_image_embedder()
     except (ImageEmbeddingUnavailable, CnClipImageUnavailable):
+        return []
+    mismatch = _image_fingerprint_mismatch(provider)
+    if mismatch is not None:
+        _warn_image_encoder_mismatch_once(mismatch)
         return []
     client = get_qdrant_client()
     query_vector = provider.embed_image(image_path)

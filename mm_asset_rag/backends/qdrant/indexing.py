@@ -23,6 +23,15 @@ from ...embedders import (
     get_default_image_embedder,
     get_default_text_embedder,
 )
+from ...embedders.fingerprint import (
+    ImageEncoderMismatchError,
+    _probe_model_name,
+    compute_image_fingerprint,
+    fingerprint_matches,
+    image_fingerprint_path,
+    load_image_fingerprint,
+    save_image_fingerprint,
+)
 from ...ingest.document_store import read_documents
 from .client import get_qdrant_client
 from .collections import (
@@ -607,6 +616,7 @@ def build_qdrant_image_index(
     image_documents = [document for document in documents if document.asset.source_type == "image"]
     if not image_documents:
         return 0, "qdrant:image:empty"
+    _check_image_index_fingerprint(provider, force_recreate=force_recreate)
 
     assets_dir = get_assets_dir()
     # Probe dim with the first image that actually encodes. ``embed_image``
@@ -702,10 +712,47 @@ def build_qdrant_image_index(
         client.upsert(collection_name=collection_name, points=points, wait=True)
         inserted = len(points)
 
+    # Vectors are on disk under this encoder's vector space; record provenance
+    # so later ingests/search routes can detect an encoder switch. A failed
+    # canary embed here fails ingest loudly — consistent with fail-fast above.
+    save_image_fingerprint(image_fingerprint_path(), compute_image_fingerprint(provider))
+
     if progress_cb:
         progress_cb(len(image_documents), len(image_documents), f"images indexed {inserted}")
 
     return inserted, f"qdrant:{collection_name}:inserted={inserted}:skipped={skipped}"
+
+
+def _check_image_index_fingerprint(provider, *, force_recreate: bool) -> None:
+    """Fail fast when the index was built by a different encoder.
+
+    Both CLIP-family providers emit 512-dim vectors into the same collection
+    name, so without this check a provider switch silently mixes vector
+    spaces and every query scores near zero. ``force_recreate`` rebuilds the
+    collection from scratch and therefore replaces the sidecar instead of
+    raising. A canary-embed failure (e.g. the provider returns an empty
+    embedding) counts as a mismatch. A corrupt sidecar propagates its parse
+    error — ingest is an operator action and should fail loudly.
+    """
+    if force_recreate:
+        return
+    recorded = load_image_fingerprint(image_fingerprint_path())
+    if recorded is None:
+        return
+    try:
+        matches = fingerprint_matches(recorded, provider)
+    except ValueError:
+        matches = False
+    if matches:
+        return
+    raise ImageEncoderMismatchError(
+        f"image index fingerprint mismatch: the index was built with encoder "
+        f"{recorded.provider!r} (model={recorded.model!r}, dim={recorded.dim}) but the "
+        f"current image embedder is {type(provider).__name__!r} "
+        f"(model={_probe_model_name(provider)!r}). Mixing vector spaces is not allowed. "
+        "Rebuild the image index with force_recreate=True (e.g. `mmrag reindex "
+        "--image-only`) or point the data home at a fresh directory."
+    )
 
 
 build_text_index = build_qdrant_text_index
