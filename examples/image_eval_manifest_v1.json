@@ -1,0 +1,355 @@
+{
+  "version": "image-eval.v1",
+  "corpus_root": "data/chapter11_assets/images",
+  "categories": [
+    {
+      "id": "airplanes",
+      "document_files": [
+        "Caltech Airplanes 01_9fe67b3f.jpg",
+        "Caltech Airplanes 02_3e0d4e9c.jpg",
+        "Caltech Airplanes 03_6297267c.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-airplanes-zh-01",
+          "group": "text_to_image_zh",
+          "query": "飞机"
+        },
+        {
+          "query_id": "tti-airplanes-en-01",
+          "group": "text_to_image_en",
+          "query": "airplane"
+        }
+      ]
+    },
+    {
+      "id": "panda",
+      "document_files": [
+        "Caltech Panda 01_3443a5d5.jpg",
+        "Caltech Panda 02_3c36d9e1.jpg",
+        "Caltech Panda 03_08bdf5cf.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-panda-zh-01",
+          "group": "text_to_image_zh",
+          "query": "熊猫"
+        },
+        {
+          "query_id": "tti-panda-en-01",
+          "group": "text_to_image_en",
+          "query": "panda bear"
+        }
+      ]
+    },
+    {
+      "id": "sunflower",
+      "document_files": [
+        "Caltech Sunflower 01_76ab29c7.jpg",
+        "Caltech Sunflower 02_52b1df98.jpg",
+        "Caltech Sunflower 03_60bed4d8.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-sunflower-zh-01",
+          "group": "text_to_image_zh",
+          "query": "向日葵"
+        },
+        {
+          "query_id": "tti-sunflower-en-01",
+          "group": "text_to_image_en",
+          "query": "sunflower flower"
+        }
+      ]
+    },
+    {
+      "id": "laptop",
+      "document_files": [
+        "Caltech Laptop 01_1b73ff27.jpg",
+        "Caltech Laptop 02_849e7b2c.jpg",
+        "Caltech Laptop 03_25f034a0.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-laptop-zh-01",
+          "group": "text_to_image_zh",
+          "query": "笔记本电脑"
+        }
+      ]
+    },
+    {
+      "id": "watch",
+      "document_files": [
+        "Caltech Watch 01_b342aae6.jpg",
+        "Caltech Watch 02_15f3e33b.jpg",
+        "Caltech Watch 03_152be399.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-watch-zh-01",
+          "group": "text_to_image_zh",
+          "query": "手表 腕表"
+        }
+      ]
+    },
+    {
+      "id": "pizza",
+      "document_files": [
+        "Caltech Pizza 01_8b66390c.jpg",
+        "Caltech Pizza 02_15ded7cb.jpg",
+        "Caltech Pizza 03_09a99e45.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-pizza-zh-01",
+          "group": "text_to_image_zh",
+          "query": "披萨 食物"
+        }
+      ]
+    },
+    {
+      "id": "dolphin",
+      "document_files": [
+        "Caltech Dolphin 01_bbd397c6.jpg",
+        "Caltech Dolphin 02_6362b78f.jpg",
+        "Caltech Dolphin 03_31b6a6cf.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-dolphin-zh-01",
+          "group": "text_to_image_zh",
+          "query": "海豚"
+        }
+      ]
+    },
+    {
+      "id": "helicopter",
+      "document_files": [
+        "Caltech Helicopter 01_b81b5710.jpg",
+        "Caltech Helicopter 02_406dd60d.jpg",
+        "Caltech Helicopter 03_79179135.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-helicopter-zh-01",
+          "group": "text_to_image_zh",
+          "query": "直升机"
+        }
+      ]
+    },
+    {
+      "id": "saxophone",
+      "document_files": [
+        "Caltech Saxophone 01_5aa65ea6.jpg",
+        "Caltech Saxophone 02_08b20878.jpg",
+        "Caltech Saxophone 03_2ae4ad8b.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-saxophone-zh-01",
+          "group": "text_to_image_zh",
+          "query": "萨克斯 乐器"
+        }
+      ]
+    },
+    {
+      "id": "car-side",
+      "document_files": [
+        "Caltech Car Side 01_294a5978.jpg",
+        "Caltech Car Side 02_7c95cda5.jpg",
+        "Caltech Car Side 03_31ce026a.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-car-side-zh-01",
+          "group": "text_to_image_zh",
+          "query": "古董车 老爷车"
+        }
+      ]
+    },
+    {
+      "id": "accordion",
+      "document_files": [
+        "Caltech Accordion 01_4ab9f389.jpg",
+        "Caltech Accordion 02_a77eeec6.jpg",
+        "Caltech Accordion 03_84f70b33.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-accordion-zh-01",
+          "group": "text_to_image_zh",
+          "query": "手风琴"
+        }
+      ]
+    },
+    {
+      "id": "ketch",
+      "document_files": [
+        "Caltech Ketch 01_2c3f094e.jpg",
+        "Caltech Ketch 02_185555d1.jpg",
+        "Caltech Ketch 03_119d1b5e.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-ketch-zh-01",
+          "group": "text_to_image_zh",
+          "query": "帆船 船"
+        }
+      ]
+    },
+    {
+      "id": "elephant",
+      "document_files": [
+        "Caltech Elephant 01_5ea72193.jpg",
+        "Caltech Elephant 02_0ee0ed4c.jpg",
+        "Caltech Elephant 03_5bd53c67.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-elephant-zh-01",
+          "group": "text_to_image_zh",
+          "query": "大象"
+        }
+      ]
+    },
+    {
+      "id": "brain",
+      "document_files": [
+        "Caltech Brain 01_1291f507.jpg",
+        "Caltech Brain 02_6655bf81.jpg",
+        "Caltech Brain 03_4e39b8ff.jpg"
+      ],
+      "text_queries": [
+        {
+          "query_id": "tti-brain-zh-01",
+          "group": "text_to_image_zh",
+          "query": "大脑 MRI"
+        }
+      ]
+    },
+    {
+      "id": "motorbikes",
+      "document_files": [
+        "Caltech Motorbikes 01_00a780a9.jpg",
+        "Caltech Motorbikes 02_593fee0a.jpg",
+        "Caltech Motorbikes 03_2be989f0.jpg"
+      ],
+      "text_queries": []
+    },
+    {
+      "id": "sea-horse",
+      "document_files": [
+        "Caltech Sea Horse 01_9a7fae19.jpg",
+        "Caltech Sea Horse 02_1ba33ceb.jpg",
+        "Caltech Sea Horse 03_be5d8cf8.jpg"
+      ],
+      "text_queries": []
+    }
+  ],
+  "image_queries": [
+    {
+      "query_id": "iti-airplanes-01",
+      "image": "Caltech Airplanes 01_9fe67b3f.jpg",
+      "relevant_categories": [
+        "airplanes"
+      ]
+    },
+    {
+      "query_id": "iti-panda-01",
+      "image": "Caltech Panda 01_3443a5d5.jpg",
+      "relevant_categories": [
+        "panda"
+      ]
+    },
+    {
+      "query_id": "iti-sunflower-01",
+      "image": "Caltech Sunflower 01_76ab29c7.jpg",
+      "relevant_categories": [
+        "sunflower"
+      ]
+    },
+    {
+      "query_id": "iti-laptop-01",
+      "image": "Caltech Laptop 01_1b73ff27.jpg",
+      "relevant_categories": [
+        "laptop"
+      ]
+    },
+    {
+      "query_id": "iti-watch-01",
+      "image": "Caltech Watch 01_b342aae6.jpg",
+      "relevant_categories": [
+        "watch"
+      ]
+    },
+    {
+      "query_id": "iti-pizza-01",
+      "image": "Caltech Pizza 01_8b66390c.jpg",
+      "relevant_categories": [
+        "pizza"
+      ]
+    },
+    {
+      "query_id": "iti-dolphin-01",
+      "image": "Caltech Dolphin 01_bbd397c6.jpg",
+      "relevant_categories": [
+        "dolphin"
+      ]
+    },
+    {
+      "query_id": "iti-helicopter-01",
+      "image": "Caltech Helicopter 01_b81b5710.jpg",
+      "relevant_categories": [
+        "helicopter"
+      ]
+    },
+    {
+      "query_id": "iti-saxophone-01",
+      "image": "Caltech Saxophone 01_5aa65ea6.jpg",
+      "relevant_categories": [
+        "saxophone"
+      ]
+    },
+    {
+      "query_id": "iti-car-side-01",
+      "image": "Caltech Car Side 01_294a5978.jpg",
+      "relevant_categories": [
+        "car-side"
+      ]
+    }
+  ],
+  "negatives": [
+    {
+      "query_id": "negative-001",
+      "query": "强化学习 PPO DQN"
+    },
+    {
+      "query_id": "negative-002",
+      "query": "劳动合同 仲裁条款"
+    },
+    {
+      "query_id": "negative-003",
+      "query": "资产负债表 财务报表"
+    },
+    {
+      "query_id": "negative-004",
+      "query": "临床试验 医学论文"
+    },
+    {
+      "query_id": "negative-005",
+      "query": "微服务 架构设计"
+    },
+    {
+      "query_id": "negative-006",
+      "query": "考古发掘 青铜器物"
+    },
+    {
+      "query_id": "negative-007",
+      "query": "红烧肉 烹饪步骤"
+    },
+    {
+      "query_id": "negative-008",
+      "query": "建筑图纸 CAD 立面图"
+    }
+  ]
+}

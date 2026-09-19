@@ -1,0 +1,288 @@
+{
+  "version": "v2",
+  "groups": {
+    "text_to_image_zh": [
+      {
+        "query_id": "tti-airplanes-zh-01",
+        "query": "飞机"
+      },
+      {
+        "query_id": "tti-panda-zh-01",
+        "query": "熊猫"
+      },
+      {
+        "query_id": "tti-sunflower-zh-01",
+        "query": "向日葵"
+      },
+      {
+        "query_id": "tti-laptop-zh-01",
+        "query": "笔记本电脑"
+      },
+      {
+        "query_id": "tti-watch-zh-01",
+        "query": "手表 腕表"
+      },
+      {
+        "query_id": "tti-pizza-zh-01",
+        "query": "披萨 食物"
+      },
+      {
+        "query_id": "tti-dolphin-zh-01",
+        "query": "海豚"
+      },
+      {
+        "query_id": "tti-helicopter-zh-01",
+        "query": "直升机"
+      },
+      {
+        "query_id": "tti-saxophone-zh-01",
+        "query": "萨克斯 乐器"
+      },
+      {
+        "query_id": "tti-car-side-zh-01",
+        "query": "古董车 老爷车"
+      },
+      {
+        "query_id": "tti-accordion-zh-01",
+        "query": "手风琴"
+      },
+      {
+        "query_id": "tti-ketch-zh-01",
+        "query": "帆船 船"
+      },
+      {
+        "query_id": "tti-elephant-zh-01",
+        "query": "大象"
+      },
+      {
+        "query_id": "tti-brain-zh-01",
+        "query": "大脑 MRI"
+      }
+    ],
+    "text_to_image_en": [
+      {
+        "query_id": "tti-airplanes-en-01",
+        "query": "airplane"
+      },
+      {
+        "query_id": "tti-panda-en-01",
+        "query": "panda bear"
+      },
+      {
+        "query_id": "tti-sunflower-en-01",
+        "query": "sunflower flower"
+      }
+    ],
+    "image_to_image": [
+      {
+        "query_id": "iti-airplanes-01",
+        "image_path": "data/chapter11_assets/images/Caltech Airplanes 01_9fe67b3f.jpg"
+      },
+      {
+        "query_id": "iti-panda-01",
+        "image_path": "data/chapter11_assets/images/Caltech Panda 01_3443a5d5.jpg"
+      },
+      {
+        "query_id": "iti-sunflower-01",
+        "image_path": "data/chapter11_assets/images/Caltech Sunflower 01_76ab29c7.jpg"
+      },
+      {
+        "query_id": "iti-laptop-01",
+        "image_path": "data/chapter11_assets/images/Caltech Laptop 01_1b73ff27.jpg"
+      },
+      {
+        "query_id": "iti-watch-01",
+        "image_path": "data/chapter11_assets/images/Caltech Watch 01_b342aae6.jpg"
+      },
+      {
+        "query_id": "iti-pizza-01",
+        "image_path": "data/chapter11_assets/images/Caltech Pizza 01_8b66390c.jpg"
+      },
+      {
+        "query_id": "iti-dolphin-01",
+        "image_path": "data/chapter11_assets/images/Caltech Dolphin 01_bbd397c6.jpg"
+      },
+      {
+        "query_id": "iti-helicopter-01",
+        "image_path": "data/chapter11_assets/images/Caltech Helicopter 01_b81b5710.jpg"
+      },
+      {
+        "query_id": "iti-saxophone-01",
+        "image_path": "data/chapter11_assets/images/Caltech Saxophone 01_5aa65ea6.jpg"
+      },
+      {
+        "query_id": "iti-car-side-01",
+        "image_path": "data/chapter11_assets/images/Caltech Car Side 01_294a5978.jpg"
+      }
+    ],
+    "negative": [
+      {
+        "query_id": "negative-001",
+        "query": "强化学习 PPO DQN"
+      },
+      {
+        "query_id": "negative-002",
+        "query": "劳动合同 仲裁条款"
+      },
+      {
+        "query_id": "negative-003",
+        "query": "资产负债表 财务报表"
+      },
+      {
+        "query_id": "negative-004",
+        "query": "临床试验 医学论文"
+      },
+      {
+        "query_id": "negative-005",
+        "query": "微服务 架构设计"
+      },
+      {
+        "query_id": "negative-006",
+        "query": "考古发掘 青铜器物"
+      },
+      {
+        "query_id": "negative-007",
+        "query": "红烧肉 烹饪步骤"
+      },
+      {
+        "query_id": "negative-008",
+        "query": "建筑图纸 CAD 立面图"
+      }
+    ]
+  },
+  "qrels": {
+    "tti-airplanes-zh-01": {
+      "Caltech Airplanes 01_9fe67b3f": 1,
+      "Caltech Airplanes 02_3e0d4e9c": 1,
+      "Caltech Airplanes 03_6297267c": 1
+    },
+    "tti-airplanes-en-01": {
+      "Caltech Airplanes 01_9fe67b3f": 1,
+      "Caltech Airplanes 02_3e0d4e9c": 1,
+      "Caltech Airplanes 03_6297267c": 1
+    },
+    "tti-panda-zh-01": {
+      "Caltech Panda 01_3443a5d5": 1,
+      "Caltech Panda 02_3c36d9e1": 1,
+      "Caltech Panda 03_08bdf5cf": 1
+    },
+    "tti-panda-en-01": {
+      "Caltech Panda 01_3443a5d5": 1,
+      "Caltech Panda 02_3c36d9e1": 1,
+      "Caltech Panda 03_08bdf5cf": 1
+    },
+    "tti-sunflower-zh-01": {
+      "Caltech Sunflower 01_76ab29c7": 1,
+      "Caltech Sunflower 02_52b1df98": 1,
+      "Caltech Sunflower 03_60bed4d8": 1
+    },
+    "tti-sunflower-en-01": {
+      "Caltech Sunflower 01_76ab29c7": 1,
+      "Caltech Sunflower 02_52b1df98": 1,
+      "Caltech Sunflower 03_60bed4d8": 1
+    },
+    "tti-laptop-zh-01": {
+      "Caltech Laptop 01_1b73ff27": 1,
+      "Caltech Laptop 02_849e7b2c": 1,
+      "Caltech Laptop 03_25f034a0": 1
+    },
+    "tti-watch-zh-01": {
+      "Caltech Watch 01_b342aae6": 1,
+      "Caltech Watch 02_15f3e33b": 1,
+      "Caltech Watch 03_152be399": 1
+    },
+    "tti-pizza-zh-01": {
+      "Caltech Pizza 01_8b66390c": 1,
+      "Caltech Pizza 02_15ded7cb": 1,
+      "Caltech Pizza 03_09a99e45": 1
+    },
+    "tti-dolphin-zh-01": {
+      "Caltech Dolphin 01_bbd397c6": 1,
+      "Caltech Dolphin 02_6362b78f": 1,
+      "Caltech Dolphin 03_31b6a6cf": 1
+    },
+    "tti-helicopter-zh-01": {
+      "Caltech Helicopter 01_b81b5710": 1,
+      "Caltech Helicopter 02_406dd60d": 1,
+      "Caltech Helicopter 03_79179135": 1
+    },
+    "tti-saxophone-zh-01": {
+      "Caltech Saxophone 01_5aa65ea6": 1,
+      "Caltech Saxophone 02_08b20878": 1,
+      "Caltech Saxophone 03_2ae4ad8b": 1
+    },
+    "tti-car-side-zh-01": {
+      "Caltech Car Side 01_294a5978": 1,
+      "Caltech Car Side 02_7c95cda5": 1,
+      "Caltech Car Side 03_31ce026a": 1
+    },
+    "tti-accordion-zh-01": {
+      "Caltech Accordion 01_4ab9f389": 1,
+      "Caltech Accordion 02_a77eeec6": 1,
+      "Caltech Accordion 03_84f70b33": 1
+    },
+    "tti-ketch-zh-01": {
+      "Caltech Ketch 01_2c3f094e": 1,
+      "Caltech Ketch 02_185555d1": 1,
+      "Caltech Ketch 03_119d1b5e": 1
+    },
+    "tti-elephant-zh-01": {
+      "Caltech Elephant 01_5ea72193": 1,
+      "Caltech Elephant 02_0ee0ed4c": 1,
+      "Caltech Elephant 03_5bd53c67": 1
+    },
+    "tti-brain-zh-01": {
+      "Caltech Brain 01_1291f507": 1,
+      "Caltech Brain 02_6655bf81": 1,
+      "Caltech Brain 03_4e39b8ff": 1
+    },
+    "iti-airplanes-01": {
+      "Caltech Airplanes 02_3e0d4e9c": 1,
+      "Caltech Airplanes 03_6297267c": 1
+    },
+    "iti-panda-01": {
+      "Caltech Panda 02_3c36d9e1": 1,
+      "Caltech Panda 03_08bdf5cf": 1
+    },
+    "iti-sunflower-01": {
+      "Caltech Sunflower 02_52b1df98": 1,
+      "Caltech Sunflower 03_60bed4d8": 1
+    },
+    "iti-laptop-01": {
+      "Caltech Laptop 02_849e7b2c": 1,
+      "Caltech Laptop 03_25f034a0": 1
+    },
+    "iti-watch-01": {
+      "Caltech Watch 02_15f3e33b": 1,
+      "Caltech Watch 03_152be399": 1
+    },
+    "iti-pizza-01": {
+      "Caltech Pizza 02_15ded7cb": 1,
+      "Caltech Pizza 03_09a99e45": 1
+    },
+    "iti-dolphin-01": {
+      "Caltech Dolphin 02_6362b78f": 1,
+      "Caltech Dolphin 03_31b6a6cf": 1
+    },
+    "iti-helicopter-01": {
+      "Caltech Helicopter 02_406dd60d": 1,
+      "Caltech Helicopter 03_79179135": 1
+    },
+    "iti-saxophone-01": {
+      "Caltech Saxophone 02_08b20878": 1,
+      "Caltech Saxophone 03_2ae4ad8b": 1
+    },
+    "iti-car-side-01": {
+      "Caltech Car Side 02_7c95cda5": 1,
+      "Caltech Car Side 03_31ce026a": 1
+    },
+    "negative-001": {},
+    "negative-002": {},
+    "negative-003": {},
+    "negative-004": {},
+    "negative-005": {},
+    "negative-006": {},
+    "negative-007": {},
+    "negative-008": {}
+  }
+}
