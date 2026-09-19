@@ -254,6 +254,15 @@ to a collection-scoped `eval_report_v2_<collection>.json`
 `primitive_image_routes` run-context gate recorded, so reports from image
 runs are distinguishable from pipeline runs.
 
+Ingest also records an encoder fingerprint — provider class, model name, and
+a canary embedding — as a JSON sidecar next to the image index. Switching
+`IMAGE_PROVIDER` or `CLIP_MODEL` after ingest changes the vector space
+without changing the collection name, so every query would score near zero
+and the eval would silently report garbage numbers; the strict eval's
+preflight instead fails fast with a clear error naming the recorded vs
+current encoder. Re-ingest the corpus after any such switch (a fresh eval
+data home, or a forced image reindex).
+
 ### Quick perf check
 
 Once you have a corpus of any size, get a real p50 / p95 / QPS for your machine before tuning weights:

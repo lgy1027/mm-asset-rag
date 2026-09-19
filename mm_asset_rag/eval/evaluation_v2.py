@@ -21,10 +21,20 @@ from dataclasses import asdict, dataclass
 from importlib.resources import files
 from pathlib import Path
 
+from ..backends.qdrant.client import get_qdrant_client
+from ..backends.qdrant.collections import image_collection
 from ..core.metrics import _is_relevant, aggregate_metrics
 from ..core.paths import get_assets_dir, get_eval_report
 from ..core.schema import SearchHit
 from ..core.settings import get_settings
+from ..embedders import get_default_image_embedder
+from ..embedders.fingerprint import (
+    _probe_model_name,
+    compute_image_fingerprint,
+    fingerprint_matches,
+    image_fingerprint_path,
+    load_image_fingerprint,
+)
 from ..ingest import asset_index
 from ..ingest.file_identity import document_id_from_filename
 from ..query.search_service import SearchCommand, SearchMode, get_search_service
@@ -450,6 +460,76 @@ def _execute_image_eval_search(
     )
 
 
+def _image_encoder_fingerprint_violation() -> str | None:
+    """Preflight check: the image index must match the current encoder's fingerprint.
+
+    Both CLIP-family providers emit 512-dim vectors into the same collection
+    name, so a provider/model switch after ingest is silent: every query
+    scores near zero and the strict eval would report garbage hit rates.
+    Returns a human-readable violation when the eval home's image index has
+    points but no usable matching fingerprint sidecar; ``None`` otherwise.
+
+    A sidecar mismatch is always a violation; the no-sidecar check is
+    gated on the image collection actually having points — an eval home
+    with no image collection is already rejected by the document-presence
+    checks. Returns ``None`` (check skipped) when the image embedder
+    cannot be built or the Qdrant probe fails, mirroring the search
+    routes' graceful embedder-unavailable contract — those eval homes
+    fail loudly at search time anyway.
+    """
+    try:
+        provider = get_default_image_embedder()
+    except Exception:
+        return None
+    try:
+        current = compute_image_fingerprint(provider)
+    except ValueError:
+        # The provider cannot embed the canary at all, so it can never
+        # reproduce a recorded fingerprint; ``fingerprint_matches`` below
+        # raises the same way and is treated as a mismatch there.
+        current = None
+    try:
+        recorded = load_image_fingerprint(image_fingerprint_path())
+    except (OSError, ValueError, KeyError) as exc:
+        return (
+            f"image encoder fingerprint sidecar is unreadable "
+            f"({type(exc).__name__}: {exc}); re-ingest the eval corpus"
+        )
+    if recorded is None:
+        if current is None or not _image_collection_has_points(current.dim):
+            return None
+        return "image index predates fingerprinting; re-ingest the eval corpus"
+    try:
+        matches = fingerprint_matches(recorded, provider)
+    except ValueError:
+        matches = False
+    if matches:
+        return None
+    return (
+        f"image encoder fingerprint mismatch: the image index was built with encoder "
+        f"{recorded.provider!r} (model={recorded.model!r}) but the current image "
+        f"embedder is {type(provider).__name__!r} (model={_probe_model_name(provider)!r}); "
+        "re-ingest the eval corpus after switching IMAGE_PROVIDER/CLIP_MODEL"
+    )
+
+
+def _image_collection_has_points(dim: int) -> bool:
+    """True when the dim-derived image collection exists with at least one point.
+
+    Any probe failure (Qdrant down, unexpected response) degrades to
+    ``False`` so the fingerprint preflight introduces no new hard failure
+    mode that the searches themselves do not already have.
+    """
+    try:
+        client = get_qdrant_client()
+        name = image_collection(dim)
+        if not client.collection_exists(collection_name=name):
+            return False
+        return client.count(collection_name=name).count > 0
+    except Exception:
+        return False
+
+
 def run_image_eval_v2(
     top_k: int = 5,
     *,
@@ -465,8 +545,12 @@ def run_image_eval_v2(
     documents are missing from the collection/principal, reject
     non-empty negative qrels, and reject case groups outside
     ``IMAGE_EVAL_GROUP_ORDER`` so a typo'd group name cannot silently skip
-    its queries.  Rewrite/rerank are bypassed naturally by calling the
-    primitive routes directly; production settings untouched.
+    its queries.  Also fail fast when the image index predates encoder
+    fingerprinting or was built by a different ``IMAGE_PROVIDER``/
+    ``CLIP_MODEL`` than the current one — a silent provider switch would
+    otherwise score every query near zero and report garbage numbers.
+    Rewrite/rerank are bypassed naturally by calling the primitive routes
+    directly; production settings untouched.
     """
     search = search_fn or get_search_service().execute
     source = Path(cases_path).expanduser()
@@ -482,7 +566,8 @@ def run_image_eval_v2(
     }
 
     missing: list[str] = [
-        f"unknown image-eval group: {group!r}" for group in sorted(groups)
+        f"unknown image-eval group: {group!r}"
+        for group in sorted(groups)
         if group not in IMAGE_EVAL_GROUP_ORDER
     ]
     image_asset_paths: dict[str, str] = {}
@@ -521,6 +606,10 @@ def run_image_eval_v2(
     for case in groups.get("negative", []):
         if case["qrels"]:
             missing.append(f"{case['query_id']}: negative qrels must be empty")
+
+    fingerprint_violation = _image_encoder_fingerprint_violation()
+    if fingerprint_violation is not None:
+        missing.append(fingerprint_violation)
 
     if missing:
         details = "; ".join(missing[:20])
@@ -574,9 +663,7 @@ def write_eval_report_v2(
     """
     if path is None:
         slug_path = get_eval_report(collection)
-        target = slug_path.with_name(
-            slug_path.name.replace("eval_report", "eval_report_v2", 1)
-        )
+        target = slug_path.with_name(slug_path.name.replace("eval_report", "eval_report_v2", 1))
     else:
         target = path
     all_results = [result for results in results_by_group.values() for result in results]

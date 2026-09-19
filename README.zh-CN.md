@@ -253,6 +253,13 @@ manifest(`examples/image_eval_manifest_v1.json`)是语料和查询的语义事�
 (默认 collection 为 `eval_report_v2.json`),并记录 `primitive_image_routes`
 运行上下文闸口,因此图像运行的报告可以与流水线运行的报告区分开。
 
+ingest 还会在图像索引旁记录编码器指纹(provider 类名、模型名和一张确定性
+canary 图的 embedding)。ingest 之后切换 `IMAGE_PROVIDER` 或 `CLIP_MODEL`
+会改变向量空间但不改 collection 名,每个查询的得分都会接近零,评估会静默
+地产出垃圾数字;严格评估的 preflight 会在发起任何搜索之前直接失败,并在
+错误信息里同时给出记录与当前的编码器。发生这种切换后需要重新 ingest
+(使用全新的 eval 数据目录,或强制重建图像索引)。
+
 ### 跑性能基准
 
 语料到一定量后,在自己机器上跑真实 p50 / p95 / QPS,再去调权重:

@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from mm_asset_rag.core.schema import SearchHit
+from mm_asset_rag.embedders.fingerprint import compute_image_fingerprint, save_image_fingerprint
+from mm_asset_rag.eval import evaluation_v2
 from mm_asset_rag.eval.evaluation_v2 import (
     V2Result,
     load_cases,
@@ -545,6 +547,206 @@ def test_image_runner_rejects_unknown_groups_before_search(
         )
 
     assert called is False
+
+
+class _FingerprintStubImageEmbedder:
+    """Deterministic image-embedder stub for the encoder-fingerprint preflight."""
+
+    _model_name = "stub-model-a"
+
+    def __init__(self, vector: list[float] | None = None) -> None:
+        self._vector = vector if vector is not None else [1.0] + [0.0] * 7
+
+    def embed_image(self, image_path: Path) -> list[float]:
+        return list(self._vector)
+
+    def embed_text(self, text: str) -> list[float]:
+        return list(self._vector)
+
+
+class _FingerprintStubImageEmbedderB(_FingerprintStubImageEmbedder):
+    """Same surface, different concrete class name and model."""
+
+    _model_name = "stub-model-b"
+
+
+class _EmptyCanaryFingerprintStub(_FingerprintStubImageEmbedder):
+    """Canary embed comes back empty so ``fingerprint_matches`` raises ValueError."""
+
+    def embed_image(self, image_path: Path) -> list[float]:
+        return []
+
+
+@pytest.fixture(autouse=True)
+def _isolate_image_fingerprint_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the encoder-fingerprint preflight hermetic for every test in this file.
+
+    Defaults to "no image collection", so the check is skipped unless a test
+    opts in via ``_wire_fingerprint_preflight``.
+    """
+    monkeypatch.setattr(evaluation_v2, "get_default_image_embedder", _FingerprintStubImageEmbedder)
+    client = MagicMock()
+    client.collection_exists.return_value = False
+    client.count.return_value.count = 0
+    monkeypatch.setattr(evaluation_v2, "get_qdrant_client", lambda: client)
+    monkeypatch.setattr(evaluation_v2, "image_collection", lambda dim: f"multimodal_image_{dim}d")
+
+
+def _wire_fingerprint_preflight(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    recorded=None,
+    point_count: int = 1,
+) -> Path:
+    """Opt into the fingerprint preflight: non-empty collection plus a sidecar."""
+    fingerprint_path = tmp_path / "image_embedder_fingerprint.json"
+    if recorded is not None:
+        save_image_fingerprint(fingerprint_path, recorded)
+    client = MagicMock()
+    client.collection_exists.return_value = True
+    client.count.return_value.count = point_count
+    monkeypatch.setattr(evaluation_v2, "get_qdrant_client", lambda: client)
+    monkeypatch.setattr(evaluation_v2, "image_fingerprint_path", lambda: fingerprint_path)
+    return fingerprint_path
+
+
+def _visible_image_records() -> list:
+    return [
+        _visible_record("query-cat", "images/query-cat_hash.jpg"),
+        _visible_record("cat-1", "images/cat-1_hash.jpg"),
+        _visible_record("cat-2", "images/cat-2_hash.jpg"),
+    ]
+
+
+def test_image_runner_fails_before_search_on_encoder_fingerprint_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = _write_image_eval_cases(tmp_path)
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        _visible_image_records,
+    )
+    recorded = compute_image_fingerprint(_FingerprintStubImageEmbedderB())
+    _wire_fingerprint_preflight(monkeypatch, tmp_path, recorded=recorded)
+    called = False
+
+    def search(command: SearchCommand) -> list[SearchHit]:
+        nonlocal called
+        called = True
+        return []
+
+    with pytest.raises(ValueError, match="image encoder fingerprint mismatch"):
+        run_image_eval_v2(
+            cases_path=cases_path,
+            collection="team",
+            principal="alice",
+            search_fn=search,
+        )
+
+    assert called is False
+
+
+def test_image_runner_fails_before_search_when_index_predates_fingerprinting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = _write_image_eval_cases(tmp_path)
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        _visible_image_records,
+    )
+    _wire_fingerprint_preflight(monkeypatch, tmp_path)  # non-empty collection, no sidecar
+    called = False
+
+    def search(command: SearchCommand) -> list[SearchHit]:
+        nonlocal called
+        called = True
+        return []
+
+    with pytest.raises(ValueError, match="predates fingerprinting"):
+        run_image_eval_v2(
+            cases_path=cases_path,
+            collection="team",
+            principal="alice",
+            search_fn=search,
+        )
+
+    assert called is False
+
+
+def test_image_runner_treats_fingerprint_probe_failure_as_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = _write_image_eval_cases(tmp_path)
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        _visible_image_records,
+    )
+    # Valid sidecar, but the current provider cannot embed the canary at all.
+    monkeypatch.setattr(evaluation_v2, "get_default_image_embedder", _EmptyCanaryFingerprintStub)
+    recorded = compute_image_fingerprint(_FingerprintStubImageEmbedder())
+    _wire_fingerprint_preflight(monkeypatch, tmp_path, recorded=recorded)
+    called = False
+
+    def search(command: SearchCommand) -> list[SearchHit]:
+        nonlocal called
+        called = True
+        return []
+
+    with pytest.raises(ValueError, match="image encoder fingerprint mismatch"):
+        run_image_eval_v2(
+            cases_path=cases_path,
+            collection="team",
+            principal="alice",
+            search_fn=search,
+        )
+
+    assert called is False
+
+
+def test_image_runner_skips_fingerprint_check_when_image_collection_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = _write_image_eval_cases(tmp_path)
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        _visible_image_records,
+    )
+    _wire_fingerprint_preflight(monkeypatch, tmp_path, point_count=0)  # empty collection
+    commands: list[SearchCommand] = []
+
+    results = run_image_eval_v2(
+        cases_path=cases_path,
+        collection="team",
+        principal="alice",
+        search_fn=lambda command: commands.append(command) or [_hit("cat-1")],
+    )
+
+    assert len(results) == 4
+    assert len(commands) == 4
+
+
+def test_image_runner_passes_with_matching_encoder_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cases_path = _write_image_eval_cases(tmp_path)
+    monkeypatch.setattr(
+        "mm_asset_rag.eval.evaluation_v2.asset_index.load_records",
+        _visible_image_records,
+    )
+    recorded = compute_image_fingerprint(_FingerprintStubImageEmbedder())
+    _wire_fingerprint_preflight(monkeypatch, tmp_path, recorded=recorded)
+    commands: list[SearchCommand] = []
+
+    results = run_image_eval_v2(
+        cases_path=cases_path,
+        collection="team",
+        principal="alice",
+        search_fn=lambda command: commands.append(command) or [_hit("cat-1")],
+    )
+
+    assert len(results) == 4
+    assert len(commands) == 4
 
 
 def test_write_v2_report_includes_run_context(tmp_path: Path) -> None:
